@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+examples/*.png
+xnbdecode/bin/
+xnbdecode/obj/
