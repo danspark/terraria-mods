@@ -1,0 +1,1 @@
+Reshapes vanilla terrain into a layered forest, a sky-piercing mountain with a protected interior route, and a surface mine that descends into the cave layer. Uses only vanilla tiles and preserves vanilla progression.
