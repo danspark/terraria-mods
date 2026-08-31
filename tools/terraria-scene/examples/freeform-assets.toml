@@ -1,0 +1,42 @@
+format = 1
+name = "Freeform asset placement"
+seed = 41
+
+[canvas]
+size = [24, 12]
+scale = 3
+background = "forest-day"
+horizon = 9
+
+[[entities]]
+name = "blue slime"
+asset = "NPC_1"
+at = [6, 9]
+anchor = "bottom-center"
+source = [0, 0, 32, 26]
+z = 200
+
+[[entities]]
+name = "copper pickaxe"
+asset = "Item_1"
+at = [11, 7]
+anchor = "center"
+rotation = -20
+scale = 1.5
+z = 210
+
+[[entities]]
+name = "wooden arrow"
+asset = "Projectile_1"
+at = [15, 7]
+anchor = "center"
+rotation = -60
+z = 220
+
+[[entities]]
+name = "torch frame"
+asset = "Tiles_4"
+at = [19, 9]
+anchor = "bottom-center"
+source = [0, 0, 20, 20]
+z = 200

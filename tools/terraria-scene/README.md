@@ -1,14 +1,14 @@
 # Terraria scene renderer
 
-`terraria_scene.py` turns aligned TOML text grids into a Terraria concept render. It reads textures from your installed copy of Terraria. The repository does not contain game art.
+`terraria_scene.py` turns TOML text maps and exact Terraria sprite frames into PNG scene studies. It reads textures from your installed copy of Terraria. The repository contains no game art.
 
-Use the renderer to compare terrain silhouettes, routes, cave openings, water, and landmark placement before you write world-generation code.
+The format supports compact character maps, named token maps, external map files, freeform sprite placement, arbitrary canvas dimensions, regional renders, and tiled output. Asset names resolve at runtime, so a new Terraria texture works without a tool update.
 
-## Render the included forest study
+## Set up the tool
 
-Install Python 3.11 or newer. The first XNB render also needs the .NET 8 SDK.
+Install Python 3.11 or newer and the .NET 8 SDK. The SDK decompresses Terraria's XNB textures on first use.
 
-From the repository root, enter the tool directory. Then create an environment and install Pillow:
+From the repository root, run:
 
 ```bash
 cd tools/terraria-scene
@@ -17,50 +17,98 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-From this directory, validate the map:
+The renderer finds the standard Linux Steam installation. For another installation, pass `--assets /path/to/Terraria` or set `TERRARIA_PATH`.
+
+You can also pass an exported texture directory. The directory can contain PNG or XNB files and nested folders.
+
+## Render the examples
+
+Validate and render the biome study:
 
 ```bash
 python3 terraria_scene.py validate examples/vertical-forest.toml
-```
-
-The command prints:
-
-```text
-ok: Vertical forest route study (64x34 tiles)
-```
-
-Render the map:
-
-```bash
 python3 terraria_scene.py render examples/vertical-forest.toml \
   --output examples/vertical-forest.png
 ```
 
-The renderer looks for the Linux Steam install in its standard locations. To use another location, pass the Terraria directory:
+Render a scene made only from exact asset frames:
 
 ```bash
-python3 terraria_scene.py render scene.toml \
-  --assets /path/to/Terraria \
-  --output scene.png
+python3 terraria_scene.py render examples/freeform-assets.toml \
+  --output examples/freeform-assets.png
 ```
 
-You can also set `TERRARIA_PATH`. If you already exported the textures, pass a directory that contains PNG files such as `Tiles_0.png` and `Background_0.png`.
+The first example uses terrain, walls, liquids, platforms, ropes, torches, slopes, and composed trees. The second uses an NPC frame, an item, a projectile, and a tile-sheet frame without a map.
 
-## Create a terrain study
+## Find and inspect sprites
+
+List every NPC texture in the installed game:
+
+```bash
+python3 terraria_scene.py list-assets 'NPC_*'
+```
+
+Write the complete recursive asset catalog:
+
+```bash
+python3 terraria_scene.py list-assets '*' --json terraria-assets.json
+```
+
+Inspect a sheet, then export the frame you want:
+
+```bash
+python3 terraria_scene.py inspect-asset NPC_1 \
+  --output npc-1.png --scale 4
+
+python3 terraria_scene.py inspect-asset NPC_1 \
+  --source 0 0 32 26 --output slime.png --scale 4
+```
+
+Check that the tool can decode every installed texture and record its dimensions:
+
+```bash
+python3 terraria_scene.py verify-assets \
+  --output verified-terraria-assets.json
+```
+
+On the Terraria copy used to develop this tool, the command verifies 15,123 textures, including nested asset folders. The result comes from the installed copy, not a checked-in list.
+
+## Create a scene
+
+For a terrain study:
 
 1. Copy `examples/vertical-forest.toml`.
-2. Replace its palette with the materials that you need.
-3. Choose `boundary = "world"` for a continuous-world crop or `boundary = "open"` for a floating island.
-4. Edit `map.terrain`. Use one character for each Terraria tile and a dot for air.
-5. Add same-sized `walls`, `liquids`, `objects`, or `shapes` grids when you need them.
-6. Run `validate` after each edit.
-7. Run `render` when the map passes validation.
+2. Set `boundary = "world"` for a continuous crop or `boundary = "open"` for a floating island.
+3. Add built-ins or inline asset definitions to the palette.
+4. Edit the aligned map layers.
+5. Run `validate` after each edit.
+6. Run `render` when the scene passes validation.
 
-Keep `seed` stable while you compare terrain changes. Change the seed to inspect other texture, tree, and frame variants.
+For long names or a large palette, set `map.encoding = "tokens"`. Each cell then uses a whitespace-separated name such as `jungle_grass` or `living_wood_wall`. Put a large grid in a separate file with `{ file = "terrain.map" }`.
 
-Use `--grid` to show cell boundaries. Use `--scale 1` for a fast native-size render.
+For an NPC, item, projectile, decoration, UI texture, or an unusual multi-tile object, add an `[[entities]]` table. Give it an asset name and either a source rectangle or frame coordinates. Position it in tiles or pixels. Rotation, flips, scaling, tint, brightness, opacity, anchors, and draw order are explicit.
 
-Read [FORMAT.md](FORMAT.md) for every field, built-in sprite, and custom sprite option.
+Read [FORMAT.md](FORMAT.md) for the complete reference.
+
+## Render a large world
+
+There is no fixed scene-size or scale cap. A full PNG still consumes memory proportional to its output dimensions.
+
+Render one part of a scene:
+
+```bash
+python3 terraria_scene.py render world.toml \
+  --region 4000 1200 160 90 --output region.png
+```
+
+For a world-scale study, render bounded PNG tiles:
+
+```bash
+python3 terraria_scene.py render-tiles world.toml \
+  --tile-size 160 90 --output world-tiles
+```
+
+The output directory contains `manifest.json` and one PNG for each region. Reassembling those PNGs produces the same pixels as a full render.
 
 ## Run the checks
 
@@ -68,8 +116,8 @@ Read [FORMAT.md](FORMAT.md) for every field, built-in sprite, and custom sprite 
 python3 -m unittest discover -s tests -v
 ```
 
-The test suite parses the example, checks Terraria's block, wall, platform, slope, and boundary rules, renders from exported PNG textures, and decodes one owned XNB texture when Terraria is installed.
+The suite covers both map encodings, external maps, arbitrary canvas sizes, direct asset entities, tile stitching, Terraria framing, tree roots, recursive asset discovery, XNB decoding, and the complete installed texture scan when Terraria is available.
 
 ## Keep game art local
 
-The tool caches decoded textures under `~/.cache/terraria-scene`. Generated example PNG files are ignored by Git. Do not commit or redistribute decoded sheets or renders that contain Terraria art.
+The tool caches decoded textures under `~/.cache/terraria-scene`. Generated PNGs and catalogs are local outputs. Do not commit or redistribute decoded sheets or renders that contain Terraria art.

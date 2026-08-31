@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 .venv/
 examples/*.png
+*assets.json
 xnbdecode/bin/
 xnbdecode/obj/

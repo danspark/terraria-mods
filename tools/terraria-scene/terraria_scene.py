@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import math
 import os
 import shutil
 import struct
@@ -19,6 +21,8 @@ from statistics import median
 from typing import Any
 
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance
+
+from asset_catalog import AssetRecord, discover_assets, write_catalog
 
 
 TILE_SIZE = 16
@@ -45,16 +49,48 @@ class Sprite:
 
 
 @dataclass(frozen=True)
+class Entity:
+    name: str
+    asset: str
+    position: tuple[int, int]
+    source: tuple[int, int, int, int] | None = None
+    anchor: str = "top-left"
+    scale: tuple[float, float] = (1.0, 1.0)
+    rotation: float = 0.0
+    flip_x: bool = False
+    flip_y: bool = False
+    opacity: float = 1.0
+    brightness: float = 1.0
+    tint: tuple[int, int, int, int] = (255, 255, 255, 255)
+    z: int = 200
+
+
+GridRow = str | tuple[str, ...]
+Grid = tuple[GridRow, ...]
+
+
+@dataclass(frozen=True)
+class RenderRegion:
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
 class Scene:
     path: Path
     name: str
     seed: int
     scale: int
     boundary: str
+    sky: str
     background: str
     background_layers: tuple[str, ...] | None
     palette: dict[str, Sprite]
-    layers: dict[str, tuple[str, ...]]
+    layers: dict[str, Grid]
+    entities: tuple[Entity, ...]
+    horizon: float | None
     width: int
     height: int
 
@@ -138,6 +174,7 @@ BUILTINS: dict[str, Sprite] = {
 }
 
 BACKGROUND_PRESETS: dict[str, tuple[str, ...]] = {
+    "transparent": (),
     "sky": (),
     "forest-day": (
         "Background_7",
@@ -207,9 +244,11 @@ TREE_TRUNK_SPRITE = Sprite(
 def _pair(value: Any, field: str, *, default: tuple[int, int]) -> tuple[int, int]:
     if value is None:
         return default
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
         pair = (value, value)
-    elif isinstance(value, list) and len(value) == 2 and all(isinstance(item, int) for item in value):
+    elif isinstance(value, list) and len(value) == 2 and all(
+        isinstance(item, int) and not isinstance(item, bool) for item in value
+    ):
         pair = (value[0], value[1])
     else:
         raise SceneError(f"{field} must be an integer or an array of two integers")
@@ -222,10 +261,56 @@ def _offset_pair(value: Any, field: str, *, default: tuple[int, int]) -> tuple[i
     if value is None:
         return default
     if not isinstance(value, list) or len(value) != 2 or not all(
-        isinstance(item, int) for item in value
+        isinstance(item, int) and not isinstance(item, bool) for item in value
     ):
         raise SceneError(f"{field} must be an array of two integers")
     return value[0], value[1]
+
+
+def _sprite_from_table(name: str, raw: Any, field: str) -> Sprite:
+    if not isinstance(raw, dict):
+        raise SceneError(f"{field} must be a TOML table")
+    kind = raw.get("kind", "tile")
+    if kind not in {"tile", "wall", "liquid", "object"}:
+        raise SceneError(f"{field}.kind has unsupported value {kind!r}")
+    asset = raw.get("asset")
+    if not isinstance(asset, str) or not asset:
+        raise SceneError(f"{field}.asset must name an XNB or PNG texture")
+
+    default_size = (32, 32) if kind == "wall" else (16, 16)
+    default_stride = (36, 36) if kind == "wall" else (18, 18)
+    default_autotile = "wall" if kind == "wall" else "block" if kind == "tile" else "fixed"
+    autotile = raw.get("autotile", default_autotile)
+    if autotile not in {"block", "wall", "fixed", "platform", "rope", "torch", "liquid"}:
+        raise SceneError(f"{field}.autotile has unsupported value {autotile!r}")
+
+    connect = raw.get("connect")
+    if connect is not None and not isinstance(connect, str):
+        raise SceneError(f"{field}.connect must be a string")
+    if connect is None and autotile in {"block", "wall"}:
+        connect = kind
+
+    brightness = raw.get("brightness", 1.0)
+    if (
+        not isinstance(brightness, (int, float))
+        or isinstance(brightness, bool)
+        or not math.isfinite(float(brightness))
+        or brightness <= 0
+    ):
+        raise SceneError(f"{field}.brightness must be positive")
+
+    return Sprite(
+        name=name,
+        kind=kind,
+        asset=asset,
+        frame_size=_pair(raw.get("frame_size"), f"{field}.frame_size", default=default_size),
+        stride=_pair(raw.get("stride"), f"{field}.stride", default=default_stride),
+        frame=_offset_pair(raw.get("frame"), f"{field}.frame", default=(0, 0)),
+        autotile=autotile,
+        connect=connect,
+        brightness=float(brightness),
+        offset=_offset_pair(raw.get("offset"), f"{field}.offset", default=(0, 0)),
+    )
 
 
 def _custom_sprites(data: Any) -> dict[str, Sprite]:
@@ -233,59 +318,195 @@ def _custom_sprites(data: Any) -> dict[str, Sprite]:
         return {}
     if not isinstance(data, dict):
         raise SceneError("sprites must be a TOML table")
+    return {
+        name: _sprite_from_table(name, raw, f"sprites.{name}")
+        for name, raw in data.items()
+    }
 
-    result: dict[str, Sprite] = {}
-    for name, raw in data.items():
+
+def _number(value: Any, field: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise SceneError(f"{field} must be a number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise SceneError(f"{field} must be finite")
+    return number
+
+
+def _boolean(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise SceneError(f"{field} must be true or false")
+    return value
+
+
+def _number_pair(value: Any, field: str, *, default: tuple[float, float]) -> tuple[float, float]:
+    if value is None:
+        return default
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        pair = float(value), float(value)
+    elif isinstance(value, list) and len(value) == 2:
+        pair = _number(value[0], field), _number(value[1], field)
+    else:
+        raise SceneError(f"{field} must be a number or an array of two numbers")
+    if pair[0] <= 0 or pair[1] <= 0:
+        raise SceneError(f"{field} values must be positive")
+    return pair
+
+
+def _quad(value: Any, field: str) -> tuple[int, int, int, int]:
+    if not isinstance(value, list) or len(value) != 4 or not all(
+        isinstance(item, int) and not isinstance(item, bool) for item in value
+    ):
+        raise SceneError(f"{field} must be an array of four integers")
+    return value[0], value[1], value[2], value[3]
+
+
+def _entities(data: Any) -> tuple[Entity, ...]:
+    if data is None:
+        return ()
+    if not isinstance(data, list):
+        raise SceneError("entities must be an array of TOML tables")
+    result: list[Entity] = []
+    anchors = {
+        "top-left",
+        "top-center",
+        "top-right",
+        "center-left",
+        "center",
+        "center-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right",
+    }
+    allowed_fields = {
+        "name",
+        "asset",
+        "at",
+        "units",
+        "source",
+        "frame_size",
+        "stride",
+        "frame",
+        "anchor",
+        "scale",
+        "rotation",
+        "flip_x",
+        "flip_y",
+        "opacity",
+        "brightness",
+        "tint",
+        "z",
+    }
+    for index, raw in enumerate(data, start=1):
+        field = f"entities[{index}]"
         if not isinstance(raw, dict):
-            raise SceneError(f"sprites.{name} must be a TOML table")
-        kind = raw.get("kind", "tile")
-        if kind not in {"tile", "wall", "liquid", "object"}:
-            raise SceneError(f"sprites.{name}.kind has unsupported value {kind!r}")
+            raise SceneError(f"{field} must be a TOML table")
+        unknown = set(raw) - allowed_fields
+        if unknown:
+            raise SceneError(f"{field} has unknown fields: {', '.join(sorted(unknown))}")
         asset = raw.get("asset")
         if not isinstance(asset, str) or not asset:
-            raise SceneError(f"sprites.{name}.asset must name an XNB or PNG texture")
-
-        default_size = (32, 32) if kind == "wall" else (16, 16)
-        default_stride = (36, 36) if kind == "wall" else (18, 18)
-        default_autotile = "wall" if kind == "wall" else "block" if kind == "tile" else "fixed"
-        autotile = raw.get("autotile", default_autotile)
-        if autotile not in {"block", "wall", "fixed", "platform", "rope", "torch", "liquid"}:
-            raise SceneError(f"sprites.{name}.autotile has unsupported value {autotile!r}")
-
-        connect = raw.get("connect")
-        if connect is not None and not isinstance(connect, str):
-            raise SceneError(f"sprites.{name}.connect must be a string")
-        if connect is None and autotile in {"block", "wall"}:
-            connect = kind
-
-        brightness = raw.get("brightness", 1.0)
-        if not isinstance(brightness, (int, float)) or brightness <= 0:
-            raise SceneError(f"sprites.{name}.brightness must be positive")
-
-        result[name] = Sprite(
-            name=name,
-            kind=kind,
-            asset=asset,
-            frame_size=_pair(raw.get("frame_size"), f"sprites.{name}.frame_size", default=default_size),
-            stride=_pair(raw.get("stride"), f"sprites.{name}.stride", default=default_stride),
-            frame=_offset_pair(raw.get("frame"), f"sprites.{name}.frame", default=(0, 0)),
-            autotile=autotile,
-            connect=connect,
-            brightness=float(brightness),
-            offset=_offset_pair(raw.get("offset"), f"sprites.{name}.offset", default=(0, 0)),
+            raise SceneError(f"{field}.asset must name an XNB or PNG texture")
+        at = raw.get("at")
+        if not isinstance(at, list) or len(at) != 2:
+            raise SceneError(f"{field}.at must be an array of two numbers")
+        units = raw.get("units", "tiles")
+        if units not in {"tiles", "pixels"}:
+            raise SceneError(f"{field}.units must be 'tiles' or 'pixels'")
+        multiplier = TILE_SIZE if units == "tiles" else 1
+        position = (
+            round(_number(at[0], f"{field}.at") * multiplier),
+            round(_number(at[1], f"{field}.at") * multiplier),
         )
-    return result
+
+        source = None
+        if "source" in raw:
+            if "frame_size" in raw or "frame" in raw or "stride" in raw:
+                raise SceneError(f"{field} cannot combine source with frame fields")
+            source = _quad(raw["source"], f"{field}.source")
+            if source[0] < 0 or source[1] < 0 or source[2] <= 0 or source[3] <= 0:
+                raise SceneError(f"{field}.source must have non-negative x/y and positive width/height")
+        elif "frame_size" in raw or "frame" in raw or "stride" in raw:
+            frame_size = _pair(raw.get("frame_size"), f"{field}.frame_size", default=(16, 16))
+            stride = _pair(raw.get("stride"), f"{field}.stride", default=frame_size)
+            frame = _offset_pair(raw.get("frame"), f"{field}.frame", default=(0, 0))
+            if frame[0] < 0 or frame[1] < 0:
+                raise SceneError(f"{field}.frame values must be non-negative")
+            source = frame[0] * stride[0], frame[1] * stride[1], frame_size[0], frame_size[1]
+
+        anchor = raw.get("anchor", "top-left")
+        if anchor not in anchors:
+            raise SceneError(f"{field}.anchor has unsupported value {anchor!r}")
+        opacity = _number(raw.get("opacity", 1.0), f"{field}.opacity")
+        if not 0 <= opacity <= 1:
+            raise SceneError(f"{field}.opacity must be from 0 through 1")
+        brightness = _number(raw.get("brightness", 1.0), f"{field}.brightness")
+        if brightness <= 0:
+            raise SceneError(f"{field}.brightness must be positive")
+        tint = _quad(raw.get("tint", [255, 255, 255, 255]), f"{field}.tint")
+        if not all(0 <= channel <= 255 for channel in tint):
+            raise SceneError(f"{field}.tint channels must be from 0 through 255")
+        z = raw.get("z", 200)
+        if not isinstance(z, int) or isinstance(z, bool):
+            raise SceneError(f"{field}.z must be an integer")
+        name = raw.get("name", asset)
+        if not isinstance(name, str) or not name:
+            raise SceneError(f"{field}.name must be a non-empty string")
+        result.append(
+            Entity(
+                name=name,
+                asset=asset,
+                position=position,
+                source=source,
+                anchor=anchor,
+                scale=_number_pair(raw.get("scale"), f"{field}.scale", default=(1.0, 1.0)),
+                rotation=_number(raw.get("rotation", 0.0), f"{field}.rotation"),
+                flip_x=_boolean(raw.get("flip_x", False), f"{field}.flip_x"),
+                flip_y=_boolean(raw.get("flip_y", False), f"{field}.flip_y"),
+                opacity=opacity,
+                brightness=brightness,
+                tint=tint,
+                z=z,
+            )
+        )
+    return tuple(result)
 
 
-def _grid(raw: Any, layer: str) -> tuple[str, ...]:
+def _grid(raw: Any, layer: str, scene_path: Path, default_encoding: str) -> Grid:
+    encoding = default_encoding
+    if isinstance(raw, dict):
+        unknown = set(raw) - {"file", "encoding"}
+        if unknown:
+            raise SceneError(f"map.{layer} has unknown fields: {', '.join(sorted(unknown))}")
+        file_name = raw.get("file")
+        if not isinstance(file_name, str) or not file_name:
+            raise SceneError(f"map.{layer}.file must be a path")
+        encoding = raw.get("encoding", default_encoding)
+        source_path = Path(file_name)
+        if not source_path.is_absolute():
+            source_path = scene_path.parent / source_path
+        try:
+            raw = source_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise SceneError(f"cannot read map.{layer} file {source_path}: {error}") from error
     if not isinstance(raw, str):
-        raise SceneError(f"map.{layer} must be a multiline string")
-    if "\t" in raw:
-        raise SceneError(f"map.{layer} cannot contain tab characters")
+        raise SceneError(f"map.{layer} must be a multiline string or file table")
+    if encoding not in {"characters", "tokens"}:
+        raise SceneError(f"map.{layer}.encoding must be 'characters' or 'tokens'")
     normalized = textwrap.dedent(raw).strip("\n")
     if not normalized:
         raise SceneError(f"map.{layer} cannot be empty")
-    return tuple(normalized.splitlines())
+    if encoding == "characters":
+        if "\t" in normalized:
+            raise SceneError(f"map.{layer} cannot contain tabs with character encoding")
+        return tuple(normalized.splitlines())
+    rows = tuple(
+        tuple(sys.intern(token) for token in row.split())
+        for row in normalized.splitlines()
+    )
+    if any(not row for row in rows):
+        raise SceneError(f"map.{layer} token rows cannot be empty")
+    return rows
 
 
 def load_scene(path: Path) -> Scene:
@@ -302,14 +523,23 @@ def load_scene(path: Path) -> Scene:
     if not isinstance(canvas, dict):
         raise SceneError("canvas must be a TOML table")
     scale = canvas.get("scale", 2)
-    if not isinstance(scale, int) or not 1 <= scale <= 8:
-        raise SceneError("canvas.scale must be an integer from 1 through 8")
+    if not isinstance(scale, int) or isinstance(scale, bool) or scale <= 0:
+        raise SceneError("canvas.scale must be a positive integer")
     boundary = canvas.get("boundary", "world")
     if boundary not in {"world", "open"}:
         raise SceneError("canvas.boundary must be 'world' or 'open'")
     background = canvas.get("background", "forest-day")
     if not isinstance(background, str):
         raise SceneError("canvas.background must be a string")
+    sky = canvas.get("sky", "transparent" if background == "transparent" else "Background_0")
+    if not isinstance(sky, str) or not sky:
+        raise SceneError("canvas.sky must name a texture or be 'transparent'")
+    horizon = canvas.get("horizon")
+    if horizon is not None:
+        horizon = _number(horizon, "canvas.horizon")
+    canvas_size = canvas.get("size")
+    if canvas_size is not None:
+        canvas_size = _pair(canvas_size, "canvas.size", default=(1, 1))
     custom_background = canvas.get("background_layers")
     if custom_background is not None:
         if not isinstance(custom_background, list) or not all(
@@ -323,41 +553,57 @@ def load_scene(path: Path) -> Scene:
             raise SceneError(f"unknown background {background!r}; choose {choices} or set background_layers")
         background_layers = None
 
-    sprite_library = dict(BUILTINS)
-    sprite_library.update(_custom_sprites(data.get("sprites")))
-    raw_palette = data.get("palette")
-    if not isinstance(raw_palette, dict) or not raw_palette:
-        raise SceneError("palette must be a non-empty TOML table")
-    palette: dict[str, Sprite] = {}
-    for symbol, sprite_name in raw_palette.items():
-        if not isinstance(symbol, str) or len(symbol) != 1:
-            raise SceneError(f"palette key {symbol!r} must be one character")
-        if symbol in {".", " "}:
-            raise SceneError("palette cannot redefine '.' or a space; both mean empty")
-        if not isinstance(sprite_name, str):
-            raise SceneError(f"palette.{symbol} must name a sprite")
-        try:
-            palette[symbol] = sprite_library[sprite_name]
-        except KeyError as error:
-            raise SceneError(f"palette.{symbol} names unknown sprite {sprite_name!r}") from error
-
-    raw_map = data.get("map")
+    raw_map = data.get("map", {})
     if not isinstance(raw_map, dict):
         raise SceneError("map must be a TOML table")
-    if "terrain" not in raw_map:
-        raise SceneError("map.terrain is required")
-    layers: dict[str, tuple[str, ...]] = {"terrain": _grid(raw_map["terrain"], "terrain")}
-    height = len(layers["terrain"])
-    width = len(layers["terrain"][0])
-    if width == 0:
-        raise SceneError("map.terrain rows cannot be empty")
-    if width > 240 or height > 135:
-        raise SceneError("the map cannot exceed 240 columns by 135 rows")
+    map_encoding = raw_map.get("encoding", "characters")
+    if map_encoding not in {"characters", "tokens"}:
+        raise SceneError("map.encoding must be 'characters' or 'tokens'")
+    unknown_layers = set(raw_map) - {*LAYER_KINDS, "shapes", "encoding"}
+    if unknown_layers:
+        raise SceneError(f"map has unknown layers: {', '.join(sorted(unknown_layers))}")
 
-    for layer in (*LAYER_KINDS.keys(), "shapes"):
-        if layer == "terrain" or layer not in raw_map:
-            continue
-        layers[layer] = _grid(raw_map[layer], layer)
+    sprite_library = dict(BUILTINS)
+    sprite_library.update(_custom_sprites(data.get("sprites")))
+    raw_palette = data.get("palette", {})
+    if not isinstance(raw_palette, dict):
+        raise SceneError("palette must be a TOML table")
+    palette: dict[str, Sprite] = {}
+    for symbol, sprite_value in raw_palette.items():
+        if not isinstance(symbol, str) or not symbol or any(character.isspace() for character in symbol):
+            raise SceneError(f"palette key {symbol!r} must be a non-whitespace string")
+        if map_encoding == "characters" and len(symbol) != 1:
+            raise SceneError(f"palette key {symbol!r} must be one character with character encoding")
+        if symbol == ".":
+            raise SceneError("palette cannot redefine '.'; it means empty")
+        if isinstance(sprite_value, str):
+            try:
+                palette[symbol] = sprite_library[sprite_value]
+            except KeyError as error:
+                raise SceneError(f"palette.{symbol} names unknown sprite {sprite_value!r}") from error
+        else:
+            palette[symbol] = _sprite_from_table(symbol, sprite_value, f"palette.{symbol}")
+
+    layers: dict[str, Grid] = {}
+    for layer in (*LAYER_KINDS, "shapes"):
+        if layer in raw_map:
+            layers[layer] = _grid(raw_map[layer], layer, path, map_encoding)
+
+    if not layers and canvas_size is None:
+        raise SceneError("canvas.size is required when map has no layers")
+    if layers:
+        first_rows = next(iter(layers.values()))
+        height = len(first_rows)
+        width = len(first_rows[0])
+    else:
+        assert canvas_size is not None
+        width, height = canvas_size
+    if width == 0:
+        raise SceneError("map rows cannot be empty")
+    if canvas_size is not None and canvas_size != (width, height):
+        raise SceneError(
+            f"canvas.size is {canvas_size[0]}x{canvas_size[1]}; map is {width}x{height}"
+        )
 
     for layer, rows in layers.items():
         if len(rows) != height:
@@ -391,7 +637,7 @@ def load_scene(path: Path) -> Scene:
     if not isinstance(name, str) or not name:
         raise SceneError("name must be a non-empty string")
     seed = data.get("seed", 0)
-    if not isinstance(seed, int):
+    if not isinstance(seed, int) or isinstance(seed, bool):
         raise SceneError("seed must be an integer")
 
     return Scene(
@@ -400,10 +646,13 @@ def load_scene(path: Path) -> Scene:
         seed=seed,
         scale=scale,
         boundary=boundary,
+        sky=sky,
         background=background,
         background_layers=background_layers,
         palette=palette,
         layers=layers,
+        entities=_entities(data.get("entities")),
+        horizon=horizon,
         width=width,
         height=height,
     )
@@ -513,6 +762,22 @@ def _background_ground_row(image: Image.Image) -> int:
     return image.height
 
 
+def _scene_horizon_pixels(scene: Scene) -> int:
+    if scene.horizon is not None:
+        return round(scene.horizon * TILE_SIZE)
+    terrain = scene.layers.get("terrain")
+    if terrain is not None:
+        surface_rows = []
+        for x in range(scene.width):
+            for y, row in enumerate(terrain):
+                if not _empty(row[x]):
+                    surface_rows.append(y)
+                    break
+        if surface_rows:
+            return int(median(surface_rows) * TILE_SIZE)
+    return int(scene.height * TILE_SIZE * 0.66)
+
+
 def _apply_shape(frame: Image.Image, shape: str) -> Image.Image:
     """Mask a full tile to Terraria's two-pixel stair-step slope geometry."""
     if shape in {".", " "}:
@@ -551,7 +816,9 @@ class AssetStore:
         if candidate.name == "Images" and candidate.is_dir():
             root = candidate.parent.parent
             return root, candidate
-        if candidate.is_dir() and any(candidate.glob("Tiles_0.*")):
+        if candidate.is_dir() and any(
+            path.suffix.lower() in {".png", ".xnb"} for path in candidate.rglob("*")
+        ):
             return candidate, candidate
         return None
 
@@ -648,6 +915,39 @@ class AssetStore:
             image.save(temp_png, format="PNG", optimize=False)
             temp_png.replace(destination)
 
+    def scan_xnb_dimensions(self) -> dict[str, tuple[int, int]]:
+        xnb_files = tuple(self.images.rglob("*.xnb"))
+        if not xnb_files:
+            return {}
+        fna = self.root / "FNA.dll"
+        if not fna.is_file():
+            raise SceneError(
+                f"cannot verify XNB assets because {fna} is missing; "
+                "pass the complete Terraria directory"
+            )
+        decoder = self._decoder()
+        with tempfile.TemporaryDirectory(prefix="scan-", dir=self.cache) as temp_dir:
+            output = Path(temp_dir) / "textures.tsv"
+            result = subprocess.run(
+                [
+                    "dotnet",
+                    str(decoder),
+                    "--scan",
+                    str(fna),
+                    str(self.images),
+                    str(output),
+                ],
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                raise SceneError((result.stderr or result.stdout).strip())
+            dimensions: dict[str, tuple[int, int]] = {}
+            for line in output.read_text(encoding="utf-8").splitlines():
+                name, width, height = line.split("\t")
+                dimensions[name] = int(width), int(height)
+            return dimensions
+
 
 def _read_7bit(data: memoryview, position: int) -> tuple[int, int]:
     value = 0
@@ -707,18 +1007,51 @@ def _read_xnb_texture_body(raw: bytes, name: str) -> Image.Image:
 
 
 class Renderer:
-    def __init__(self, scene: Scene, assets: AssetStore):
+    def __init__(
+        self,
+        scene: Scene,
+        assets: AssetStore,
+        region: RenderRegion | None = None,
+        *,
+        horizon_pixels: int | None = None,
+        frame_cache: dict[tuple[Any, ...], Image.Image] | None = None,
+        entity_cache: dict[Entity, Image.Image] | None = None,
+    ):
         self.scene = scene
         self.assets = assets
-        self.native_size = scene.width * TILE_SIZE, scene.height * TILE_SIZE
-        self.frame_cache: dict[tuple[Any, ...], Image.Image] = {}
+        self.region = region or RenderRegion(0, 0, scene.width, scene.height)
+        if (
+            self.region.x < 0
+            or self.region.y < 0
+            or self.region.width <= 0
+            or self.region.height <= 0
+            or self.region.x + self.region.width > scene.width
+            or self.region.y + self.region.height > scene.height
+        ):
+            raise SceneError(
+                f"render region {self.region.x},{self.region.y},{self.region.width},{self.region.height} "
+                f"falls outside the {scene.width}x{scene.height} canvas"
+            )
+        self.scene_native_size = scene.width * TILE_SIZE, scene.height * TILE_SIZE
+        self.origin = self.region.x * TILE_SIZE, self.region.y * TILE_SIZE
+        self.native_size = self.region.width * TILE_SIZE, self.region.height * TILE_SIZE
+        self.horizon_pixels = (
+            horizon_pixels if horizon_pixels is not None else _scene_horizon_pixels(scene)
+        )
+        self.frame_cache = frame_cache if frame_cache is not None else {}
+        self.entity_cache = entity_cache if entity_cache is not None else {}
 
     def render(self, *, grid: bool = False) -> Image.Image:
         image = self._background()
+        self._render_entities(image, None, -300)
         self._render_walls(image)
+        self._render_entities(image, -300, -200)
         self._render_liquids(image)
+        self._render_entities(image, -200, 0)
         self._render_terrain(image)
+        self._render_entities(image, 0, 100)
         self._render_objects(image)
+        self._render_entities(image, 100, None)
         if grid:
             self._draw_grid(image)
         if self.scene.scale != 1:
@@ -728,21 +1061,66 @@ class Renderer:
             )
         return image
 
+    def _local(self, x: int, y: int) -> tuple[int, int]:
+        return x - self.origin[0], y - self.origin[1]
+
+    def _cell_ranges(self, margin: int = 0) -> tuple[range, range]:
+        min_x = max(0, self.region.x - margin)
+        min_y = max(0, self.region.y - margin)
+        max_x = min(self.scene.width, self.region.x + self.region.width + margin)
+        max_y = min(self.scene.height, self.region.y + self.region.height + margin)
+        return range(min_x, max_x), range(min_y, max_y)
+
+    def _layer_margin(self, layer: str, minimum: int = 0) -> int:
+        margin = minimum
+        for sprite in self.scene.palette.values():
+            if sprite.kind not in LAYER_KINDS.get(layer, set()):
+                continue
+            horizontal = max(
+                -sprite.offset[0],
+                sprite.offset[0] + sprite.frame_size[0] - TILE_SIZE,
+                0,
+            )
+            vertical = max(
+                -sprite.offset[1],
+                sprite.offset[1] + sprite.frame_size[1] - TILE_SIZE,
+                0,
+            )
+            margin = max(margin, (max(horizontal, vertical) + TILE_SIZE - 1) // TILE_SIZE)
+        return margin
+
     def _background(self) -> Image.Image:
-        sky = self.assets.load("Background_0").resize(self.native_size, Image.Resampling.BILINEAR)
+        if self.scene.sky == "transparent":
+            sky = Image.new("RGBA", self.native_size, (0, 0, 0, 0))
+        else:
+            sky_asset = self.assets.load(self.scene.sky)
+            if self.scene.sky == "Background_0":
+                source_column = sky_asset.crop((0, 0, 1, sky_asset.height))
+                source_top = self.origin[1] * sky_asset.height / self.scene_native_size[1]
+                source_bottom = (
+                    self.origin[1] + self.native_size[1]
+                ) * sky_asset.height / self.scene_native_size[1]
+                sky_column = source_column.transform(
+                    (1, self.native_size[1]),
+                    Image.Transform.EXTENT,
+                    (0, source_top, 1, source_bottom),
+                    Image.Resampling.BILINEAR,
+                )
+                sky = sky_column.resize(self.native_size, Image.Resampling.NEAREST)
+            else:
+                sky = Image.new("RGBA", self.native_size, (0, 0, 0, 0))
+                start_x = (self.origin[0] // sky_asset.width) * sky_asset.width
+                start_y = (self.origin[1] // sky_asset.height) * sky_asset.height
+                for y in range(start_y, self.origin[1] + self.native_size[1], sky_asset.height):
+                    for x in range(start_x, self.origin[0] + self.native_size[0], sky_asset.width):
+                        sky.alpha_composite(sky_asset, self._local(x, y))
         layers = self.scene.background_layers
         if layers is None:
             layers = BACKGROUND_PRESETS[self.scene.background]
         if not layers:
             return sky
 
-        surface_rows = []
-        for x in range(self.scene.width):
-            for y, row in enumerate(self.scene.layers["terrain"]):
-                if not _empty(row[x]):
-                    surface_rows.append(y)
-                    break
-        horizon = int(median(surface_rows) * TILE_SIZE) if surface_rows else int(self.native_size[1] * 0.66)
+        horizon = self.horizon_pixels
         count = len(layers)
         for index, name in enumerate(layers):
             layer = self.assets.load(name)
@@ -750,8 +1128,9 @@ class Renderer:
             ground_offset = (count - index - 1) * 8 + 4
             y = horizon + ground_offset - _background_ground_row(layer)
             start_x = -(_variant(self.scene.seed, index, 0, name, max(1, layer.width)) // 3)
-            for x in range(start_x, self.native_size[0], layer.width):
-                tiled.alpha_composite(layer, (x, y))
+            first_x = start_x + ((self.origin[0] - start_x) // layer.width) * layer.width
+            for x in range(first_x, self.origin[0] + self.native_size[0], layer.width):
+                tiled.alpha_composite(layer, self._local(x, y))
             sky.alpha_composite(tiled)
         return sky
 
@@ -836,8 +1215,11 @@ class Renderer:
         rows = self.scene.layers.get("walls")
         if rows is None:
             return
-        for y, row in enumerate(rows):
-            for x, symbol in enumerate(row):
+        x_range, y_range = self._cell_ranges(self._layer_margin("walls", 1))
+        for y in y_range:
+            row = rows[y]
+            for x in x_range:
+                symbol = row[x]
                 if _empty(symbol):
                     continue
                 sprite = self.scene.palette[symbol]
@@ -855,13 +1237,21 @@ class Renderer:
                 frame = self._frame(sprite, frame_column, frame_row)
                 image.alpha_composite(
                     frame,
-                    (x * TILE_SIZE + sprite.offset[0], y * TILE_SIZE + sprite.offset[1]),
+                    self._local(
+                        x * TILE_SIZE + sprite.offset[0],
+                        y * TILE_SIZE + sprite.offset[1],
+                    ),
                 )
 
     def _render_terrain(self, image: Image.Image) -> None:
-        rows = self.scene.layers["terrain"]
-        for y, row in enumerate(rows):
-            for x, symbol in enumerate(row):
+        rows = self.scene.layers.get("terrain")
+        if rows is None:
+            return
+        x_range, y_range = self._cell_ranges(self._layer_margin("terrain"))
+        for y in y_range:
+            row = rows[y]
+            for x in x_range:
+                symbol = row[x]
                 if _empty(symbol):
                     continue
                 sprite = self.scene.palette[symbol]
@@ -887,15 +1277,21 @@ class Renderer:
                 )
                 image.alpha_composite(
                     frame,
-                    (x * TILE_SIZE + sprite.offset[0], y * TILE_SIZE + sprite.offset[1]),
+                    self._local(
+                        x * TILE_SIZE + sprite.offset[0],
+                        y * TILE_SIZE + sprite.offset[1],
+                    ),
                 )
 
     def _render_liquids(self, image: Image.Image) -> None:
         rows = self.scene.layers.get("liquids")
         if rows is None:
             return
-        for y, row in enumerate(rows):
-            for x, symbol in enumerate(row):
+        x_range, y_range = self._cell_ranges(self._layer_margin("liquids"))
+        for y in y_range:
+            row = rows[y]
+            for x in x_range:
+                symbol = row[x]
                 if _empty(symbol):
                     continue
                 sprite = self.scene.palette[symbol]
@@ -906,15 +1302,18 @@ class Renderer:
                     for py in range(min(3, frame.height)):
                         for px in range(frame.width):
                             pixels[px, py] = pixels[px, replacement_y]
-                image.alpha_composite(frame, (x * TILE_SIZE, y * TILE_SIZE))
+                image.alpha_composite(frame, self._local(x * TILE_SIZE, y * TILE_SIZE))
 
     def _render_objects(self, image: Image.Image) -> None:
         rows = self.scene.layers.get("objects")
         if rows is None:
             return
         objects: list[tuple[int, int, Sprite]] = []
-        for y, row in enumerate(rows):
-            for x, symbol in enumerate(row):
+        x_range, y_range = self._cell_ranges(self._layer_margin("objects", 12))
+        for y in y_range:
+            row = rows[y]
+            for x in x_range:
+                symbol = row[x]
                 if not _empty(symbol):
                     objects.append((x, y, self.scene.palette[symbol]))
 
@@ -942,7 +1341,10 @@ class Renderer:
                 frame = self._frame(sprite, *sprite.frame)
             image.alpha_composite(
                 frame,
-                (x * TILE_SIZE + sprite.offset[0], y * TILE_SIZE + sprite.offset[1]),
+                self._local(
+                    x * TILE_SIZE + sprite.offset[0],
+                    y * TILE_SIZE + sprite.offset[1],
+                ),
             )
 
     def _platform_neighbor(self, x: int, y: int) -> str:
@@ -953,12 +1355,83 @@ class Renderer:
             return "solid"
         return "empty"
 
-    @staticmethod
-    def _torch_glow(image: Image.Image, x: int, y: int) -> None:
+    def _entity_image(self, entity: Entity) -> Image.Image:
+        cached = self.entity_cache.get(entity)
+        if cached is not None:
+            return cached
+        sheet = self.assets.load(entity.asset)
+        if entity.source is None:
+            frame = sheet.copy()
+        else:
+            left, top, width, height = entity.source
+            if left + width > sheet.width or top + height > sheet.height:
+                raise SceneError(
+                    f"entity {entity.name!r} source {entity.source} falls outside "
+                    f"{entity.asset} ({sheet.width}x{sheet.height})"
+                )
+            frame = sheet.crop((left, top, left + width, top + height))
+        if entity.brightness != 1.0:
+            frame = ImageEnhance.Brightness(frame).enhance(entity.brightness)
+        if entity.tint != (255, 255, 255, 255):
+            frame = ImageChops.multiply(frame, Image.new("RGBA", frame.size, entity.tint))
+        if entity.opacity != 1.0:
+            alpha = frame.getchannel("A").point(lambda value: round(value * entity.opacity))
+            frame.putalpha(alpha)
+        if entity.flip_x:
+            frame = frame.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if entity.flip_y:
+            frame = frame.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        if entity.scale != (1.0, 1.0):
+            size = (
+                max(1, round(frame.width * entity.scale[0])),
+                max(1, round(frame.height * entity.scale[1])),
+            )
+            frame = frame.resize(size, Image.Resampling.NEAREST)
+        if entity.rotation % 360:
+            frame = frame.rotate(entity.rotation, Image.Resampling.NEAREST, expand=True)
+        self.entity_cache[entity] = frame
+        return frame
+
+    def _render_entities(
+        self,
+        image: Image.Image,
+        minimum_z: int | None,
+        maximum_z: int | None,
+    ) -> None:
+        anchor_factors = {
+            "top-left": (0.0, 0.0),
+            "top-center": (0.5, 0.0),
+            "top-right": (1.0, 0.0),
+            "center-left": (0.0, 0.5),
+            "center": (0.5, 0.5),
+            "center-right": (1.0, 0.5),
+            "bottom-left": (0.0, 1.0),
+            "bottom-center": (0.5, 1.0),
+            "bottom-right": (1.0, 1.0),
+        }
+        for entity in sorted(self.scene.entities, key=lambda item: item.z):
+            if minimum_z is not None and entity.z < minimum_z:
+                continue
+            if maximum_z is not None and entity.z >= maximum_z:
+                continue
+            frame = self._entity_image(entity)
+            factor_x, factor_y = anchor_factors[entity.anchor]
+            global_x = entity.position[0] - round(frame.width * factor_x)
+            global_y = entity.position[1] - round(frame.height * factor_y)
+            local_x, local_y = self._local(global_x, global_y)
+            if (
+                local_x >= image.width
+                or local_y >= image.height
+                or local_x + frame.width <= 0
+                or local_y + frame.height <= 0
+            ):
+                continue
+            image.alpha_composite(frame, (local_x, local_y))
+
+    def _torch_glow(self, image: Image.Image, x: int, y: int) -> None:
         glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(glow)
-        center_x = x * TILE_SIZE + 8
-        center_y = y * TILE_SIZE + 7
+        center_x, center_y = self._local(x * TILE_SIZE + 8, y * TILE_SIZE + 7)
         for radius, alpha in ((42, 12), (30, 16), (20, 24), (10, 34)):
             draw.ellipse(
                 (
@@ -980,7 +1453,10 @@ class Renderer:
 
         branch_y = (top_y + height // 2) * TILE_SIZE - 10
         branch = branches.crop((0, variant * 42, min(84, branches.width), variant * 42 + 42))
-        image.alpha_composite(branch, (x * TILE_SIZE + 8 - branch.width // 2, branch_y))
+        image.alpha_composite(
+            branch,
+            self._local(x * TILE_SIZE + 8 - branch.width // 2, branch_y),
+        )
 
         left_support = self._sprite_at("terrain", x - 1, base_y + 1) is not None
         right_support = self._sprite_at("terrain", x + 1, base_y + 1) is not None
@@ -1002,7 +1478,10 @@ class Renderer:
         for trunk_y in range(top_y, trunk_end):
             trunk_variant = _variant(self.scene.seed, x, trunk_y, "tree-trunk")
             trunk = self._frame(TREE_TRUNK_SPRITE, 0, trunk_variant)
-            image.alpha_composite(trunk, (x * TILE_SIZE - 2, trunk_y * TILE_SIZE - 2))
+            image.alpha_composite(
+                trunk,
+                self._local(x * TILE_SIZE - 2, trunk_y * TILE_SIZE - 2),
+            )
 
         if root_style != 3:
             root_row = 6 + _variant(self.scene.seed, x, base_y, "tree-root-center")
@@ -1013,22 +1492,34 @@ class Renderer:
                     2,
                     6 + _variant(self.scene.seed, x - 1, base_y, "tree-root-left"),
                 )
-                image.alpha_composite(left_root, ((x - 1) * TILE_SIZE - 2, base_y * TILE_SIZE - 2))
+                image.alpha_composite(
+                    left_root,
+                    self._local((x - 1) * TILE_SIZE - 2, base_y * TILE_SIZE - 2),
+                )
             if root_style in {0, 1}:
                 right_root = self._frame(
                     TREE_TRUNK_SPRITE,
                     1,
                     6 + _variant(self.scene.seed, x + 1, base_y, "tree-root-right"),
                 )
-                image.alpha_composite(right_root, ((x + 1) * TILE_SIZE - 2, base_y * TILE_SIZE - 2))
+                image.alpha_composite(
+                    right_root,
+                    self._local((x + 1) * TILE_SIZE - 2, base_y * TILE_SIZE - 2),
+                )
             center_root = self._frame(TREE_TRUNK_SPRITE, center_columns[root_style], root_row)
-            image.alpha_composite(center_root, (x * TILE_SIZE - 2, base_y * TILE_SIZE - 2))
+            image.alpha_composite(
+                center_root,
+                self._local(x * TILE_SIZE - 2, base_y * TILE_SIZE - 2),
+            )
 
         top_left = variant * 82
         crown = tops.crop((top_left, 0, min(top_left + 82, tops.width), min(82, tops.height)))
         image.alpha_composite(
             crown,
-            (x * TILE_SIZE + 8 - crown.width // 2, top_y * TILE_SIZE - crown.height + 22),
+            self._local(
+                x * TILE_SIZE + 8 - crown.width // 2,
+                top_y * TILE_SIZE - crown.height + 22,
+            ),
         )
 
     def _draw_grid(self, image: Image.Image) -> None:
@@ -1048,18 +1539,92 @@ def render_scene(
     scale: int | None = None,
     seed: int | None = None,
     grid: bool = False,
+    region: RenderRegion | None = None,
 ) -> Image.Image:
     scene = load_scene(scene_path)
     if scale is not None:
-        if not 1 <= scale <= 8:
-            raise SceneError("--scale must be from 1 through 8")
+        if scale <= 0:
+            raise SceneError("--scale must be a positive integer")
         scene = replace(scene, scale=scale)
     if seed is not None:
         scene = replace(scene, seed=seed)
-    image = Renderer(scene, AssetStore(assets_path)).render(grid=grid)
+    image = Renderer(scene, AssetStore(assets_path), region).render(grid=grid)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path, format="PNG", optimize=False)
     return image
+
+
+def render_scene_tiles(
+    scene_path: Path,
+    output_dir: Path,
+    *,
+    assets_path: Path | None = None,
+    tile_size: tuple[int, int] = (128, 128),
+    scale: int | None = None,
+    seed: int | None = None,
+    grid: bool = False,
+) -> dict[str, Any]:
+    if tile_size[0] <= 0 or tile_size[1] <= 0:
+        raise SceneError("--tile-size values must be positive")
+    scene = load_scene(scene_path)
+    if scale is not None:
+        if scale <= 0:
+            raise SceneError("--scale must be a positive integer")
+        scene = replace(scene, scale=scale)
+    if seed is not None:
+        scene = replace(scene, seed=seed)
+    assets = AssetStore(assets_path)
+    horizon_pixels = _scene_horizon_pixels(scene)
+    frame_cache: dict[tuple[Any, ...], Image.Image] = {}
+    entity_cache: dict[Entity, Image.Image] = {}
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tiles = []
+    for y in range(0, scene.height, tile_size[1]):
+        for x in range(0, scene.width, tile_size[0]):
+            region = RenderRegion(
+                x=x,
+                y=y,
+                width=min(tile_size[0], scene.width - x),
+                height=min(tile_size[1], scene.height - y),
+            )
+            file_name = f"x{x}_y{y}.png"
+            image = Renderer(
+                scene,
+                assets,
+                region,
+                horizon_pixels=horizon_pixels,
+                frame_cache=frame_cache,
+                entity_cache=entity_cache,
+            ).render(grid=grid)
+            image.save(output_dir / file_name, format="PNG", optimize=False)
+            tiles.append(
+                {
+                    "file": file_name,
+                    "region": [region.x, region.y, region.width, region.height],
+                    "pixel_origin": [
+                        region.x * TILE_SIZE * scene.scale,
+                        region.y * TILE_SIZE * scene.scale,
+                    ],
+                    "pixels": [image.width, image.height],
+                }
+            )
+    manifest = {
+        "format": 1,
+        "scene": scene.name,
+        "canvas_tiles": [scene.width, scene.height],
+        "canvas_pixels": [
+            scene.width * TILE_SIZE * scene.scale,
+            scene.height * TILE_SIZE * scene.scale,
+        ],
+        "tile_size": [tile_size[0], tile_size[1]],
+        "scale": scene.scale,
+        "tiles": tiles,
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1073,14 +1638,75 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("scene", type=Path, help="input .toml scene")
     render.add_argument("--output", "-o", type=Path, help="output PNG")
     render.add_argument("--assets", type=Path, help="Terraria directory or exported PNG directory")
-    render.add_argument("--scale", type=int, help="nearest-neighbor output scale, from 1 through 8")
+    render.add_argument("--scale", type=int, help="positive nearest-neighbor output scale")
     render.add_argument("--seed", type=int, help="override the scene's texture-variation seed")
     render.add_argument("--grid", action="store_true", help="draw the 16 px tile grid")
+    render.add_argument(
+        "--region",
+        type=int,
+        nargs=4,
+        metavar=("X", "Y", "WIDTH", "HEIGHT"),
+        help="render one tile-coordinate region of the canvas",
+    )
+
+    render_tiles = subparsers.add_parser(
+        "render-tiles",
+        help="render an arbitrarily large scene as independently usable PNG tiles",
+    )
+    render_tiles.add_argument("scene", type=Path, help="input .toml scene")
+    render_tiles.add_argument("--output", "-o", type=Path, required=True, help="output directory")
+    render_tiles.add_argument(
+        "--assets",
+        type=Path,
+        help="Terraria directory or exported PNG directory",
+    )
+    render_tiles.add_argument(
+        "--tile-size",
+        type=int,
+        nargs=2,
+        default=(128, 128),
+        metavar=("WIDTH", "HEIGHT"),
+        help="maximum output tile size in Terraria cells",
+    )
+    render_tiles.add_argument("--scale", type=int, help="positive nearest-neighbor output scale")
+    render_tiles.add_argument("--seed", type=int, help="override the variation seed")
+    render_tiles.add_argument("--grid", action="store_true", help="draw the 16 px tile grid")
 
     validate = subparsers.add_parser("validate", help="validate a scene without loading textures")
     validate.add_argument("scene", type=Path, help="input .toml scene")
 
     subparsers.add_parser("list-sprites", help="list built-in sprite names")
+
+    list_assets = subparsers.add_parser(
+        "list-assets",
+        help="list every addressable texture in the installed game",
+    )
+    list_assets.add_argument("pattern", nargs="?", default="*", help="case-insensitive glob")
+    list_assets.add_argument("--assets", type=Path, help="Terraria or Images directory")
+    list_assets.add_argument("--json", type=Path, help="write the matching catalog as JSON")
+
+    verify_assets = subparsers.add_parser(
+        "verify-assets",
+        help="decode every installed texture and write a catalog with dimensions",
+    )
+    verify_assets.add_argument("--assets", type=Path, help="complete Terraria directory")
+    verify_assets.add_argument("--output", "-o", type=Path, required=True, help="output JSON catalog")
+
+    inspect_asset = subparsers.add_parser(
+        "inspect-asset",
+        help="decode an asset, report its size, and optionally export a source rectangle",
+    )
+    inspect_asset.add_argument("asset", help="asset name relative to Content/Images")
+    inspect_asset.add_argument("--assets", type=Path, help="Terraria or Images directory")
+    inspect_asset.add_argument("--output", "-o", type=Path, help="output PNG")
+    inspect_asset.add_argument(
+        "--source",
+        type=int,
+        nargs=4,
+        metavar=("X", "Y", "WIDTH", "HEIGHT"),
+        help="crop this source rectangle",
+    )
+    inspect_asset.add_argument("--scale", type=int, default=1, help="positive nearest-neighbor scale")
     return parser
 
 
@@ -1095,7 +1721,81 @@ def main(argv: list[str] | None = None) -> int:
             for name, sprite in sorted(BUILTINS.items()):
                 print(f"{name:18} {sprite.kind}")
             return 0
+        if args.command == "list-assets":
+            store = AssetStore(args.assets)
+            records = discover_assets(store.images, args.pattern)
+            if args.json:
+                write_catalog(records, args.json)
+                print(f"wrote {args.json} ({len(records)} assets)")
+            else:
+                for record in records:
+                    print(f"{record.name}\t{record.category}\t{record.format}")
+                print(f"{len(records)} assets")
+            return 0
+        if args.command == "verify-assets":
+            store = AssetStore(args.assets)
+            xnb_dimensions = store.scan_xnb_dimensions()
+            verified = []
+            for record in discover_assets(store.images):
+                if record.format == "xnb":
+                    try:
+                        width, height = xnb_dimensions[record.name]
+                    except KeyError as error:
+                        raise SceneError(f"asset scan omitted {record.name}") from error
+                else:
+                    with Image.open(store.images / f"{record.name}.png") as image:
+                        width, height = image.size
+                verified.append(
+                    AssetRecord(
+                        name=record.name,
+                        category=record.category,
+                        format=record.format,
+                        width=width,
+                        height=height,
+                    )
+                )
+            write_catalog(tuple(verified), args.output)
+            print(f"verified {len(verified)} textures; wrote {args.output}")
+            return 0
+        if args.command == "inspect-asset":
+            if args.scale <= 0:
+                raise SceneError("--scale must be a positive integer")
+            image = AssetStore(args.assets).load(args.asset)
+            source_size = image.size
+            if args.source:
+                left, top, width, height = args.source
+                if left < 0 or top < 0 or width <= 0 or height <= 0:
+                    raise SceneError("--source must have non-negative x/y and positive width/height")
+                if left + width > image.width or top + height > image.height:
+                    raise SceneError(f"--source falls outside {args.asset} ({image.width}x{image.height})")
+                image = image.crop((left, top, left + width, top + height))
+            if args.scale != 1:
+                image = image.resize(
+                    (image.width * args.scale, image.height * args.scale),
+                    Image.Resampling.NEAREST,
+                )
+            if args.output:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                image.save(args.output, format="PNG", optimize=False)
+            print(
+                f"{args.asset}: {source_size[0]}x{source_size[1]} source, "
+                f"{image.width}x{image.height} output"
+            )
+            return 0
+        if args.command == "render-tiles":
+            manifest = render_scene_tiles(
+                args.scene,
+                args.output,
+                assets_path=args.assets,
+                tile_size=tuple(args.tile_size),
+                scale=args.scale,
+                seed=args.seed,
+                grid=args.grid,
+            )
+            print(f"rendered {len(manifest['tiles'])} tiles to {args.output}")
+            return 0
         output = args.output or args.scene.with_suffix(".png")
+        region = RenderRegion(*args.region) if args.region else None
         image = render_scene(
             args.scene,
             output,
@@ -1103,6 +1803,7 @@ def main(argv: list[str] | None = None) -> int:
             scale=args.scale,
             seed=args.seed,
             grid=args.grid,
+            region=region,
         )
         print(f"rendered {output} ({image.width}x{image.height})")
         return 0

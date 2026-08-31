@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ TOOL_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOL_DIR))
 
 import terraria_scene as scene_tool  # noqa: E402
+from asset_catalog import discover_assets  # noqa: E402
 
 
 class SceneParserTests(unittest.TestCase):
@@ -57,6 +59,96 @@ terrain = """
 
             with self.assertRaisesRegex(scene_tool.SceneError, "undefined symbol.*2,1"):
                 scene_tool.load_scene(path)
+
+    def test_scene_size_and_scale_have_no_arbitrary_cap(self) -> None:
+        width = 241
+        height = 136
+        terrain = "\n".join("." * width for _ in range(height))
+        source = f'''\
+format = 1
+[canvas]
+scale = 99
+[map]
+terrain = """
+{terrain}
+"""
+'''
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "large.toml"
+            path.write_text(source, encoding="utf-8")
+
+            scene = scene_tool.load_scene(path)
+
+        self.assertEqual((scene.width, scene.height), (width, height))
+        self.assertEqual(scene.scale, 99)
+
+        huge_source = '''\
+format = 1
+[canvas]
+size = [1000000000, 1000000000]
+background = "transparent"
+'''
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "huge.toml"
+            path.write_text(huge_source, encoding="utf-8")
+
+            huge_scene = scene_tool.load_scene(path)
+
+        self.assertEqual((huge_scene.width, huge_scene.height), (1000000000, 1000000000))
+
+    def test_token_map_can_use_inline_sprites_and_an_external_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "terrain.map").write_text("soil soil .\nsoil rock rock\n", encoding="utf-8")
+            source = root / "tokens.toml"
+            source.write_text(
+                '''\
+format = 1
+[palette.soil]
+kind = "tile"
+asset = "Tiles_0"
+autotile = "fixed"
+
+[palette.rock]
+kind = "tile"
+asset = "Tiles_1"
+autotile = "fixed"
+
+[map]
+encoding = "tokens"
+terrain = { file = "terrain.map", encoding = "tokens" }
+''',
+                encoding="utf-8",
+            )
+
+            scene = scene_tool.load_scene(source)
+
+        self.assertEqual((scene.width, scene.height), (3, 2))
+        self.assertEqual(scene.layers["terrain"][0], ("soil", "soil", "."))
+        self.assertEqual(scene.palette["rock"].asset, "Tiles_1")
+
+    def test_canvas_can_contain_entities_without_a_tile_map(self) -> None:
+        source = '''\
+format = 1
+[canvas]
+size = [5, 3]
+background = "transparent"
+
+[[entities]]
+asset = "NPC_1"
+at = [2.5, 2]
+anchor = "bottom-center"
+source = [0, 0, 16, 16]
+'''
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "entities.toml"
+            path.write_text(source, encoding="utf-8")
+
+            scene = scene_tool.load_scene(path)
+
+        self.assertEqual((scene.width, scene.height), (5, 3))
+        self.assertEqual(scene.layers, {})
+        self.assertEqual(scene.entities[0].position, (40, 32))
 
 
 class FramingTests(unittest.TestCase):
@@ -215,6 +307,111 @@ objects = '''
             side_root_pixels = {image.getpixel((24, 104)), image.getpixel((56, 104))}
             self.assertIn((240, 40, 20, 255), side_root_pixels)
 
+    def test_arbitrary_asset_entity_renders_a_source_rectangle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            assets = root / "assets"
+            (assets / "NPCs").mkdir(parents=True)
+            sprite = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+            sprite.paste((200, 100, 50, 255), (2, 2, 6, 6))
+            sprite.save(assets / "NPCs" / "Example.png")
+            source = root / "entity.toml"
+            source.write_text(
+                '''\
+format = 1
+[canvas]
+size = [3, 2]
+scale = 1
+background = "transparent"
+
+[[entities]]
+asset = "NPCs/Example"
+at = [16, 16]
+units = "pixels"
+anchor = "center"
+source = [2, 2, 4, 4]
+scale = 2
+flip_x = true
+rotation = 90
+opacity = 0.5
+''',
+                encoding="utf-8",
+            )
+
+            image = scene_tool.render_scene(source, root / "entity.png", assets_path=assets)
+
+            self.assertEqual(image.size, (48, 32))
+            self.assertEqual(image.getpixel((16, 16)), (200, 100, 50, 128))
+            self.assertEqual(image.getpixel((11, 11)), (0, 0, 0, 0))
+
+    def test_tiled_render_stitches_to_the_full_render(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            assets = root / "assets"
+            assets.mkdir()
+            Image.new("RGBA", (10, 6), (180, 70, 30, 255)).save(assets / "Any.png")
+            source = root / "scene.toml"
+            source.write_text(
+                '''\
+format = 1
+[canvas]
+size = [5, 3]
+scale = 1
+background = "transparent"
+
+[[entities]]
+asset = "Any"
+at = [32, 20]
+units = "pixels"
+anchor = "center"
+rotation = 17
+''',
+                encoding="utf-8",
+            )
+            full = scene_tool.render_scene(source, root / "full.png", assets_path=assets)
+            manifest = scene_tool.render_scene_tiles(
+                source,
+                root / "tiles",
+                assets_path=assets,
+                tile_size=(2, 2),
+            )
+            stitched = Image.new("RGBA", full.size, (0, 0, 0, 0))
+            for tile in manifest["tiles"]:
+                tile_image = Image.open(root / "tiles" / tile["file"]).convert("RGBA")
+                stitched.alpha_composite(tile_image, tuple(tile["pixel_origin"]))
+
+            self.assertIsNone(scene_tool.ImageChops.difference(full, stitched).getbbox())
+            saved_manifest = json.loads((root / "tiles" / "manifest.json").read_text())
+            self.assertEqual(len(saved_manifest["tiles"]), 6)
+
+    def test_small_region_renders_from_a_billion_cell_canvas(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            assets = root / "assets"
+            assets.mkdir()
+            Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(assets / "Unused.png")
+            source = root / "huge.toml"
+            source.write_text(
+                '''\
+format = 1
+[canvas]
+size = [1000000000, 1000000000]
+scale = 1
+background = "transparent"
+''',
+                encoding="utf-8",
+            )
+
+            image = scene_tool.render_scene(
+                source,
+                root / "region.png",
+                assets_path=assets,
+                region=scene_tool.RenderRegion(999999998, 999999998, 2, 2),
+            )
+
+        self.assertEqual(image.size, (32, 32))
+        self.assertIsNone(image.getbbox())
+
     def test_owned_xnb_texture_decodes_when_terraria_is_installed(self) -> None:
         try:
             assets = scene_tool.AssetStore(None)
@@ -225,6 +422,36 @@ objects = '''
 
         self.assertEqual(tile_sheet.size, (288, 270))
         self.assertGreater(tile_sheet.getchannel("A").getbbox()[2], 0)
+
+
+class AssetCatalogTests(unittest.TestCase):
+    def test_catalog_recurses_and_prefers_exported_pngs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            images = Path(temp_dir)
+            (images / "NPCs").mkdir()
+            (images / "Tiles_1.xnb").write_bytes(b"xnb")
+            (images / "Tiles_1.png").write_bytes(b"png")
+            (images / "NPCs" / "Guide.xnb").write_bytes(b"xnb")
+            (images / "ignore.txt").write_text("ignored")
+
+            records = discover_assets(images)
+
+        self.assertEqual([record.name for record in records], ["NPCs/Guide", "Tiles_1"])
+        self.assertEqual(records[0].category, "NPCs")
+        self.assertEqual(records[1].format, "png")
+
+    def test_owned_install_scan_verifies_every_discovered_xnb_texture(self) -> None:
+        try:
+            store = scene_tool.AssetStore(None)
+        except scene_tool.SceneError:
+            self.skipTest("Terraria is not installed in a standard location")
+
+        records = discover_assets(store.images)
+        dimensions = store.scan_xnb_dimensions()
+        xnb_names = {record.name for record in records if record.format == "xnb"}
+
+        self.assertEqual(set(dimensions), xnb_names)
+        self.assertTrue(all(width > 0 and height > 0 for width, height in dimensions.values()))
 
 
 if __name__ == "__main__":
