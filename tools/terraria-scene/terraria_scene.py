@@ -50,6 +50,7 @@ class Scene:
     name: str
     seed: int
     scale: int
+    boundary: str
     background: str
     background_layers: tuple[str, ...] | None
     palette: dict[str, Sprite]
@@ -154,6 +155,54 @@ LAYER_KINDS: dict[str, set[str]] = {
     "objects": {"object"},
 }
 
+SHAPE_SIDES: dict[str, frozenset[str]] = {
+    ".": frozenset({"up", "down", "left", "right"}),
+    " ": frozenset({"up", "down", "left", "right"}),
+    "_": frozenset({"down", "left", "right"}),
+    "/": frozenset({"down", "right"}),
+    "\\": frozenset({"down", "left"}),
+}
+
+# Terraria.Framing.WallFrame uses a different atlas layout from foreground tiles.
+# Each index is the up/left/right/down occupancy bitmask, followed by three variants.
+WALL_FRAME_LOOKUP: tuple[tuple[tuple[int, int], ...], ...] = (
+    ((9, 3), (10, 3), (11, 3)),
+    ((6, 3), (7, 3), (8, 3)),
+    ((12, 0), (12, 1), (12, 2)),
+    ((1, 4), (3, 4), (5, 4)),
+    ((9, 0), (9, 1), (9, 2)),
+    ((0, 4), (2, 4), (4, 4)),
+    ((6, 4), (7, 4), (8, 4)),
+    ((1, 2), (2, 2), (3, 2)),
+    ((6, 0), (7, 0), (8, 0)),
+    ((5, 0), (5, 1), (5, 2)),
+    ((1, 3), (3, 3), (5, 3)),
+    ((4, 0), (4, 1), (4, 2)),
+    ((0, 3), (2, 3), (4, 3)),
+    ((0, 0), (0, 1), (0, 2)),
+    ((1, 0), (2, 0), (3, 0)),
+    ((1, 1), (2, 1), (3, 1)),
+    ((6, 1), (7, 1), (8, 1)),
+    ((6, 2), (7, 2), (8, 2)),
+    ((10, 0), (10, 1), (10, 2)),
+    ((11, 0), (11, 1), (11, 2)),
+)
+
+CENTER_WALL_FRAME_LOOKUP: tuple[tuple[int, ...], ...] = (
+    (2, 0, 0),
+    (0, 1, 4),
+    (0, 3, 0),
+)
+
+TREE_TRUNK_SPRITE = Sprite(
+    "forest-tree-trunk",
+    "object",
+    "Tiles_5",
+    frame_size=(20, 20),
+    stride=(22, 22),
+    offset=(-2, -2),
+)
+
 
 def _pair(value: Any, field: str, *, default: tuple[int, int]) -> tuple[int, int]:
     if value is None:
@@ -255,6 +304,9 @@ def load_scene(path: Path) -> Scene:
     scale = canvas.get("scale", 2)
     if not isinstance(scale, int) or not 1 <= scale <= 8:
         raise SceneError("canvas.scale must be an integer from 1 through 8")
+    boundary = canvas.get("boundary", "world")
+    if boundary not in {"world", "open"}:
+        raise SceneError("canvas.boundary must be 'world' or 'open'")
     background = canvas.get("background", "forest-day")
     if not isinstance(background, str):
         raise SceneError("canvas.background must be a string")
@@ -347,6 +399,7 @@ def load_scene(path: Path) -> Scene:
         name=name,
         seed=seed,
         scale=scale,
+        boundary=boundary,
         background=background,
         background_layers=background_layers,
         palette=palette,
@@ -419,6 +472,66 @@ def _block_frame(
     if not up and not down and left and not right:
         return 12, variant
     return 9 + variant, 3
+
+
+def _wall_frame(mask: int, x: int, y: int, variant: int) -> tuple[int, int]:
+    """Return Terraria's wall-atlas frame for an occupancy bitmask."""
+    if not 0 <= mask <= 15:
+        raise ValueError("wall mask must be from 0 through 15")
+    if mask == 15:
+        mask += CENTER_WALL_FRAME_LOOKUP[x % 3][y % 3]
+    return WALL_FRAME_LOOKUP[mask][variant % 3]
+
+
+def _platform_frame(left: str, right: str) -> tuple[int, int]:
+    """Return the wood-platform frame for platform, solid, or empty neighbors."""
+    if left == "platform" and right == "platform":
+        return 0, 0
+    if left == "platform" and right == "empty":
+        return 1, 0
+    if left == "empty" and right == "platform":
+        return 2, 0
+    if left == "solid" and right == "platform":
+        return 3, 0
+    if left == "platform" and right == "solid":
+        return 4, 0
+    if left == "solid" and right == "empty":
+        return 6, 0
+    if left == "empty" and right == "solid":
+        return 7, 0
+    return 5, 0
+
+
+def _background_ground_row(image: Image.Image) -> int:
+    """Find where a Terraria background turns into its opaque ground fill."""
+    alpha = image.getchannel("A")
+    required = max(1, int(image.width * 0.95))
+    for y in range(image.height):
+        histogram = alpha.crop((0, y, image.width, y + 1)).histogram()
+        if image.width - histogram[0] >= required:
+            return y
+    return image.height
+
+
+def _apply_shape(frame: Image.Image, shape: str) -> Image.Image:
+    """Mask a full tile to Terraria's two-pixel stair-step slope geometry."""
+    if shape in {".", " "}:
+        return frame
+    mask = Image.new("L", frame.size, 0)
+    pixels = mask.load()
+    width, height = frame.size
+    for py in range(height):
+        for px in range(width):
+            keep = (
+                (shape == "/" and py >= height - 2 - 2 * (px // 2))
+                or (shape == "\\" and py >= 2 * (px // 2))
+                or (shape == "_" and py >= height // 2)
+            )
+            if keep:
+                pixels[px, py] = 255
+    shaped = frame.copy()
+    shaped.putalpha(ImageChops.multiply(frame.getchannel("A"), mask))
+    return shaped
 
 
 class AssetStore:
@@ -602,9 +715,9 @@ class Renderer:
 
     def render(self, *, grid: bool = False) -> Image.Image:
         image = self._background()
-        self._render_autotiled_layer(image, "walls")
+        self._render_walls(image)
         self._render_liquids(image)
-        self._render_autotiled_layer(image, "terrain")
+        self._render_terrain(image)
         self._render_objects(image)
         if grid:
             self._draw_grid(image)
@@ -634,8 +747,8 @@ class Renderer:
         for index, name in enumerate(layers):
             layer = self.assets.load(name)
             tiled = Image.new("RGBA", self.native_size, (0, 0, 0, 0))
-            bottom_offset = int((count - index - 1) * 10 + 8)
-            y = horizon + bottom_offset - layer.height
+            ground_offset = (count - index - 1) * 8 + 4
+            y = horizon + ground_offset - _background_ground_row(layer)
             start_x = -(_variant(self.scene.seed, index, 0, name, max(1, layer.width)) // 3)
             for x in range(start_x, self.native_size[0], layer.width):
                 tiled.alpha_composite(layer, (x, y))
@@ -649,9 +762,53 @@ class Renderer:
         symbol = rows[y][x]
         return None if _empty(symbol) else self.scene.palette[symbol]
 
-    def _connected(self, layer: str, x: int, y: int, group: str | None) -> bool:
-        sprite = self._sprite_at(layer, x, y)
-        return sprite is not None and sprite.connect == group
+    def _continues_beyond_viewport(self, x: int, y: int) -> bool:
+        if self.scene.boundary != "world" or y < 0:
+            return False
+        return x < 0 or x >= self.scene.width or y >= self.scene.height
+
+    def _shape_at(self, x: int, y: int) -> str:
+        shapes = self.scene.layers.get("shapes")
+        if shapes is None or not (0 <= x < self.scene.width and 0 <= y < self.scene.height):
+            return "."
+        return shapes[y][x]
+
+    def _terrain_connected(
+        self,
+        x: int,
+        y: int,
+        dx: int,
+        dy: int,
+        group: str | None,
+    ) -> bool:
+        current_sides = SHAPE_SIDES[self._shape_at(x, y)]
+        neighbor_sides = SHAPE_SIDES[self._shape_at(x + dx, y + dy)]
+        required_current = set()
+        required_neighbor = set()
+        if dx < 0:
+            required_current.add("left")
+            required_neighbor.add("right")
+        elif dx > 0:
+            required_current.add("right")
+            required_neighbor.add("left")
+        if dy < 0:
+            required_current.add("up")
+            required_neighbor.add("down")
+        elif dy > 0:
+            required_current.add("down")
+            required_neighbor.add("up")
+        if not required_current.issubset(current_sides):
+            return False
+
+        neighbor_x = x + dx
+        neighbor_y = y + dy
+        sprite = self._sprite_at("terrain", neighbor_x, neighbor_y)
+        if sprite is None:
+            return self._continues_beyond_viewport(neighbor_x, neighbor_y)
+        return sprite.connect == group and required_neighbor.issubset(neighbor_sides)
+
+    def _wall_present(self, x: int, y: int) -> bool:
+        return self._sprite_at("walls", x, y) is not None or self._continues_beyond_viewport(x, y)
 
     def _frame(self, sprite: Sprite, column: int, row: int) -> Image.Image:
         key = (sprite.asset, column, row, sprite.frame_size, sprite.stride, sprite.brightness)
@@ -675,8 +832,8 @@ class Renderer:
         self.frame_cache[key] = frame
         return frame
 
-    def _render_autotiled_layer(self, image: Image.Image, layer: str) -> None:
-        rows = self.scene.layers.get(layer)
+    def _render_walls(self, image: Image.Image) -> None:
+        rows = self.scene.layers.get("walls")
         if rows is None:
             return
         for y, row in enumerate(rows):
@@ -685,51 +842,53 @@ class Renderer:
                     continue
                 sprite = self.scene.palette[symbol]
                 variant = _variant(self.scene.seed, x, y, sprite.name)
-                if sprite.autotile in {"block", "wall"}:
-                    group = sprite.connect
-                    frame_column, frame_row = _block_frame(
-                        self._connected(layer, x, y - 1, group),
-                        self._connected(layer, x, y + 1, group),
-                        self._connected(layer, x - 1, y, group),
-                        self._connected(layer, x + 1, y, group),
-                        self._connected(layer, x - 1, y - 1, group),
-                        self._connected(layer, x + 1, y - 1, group),
-                        self._connected(layer, x - 1, y + 1, group),
-                        self._connected(layer, x + 1, y + 1, group),
-                        variant,
+                if sprite.autotile == "wall":
+                    mask = (
+                        int(self._wall_present(x, y - 1))
+                        | int(self._wall_present(x - 1, y)) << 1
+                        | int(self._wall_present(x + 1, y)) << 2
+                        | int(self._wall_present(x, y + 1)) << 3
                     )
+                    frame_column, frame_row = _wall_frame(mask, x, y, variant)
                 else:
                     frame_column, frame_row = sprite.frame
                 frame = self._frame(sprite, frame_column, frame_row)
-                if layer == "terrain":
-                    frame = self._shape(frame, x, y)
                 image.alpha_composite(
                     frame,
                     (x * TILE_SIZE + sprite.offset[0], y * TILE_SIZE + sprite.offset[1]),
                 )
 
-    def _shape(self, frame: Image.Image, x: int, y: int) -> Image.Image:
-        shapes = self.scene.layers.get("shapes")
-        if shapes is None:
-            return frame
-        shape = shapes[y][x]
-        if shape in {".", " "}:
-            return frame
-        mask = Image.new("L", frame.size, 0)
-        pixels = mask.load()
-        width, height = frame.size
-        for py in range(height):
-            for px in range(width):
-                keep = (
-                    (shape == "/" and py >= height - 1 - px)
-                    or (shape == "\\" and py >= px)
-                    or (shape == "_" and py >= height // 2)
+    def _render_terrain(self, image: Image.Image) -> None:
+        rows = self.scene.layers["terrain"]
+        for y, row in enumerate(rows):
+            for x, symbol in enumerate(row):
+                if _empty(symbol):
+                    continue
+                sprite = self.scene.palette[symbol]
+                variant = _variant(self.scene.seed, x, y, sprite.name)
+                if sprite.autotile == "block":
+                    group = sprite.connect
+                    frame_column, frame_row = _block_frame(
+                        self._terrain_connected(x, y, 0, -1, group),
+                        self._terrain_connected(x, y, 0, 1, group),
+                        self._terrain_connected(x, y, -1, 0, group),
+                        self._terrain_connected(x, y, 1, 0, group),
+                        self._terrain_connected(x, y, -1, -1, group),
+                        self._terrain_connected(x, y, 1, -1, group),
+                        self._terrain_connected(x, y, -1, 1, group),
+                        self._terrain_connected(x, y, 1, 1, group),
+                        variant,
+                    )
+                else:
+                    frame_column, frame_row = sprite.frame
+                frame = _apply_shape(
+                    self._frame(sprite, frame_column, frame_row),
+                    self._shape_at(x, y),
                 )
-                if keep:
-                    pixels[px, py] = 255
-        shaped = frame.copy()
-        shaped.putalpha(ImageChops.multiply(frame.getchannel("A"), mask))
-        return shaped
+                image.alpha_composite(
+                    frame,
+                    (x * TILE_SIZE + sprite.offset[0], y * TILE_SIZE + sprite.offset[1]),
+                )
 
     def _render_liquids(self, image: Image.Image) -> None:
         rows = self.scene.layers.get("liquids")
@@ -768,7 +927,13 @@ class Renderer:
                 self._forest_tree(image, x, y)
                 continue
             if sprite.autotile == "platform":
-                frame = self._frame(sprite, variant, 0)
+                frame = self._frame(
+                    sprite,
+                    *_platform_frame(
+                        self._platform_neighbor(x - 1, y),
+                        self._platform_neighbor(x + 1, y),
+                    ),
+                )
             elif sprite.autotile == "rope":
                 frame = self._frame(sprite, 5, variant)
             elif sprite.autotile == "torch":
@@ -779,6 +944,14 @@ class Renderer:
                 frame,
                 (x * TILE_SIZE + sprite.offset[0], y * TILE_SIZE + sprite.offset[1]),
             )
+
+    def _platform_neighbor(self, x: int, y: int) -> str:
+        sprite = self._sprite_at("objects", x, y)
+        if sprite is not None and sprite.autotile == "platform":
+            return "platform"
+        if self._sprite_at("terrain", x, y) is not None:
+            return "solid"
+        return "empty"
 
     @staticmethod
     def _torch_glow(image: Image.Image, x: int, y: int) -> None:
@@ -802,7 +975,6 @@ class Renderer:
         variant = _variant(self.scene.seed, x, base_y, "forest-tree")
         height = 4 + _variant(self.scene.seed + 17, x, base_y, "tree-height", 3)
         top_y = base_y - height + 1
-        trunk_sheet = self.assets.load("Tiles_5")
         branches = self.assets.load("Tree_Branches_0")
         tops = self.assets.load("Tree_Tops_0")
 
@@ -810,12 +982,47 @@ class Renderer:
         branch = branches.crop((0, variant * 42, min(84, branches.width), variant * 42 + 42))
         image.alpha_composite(branch, (x * TILE_SIZE + 8 - branch.width // 2, branch_y))
 
-        for trunk_y in range(top_y, base_y + 1):
+        left_support = self._sprite_at("terrain", x - 1, base_y + 1) is not None
+        right_support = self._sprite_at("terrain", x + 1, base_y + 1) is not None
+        if self._continues_beyond_viewport(x - 1, base_y + 1):
+            left_support = True
+        if self._continues_beyond_viewport(x + 1, base_y + 1):
+            right_support = True
+
+        if left_support and right_support:
+            root_style = _variant(self.scene.seed + 31, x, base_y, "tree-root")
+        elif right_support:
+            root_style = 1
+        elif left_support:
+            root_style = 2
+        else:
+            root_style = 3
+
+        trunk_end = base_y + 1 if root_style == 3 else base_y
+        for trunk_y in range(top_y, trunk_end):
             trunk_variant = _variant(self.scene.seed, x, trunk_y, "tree-trunk")
-            left = trunk_variant * 22
-            top = trunk_variant * 22
-            trunk = trunk_sheet.crop((left, top, left + 20, top + 20))
+            trunk = self._frame(TREE_TRUNK_SPRITE, 0, trunk_variant)
             image.alpha_composite(trunk, (x * TILE_SIZE - 2, trunk_y * TILE_SIZE - 2))
+
+        if root_style != 3:
+            root_row = 6 + _variant(self.scene.seed, x, base_y, "tree-root-center")
+            center_columns = {0: 4, 1: 0, 2: 3}
+            if root_style in {0, 2}:
+                left_root = self._frame(
+                    TREE_TRUNK_SPRITE,
+                    2,
+                    6 + _variant(self.scene.seed, x - 1, base_y, "tree-root-left"),
+                )
+                image.alpha_composite(left_root, ((x - 1) * TILE_SIZE - 2, base_y * TILE_SIZE - 2))
+            if root_style in {0, 1}:
+                right_root = self._frame(
+                    TREE_TRUNK_SPRITE,
+                    1,
+                    6 + _variant(self.scene.seed, x + 1, base_y, "tree-root-right"),
+                )
+                image.alpha_composite(right_root, ((x + 1) * TILE_SIZE - 2, base_y * TILE_SIZE - 2))
+            center_root = self._frame(TREE_TRUNK_SPRITE, center_columns[root_style], root_row)
+            image.alpha_composite(center_root, (x * TILE_SIZE - 2, base_y * TILE_SIZE - 2))
 
         top_left = variant * 82
         crown = tops.crop((top_left, 0, min(top_left + 82, tops.width), min(82, tops.height)))

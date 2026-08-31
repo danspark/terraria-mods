@@ -19,10 +19,13 @@ This file defines format version 1 for `terraria_scene.py`.
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `scale` | Integer from 1 through 8 | `2` | The nearest-neighbor output scale. |
+| `boundary` | String | `world` | How terrain and walls meet the viewport. Use `world` for a crop from a continuous world or `open` for exposed edges such as a floating island. |
 | `background` | String | `forest-day` | The built-in background preset. Version 1 has `forest-day` and `sky`. |
 | `background_layers` | Array of strings | None | Texture names to draw instead of the preset layers. `Background_0` still supplies the sky. |
 
-The renderer draws custom background layers in array order. Each texture repeats horizontally and meets the median terrain surface.
+The renderer draws custom background layers in array order. Each texture repeats horizontally and aligns its opaque ground fill with the median terrain surface, leaving the scenery visible above the horizon.
+
+With `boundary = "world"`, terrain and walls touching the left, right, or bottom of the map are framed as if matching cells continue beyond the image. The top remains open sky. With `boundary = "open"`, every map edge is exposed; use it for floating islands, cutaway chunks, and isolated structures.
 
 ## Built-in sprites
 
@@ -82,7 +85,7 @@ The shape characters have these meanings:
 | `\` | A solid triangle that rises to the left |
 | `_` | The bottom half of the block |
 
-Shapes affect occupied terrain cells only. A `forest-tree` marker is the bottom trunk cell. A platform or rope marker draws one cell, so repeat the marker for a run.
+Shapes affect occupied terrain cells only. Slope connections account for the solid sides of each shape. A `forest-tree` marker is the bottom trunk cell; place solid terrain directly below it and leave room on both sides for roots. A platform or rope marker draws one cell, so repeat the marker for a run. Platform ends automatically join adjacent solid terrain.
 
 ## Custom sprites
 
@@ -121,7 +124,7 @@ Custom sprite fields are:
 | `brightness` | Number | A positive brightness multiplier. The default is `1.0`. |
 | `offset` | Two-integer array | The destination x and y offset in native pixels. |
 
-The `block` and `wall` modes use Terraria's standard neighbor-frame layout. They select one of three deterministic visual variants. The built-in dirt, stone, grass, wood, clay, and living wood sprites share the `solid` connection group.
+The `block` and `wall` modes use Terraria's separate foreground-tile and background-wall frame lookups. They select one of three deterministic visual variants. All adjacent walls mesh, including different wall materials, as they do in Terraria. The built-in dirt, stone, grass, wood, clay, and living wood sprites share the `solid` foreground connection group.
 
 ## Limits and errors
 

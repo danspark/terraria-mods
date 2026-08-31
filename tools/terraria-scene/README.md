@@ -50,10 +50,11 @@ You can also set `TERRARIA_PATH`. If you already exported the textures, pass a d
 
 1. Copy `examples/vertical-forest.toml`.
 2. Replace its palette with the materials that you need.
-3. Edit `map.terrain`. Use one character for each Terraria tile and a dot for air.
-4. Add same-sized `walls`, `liquids`, `objects`, or `shapes` grids when you need them.
-5. Run `validate` after each edit.
-6. Run `render` when the map passes validation.
+3. Choose `boundary = "world"` for a continuous-world crop or `boundary = "open"` for a floating island.
+4. Edit `map.terrain`. Use one character for each Terraria tile and a dot for air.
+5. Add same-sized `walls`, `liquids`, `objects`, or `shapes` grids when you need them.
+6. Run `validate` after each edit.
+7. Run `render` when the map passes validation.
 
 Keep `seed` stable while you compare terrain changes. Change the seed to inspect other texture, tree, and frame variants.
 
@@ -67,7 +68,7 @@ Read [FORMAT.md](FORMAT.md) for every field, built-in sprite, and custom sprite 
 python3 -m unittest discover -s tests -v
 ```
 
-The test suite parses the example, checks Terraria's standard block-frame lookup, renders from exported PNG textures, and decodes one owned XNB texture when Terraria is installed.
+The test suite parses the example, checks Terraria's block, wall, platform, slope, and boundary rules, renders from exported PNG textures, and decodes one owned XNB texture when Terraria is installed.
 
 ## Keep game art local
 

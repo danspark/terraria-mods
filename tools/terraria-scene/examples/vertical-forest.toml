@@ -4,6 +4,7 @@ seed = 1729
 
 [canvas]
 scale = 2
+boundary = "world"
 background = "forest-day"
 
 [palette]
