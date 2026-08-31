@@ -1,0 +1,66 @@
+format = 1
+name = "Hallow crystal ridge"
+seed = 2402
+
+[canvas]
+scale = 1
+size = [128, 72]
+boundary = "world"
+background = "forest-day"
+horizon = 32
+
+[palette]
+D = "dirt"
+S = "stone"
+G = "grass"
+W = "wood"
+L = "living-wood"
+d = "dirt-wall"
+s = "stone-wall"
+w = "wood-wall"
+l = "living-wood-wall"
+"~" = "water"
+"=" = "wood-platform"
+"|" = "rope"
+"*" = "torch"
+T = "forest-tree"
+
+
+[palette.P]
+kind = "tile"
+asset = "Tiles_117"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "pearlstone"
+
+[palette.H]
+kind = "tile"
+asset = "Tiles_109"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "hallow-grass"
+
+[palette.Q]
+kind = "tile"
+asset = "Tiles_116"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "pearlsand"
+
+[palette.c]
+kind = "object"
+asset = "Tiles_129"
+frame_size = 16
+stride = 18
+autotile = "fixed"
+frame = [0, 0]
+
+
+[map]
+terrain = { file = "terrain.map" }
+walls = { file = "walls.map" }
+liquids = { file = "liquids.map" }
+objects = { file = "objects.map" }

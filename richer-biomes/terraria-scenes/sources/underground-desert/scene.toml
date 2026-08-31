@@ -1,0 +1,66 @@
+format = 1
+name = "Underground desert chamber network"
+seed = 2406
+
+[canvas]
+scale = 1
+size = [144, 80]
+boundary = "world"
+background = "forest-day"
+horizon = 15
+
+[palette]
+D = "dirt"
+S = "stone"
+G = "grass"
+W = "wood"
+L = "living-wood"
+d = "dirt-wall"
+s = "stone-wall"
+w = "wood-wall"
+l = "living-wood-wall"
+"~" = "water"
+"=" = "wood-platform"
+"|" = "rope"
+"*" = "torch"
+T = "forest-tree"
+
+
+[palette.A]
+kind = "tile"
+asset = "Tiles_53"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "sand"
+
+[palette.B]
+kind = "tile"
+asset = "Tiles_396"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "sandstone"
+
+[palette.N]
+kind = "tile"
+asset = "Tiles_397"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "hardened-sand"
+
+[palette.F]
+kind = "tile"
+asset = "Tiles_404"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "desert-fossil"
+
+
+[map]
+terrain = { file = "terrain.map" }
+walls = { file = "walls.map" }
+liquids = { file = "liquids.map" }
+objects = { file = "objects.map" }

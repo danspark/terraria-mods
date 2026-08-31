@@ -1,0 +1,66 @@
+format = 1
+name = "Corruption fault province"
+seed = 2401
+
+[canvas]
+scale = 1
+size = [128, 72]
+boundary = "world"
+background = "forest-day"
+horizon = 31
+
+[palette]
+D = "dirt"
+S = "stone"
+G = "grass"
+W = "wood"
+L = "living-wood"
+d = "dirt-wall"
+s = "stone-wall"
+w = "wood-wall"
+l = "living-wood-wall"
+"~" = "water"
+"=" = "wood-platform"
+"|" = "rope"
+"*" = "torch"
+T = "forest-tree"
+
+
+[palette.E]
+kind = "tile"
+asset = "Tiles_25"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "ebonstone"
+
+[palette.C]
+kind = "tile"
+asset = "Tiles_23"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "corrupt-grass"
+
+[palette.X]
+kind = "tile"
+asset = "Tiles_112"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "ebonsand"
+
+[palette.x]
+kind = "object"
+asset = "Tiles_32"
+frame_size = 16
+stride = 18
+autotile = "fixed"
+frame = [0, 0]
+
+
+[map]
+terrain = { file = "terrain.map" }
+walls = { file = "walls.map" }
+liquids = { file = "liquids.map" }
+objects = { file = "objects.map" }

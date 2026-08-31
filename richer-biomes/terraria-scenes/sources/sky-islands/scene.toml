@@ -1,0 +1,50 @@
+format = 1
+name = "Sky continent with interior routes"
+seed = 2404
+
+[canvas]
+scale = 1
+size = [160, 90]
+boundary = "open"
+background = "sky"
+horizon = 80
+
+[palette]
+D = "dirt"
+S = "stone"
+G = "grass"
+W = "wood"
+L = "living-wood"
+d = "dirt-wall"
+s = "stone-wall"
+w = "wood-wall"
+l = "living-wood-wall"
+"~" = "water"
+"=" = "wood-platform"
+"|" = "rope"
+"*" = "torch"
+T = "forest-tree"
+
+
+[palette.K]
+kind = "tile"
+asset = "Tiles_189"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "cloud"
+
+[palette.U]
+kind = "tile"
+asset = "Tiles_202"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "sunplate"
+
+
+[map]
+terrain = { file = "terrain.map" }
+walls = { file = "walls.map" }
+liquids = { file = "liquids.map" }
+objects = { file = "objects.map" }

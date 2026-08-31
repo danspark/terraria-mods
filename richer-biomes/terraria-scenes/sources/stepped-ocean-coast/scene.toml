@@ -1,0 +1,58 @@
+format = 1
+name = "Stepped ocean coast and sea caves"
+seed = 2403
+
+[canvas]
+scale = 1
+size = [144, 72]
+boundary = "world"
+background = "forest-day"
+horizon = 30
+
+[palette]
+D = "dirt"
+S = "stone"
+G = "grass"
+W = "wood"
+L = "living-wood"
+d = "dirt-wall"
+s = "stone-wall"
+w = "wood-wall"
+l = "living-wood-wall"
+"~" = "water"
+"=" = "wood-platform"
+"|" = "rope"
+"*" = "torch"
+T = "forest-tree"
+
+
+[palette.A]
+kind = "tile"
+asset = "Tiles_53"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "sand"
+
+[palette.B]
+kind = "tile"
+asset = "Tiles_396"
+frame_size = 16
+stride = 18
+autotile = "block"
+connect = "sandstone"
+
+[palette.R]
+kind = "object"
+asset = "Tiles_81"
+frame_size = 16
+stride = 18
+autotile = "fixed"
+frame = [0, 0]
+
+
+[map]
+terrain = { file = "terrain.map" }
+walls = { file = "walls.map" }
+liquids = { file = "liquids.map" }
+objects = { file = "objects.map" }

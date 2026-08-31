@@ -4,11 +4,15 @@ Richer Biomes reshapes Terraria's existing biomes without replacing their materi
 
 This document defines the intended player experience. It records design rules and candidate terrain families, not an implementation. Ideas marked as experiments need prototypes before they become requirements.
 
+The terrain studies in this brief are rendered from reproducible `terraria-scene` sources under `terraria-scenes/sources/`. They use tiles and objects from the installed game to show scale, route structure, and vertical layers. Rendered PNGs stay local under `terraria-scenes/rendered/`; the source files are the portable design artifacts.
+
 ## The world should invite movement
 
 The mod follows these firm rules.
 
 - Keep each vanilla biome recognizable by its materials, plants, structures, and position in progression.
+- Make every improved biome and structure a region that occupies several screens and rewards extended exploration.
+- Use the full vertical range of the world. Important regions need several meaningful height bands, not one surface with deeper decoration below it.
 - Give every major region at least one route that a new character can follow without a hook, wings, explosives, or placed blocks.
 - Use generated ledges, slopes, roots, platforms, ropes, tunnels, and switchbacks to support that route.
 - Keep digging useful. A player with ordinary tools can cut a direct path instead of following the natural route.
@@ -18,6 +22,18 @@ The mod follows these firm rules.
 - Use vanilla tiles, walls, liquids, furniture, plants, traps, and objects. New blocks, enemies, items, music, and progression systems remain out of scope.
 
 Tall terrain alone does not create vertical play. A sheer wall leaves one choice: stop and dig. Good vertical terrain offers several readable paths at different heights, then lets the player decide how much effort to spend on a shortcut.
+
+## Scale and verticality are non-negotiable
+
+Richer Biomes does not spend its world space on one-screen set pieces. An improved biome or structure begins before the player can see its center and continues beyond it. The region contains several connected routes, chambers, elevation bands, and landmarks. It gives the player enough room to explore, build, retreat, and return by a different path.
+
+Vertical regions need at least three useful height bands. Connections between those bands must form loops where the terrain permits them. A tall entrance followed by a flat interior does not satisfy this rule.
+
+Mountains can rise from the Surface into Space. Harpies and other sky behavior are part of a sky-piercing mountain's identity, not a reason to lower the peak. Every sky-piercing mountain also contains a protected interior route through the range. A new character can cross inside the mountain without building up its outer wall or remaining exposed to sky enemies for the whole journey.
+
+Floating Islands become floating regions. A main island spans several screens, has a thick interior, and supports surface, interior, and underside routes. Smaller islands can orbit it, but they do not replace the main explorable landmass.
+
+World size changes how many major regions generate, not whether those regions have room to work. If a small world cannot hold every large variant, generation chooses fewer variants instead of shrinking each one into a prefab.
 
 ## Ideas have three ranks
 
@@ -48,7 +64,7 @@ The route network follows these rules.
 - At least one surface route crosses every major landform with starter movement.
 - A generated rope, platform run, or short safe drop can join two route segments.
 - Deep water, lava, traps, and mandatory mining cannot block the only route.
-- Mountains need a pass or a climbable outer route as well as internal caves.
+- Mountains need a pass or a climbable outer route and a connected interior crossing.
 - Large caves need more than one exit unless they are a deliberate dead-end landmark.
 - Direct digging remains possible beside the generated routes.
 
@@ -56,7 +72,7 @@ Automated route validation is a foundation in the design, but its exact method i
 
 ### Foundation: landmarks need quiet neighbors
 
-Every region receives a budget for major landmarks, minor features, and quiet terrain. A major landmark can occupy several screens. A minor feature can alter one route or reveal a small cave. Quiet terrain keeps a simpler silhouette and enough flat ground for building.
+Every region receives a budget for major landmarks, minor features, and quiet terrain. An improved region occupies several screens and can contain multiple major landmarks. A minor feature can alter one route or reveal a small cave. Quiet terrain keeps a simpler silhouette and enough flat ground for building between the large regions.
 
 Two major landmarks should not touch unless the combination is the point of the seed. A surface mine at the foot of a mountain is a useful combination. A mine, giant tree, waterfall, chasm, and cabin in the same screen is noise.
 
@@ -92,13 +108,13 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ## Focus idea: vertical forests
 
-![A Terraria-style vertical forest with root caves, a forest-floor route, ridgelines, and a Living Wood canopy path.](concept-art/vertical-forest.png)
+![A Terraria-scene study of a vertical forest with root caves, a forest-floor route, ridgelines, and Living Wood canopy paths.](terraria-scenes/rendered/vertical-forest.png)
 
 **Rank.** Foundation example and biome application.
 
 **Purpose.** Forests become the clearest introduction to layered routes. The player can travel under roots, along the ground, over ridges, or through occasional canopy shortcuts.
 
-**Large-scale shape.** A forest alternates between shallow valleys and wooded ridges. Gullies cut into the valleys, while a few large trees join ledges across the slopes. Calm clearings separate the more complex sections.
+**Large-scale shape.** A forest alternates between deep valleys, wooded ridges, and high canopy shelves across several screens. Gullies cut into the valleys, while a few large trees join ledges across the slopes. Calm clearings separate the more complex sections.
 
 **Natural routes.** The lowest route follows root caves and dry gullies. The main route crosses the forest floor. A high route uses ridgelines, thick branches, Living Wood rooms, and short platform runs. Small connections between the layers let the player change routes without walking back to the start.
 
@@ -120,23 +136,23 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ## Focus idea: mountains
 
-![A Terraria-style cross-biome mountain with forest foothills, a snowy summit, switchbacks, caves, and a high lake.](concept-art/cross-biome-mountain.png)
+![A Terraria-scene study of a sky-piercing mountain with forest foothills, a snowy summit, Harpies, and a protected route through its interior.](terraria-scenes/rendered/cross-biome-mountain.png)
 
 **Rank.** Foundation example and cross-biome landform.
 
 **Purpose.** Mountains create long-range silhouettes and meaningful route choices. They also join neighboring biomes instead of acting as a separate biome with unrelated content.
 
-**Large-scale shape.** A mountain begins with foothills, rises through several shelves, reaches one dominant ridge or summit, then descends through a pass or valley. The interior contains caves and chimneys, but enough solid ground remains for mining and building.
+**Large-scale shape.** A mountain range begins with foothills, rises through several shelves, and reaches one or more dominant summits before descending through a pass or valley. Some summits enter Space and use almost the full height above the Underground layer. The interior forms a connected region of caves, chimneys, halls, and solid mining ground.
 
-**Natural routes.** A switchback climbs the outer slope. A pass offers the easiest crossing. Ledges create a faster high route for players with movement gear. One internal cave can bypass part of the climb, but it must return to the surface before becoming a generic deep cave.
+**Natural routes.** A switchback climbs the outer slope. Ledges create a faster high route for players with movement gear. A large internal route crosses the mountain through branching caves and halls, with side paths climbing toward the summit. On a sky-piercing mountain, the interior route is the reliable starter crossing and the exposed peak is the dangerous optional route.
 
-**Underground connection.** Crevices and mine entrances join sloped chambers within the mountain. Deeper shafts meet the Underground layer near the mountain's base rather than dropping straight to the Cavern layer.
+**Underground connection.** Crevices and mine entrances join sloped chambers within the mountain. Interior routes connect both foothills and several elevation bands before deeper shafts meet the Underground layer near the mountain's base.
 
 **Landmark variants.** Use a split peak, a high lake, a natural arch, a summit shrine assembled from vanilla furniture, an exposed ore face, or a waterfall that disappears into the mountain.
 
 **Vanilla materials.** Use the blocks and walls of the inherited biome. Add Stone, Dirt, clay, sand, snow, ice, mud, vines, thorns, crystals, and liquids only where the local biome already supports them.
 
-**Safeguards.** No mountain can span the full region as an unclimbable wall. Keep the pass above the Underground boundary and clear of deep liquid. Do not place the summit so high that normal surface enemies or weather stop behaving sensibly. Preserve enough soil on outer slopes for biome plants and trees.
+**Safeguards.** No mountain can become a solid wall. Keep the interior crossing above the Underground boundary and clear of deep liquid. Accept Harpy spawns and other sky behavior on peaks that enter Space, but do not force the main crossing into prolonged sky exposure. Preserve enough soil on outer slopes for biome plants and trees.
 
 ### Mountains inherit their biome
 
@@ -148,22 +164,23 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 | Desert mountain | Wind-cut stone and sandstone, dry passes, overhangs, and a buried lower route. |
 | Evil mountain | A cracked ridge, thorn-lined shelves, and a chasm that exposes infected stone without blocking travel. |
 | Hallow mountain | Pale terraces, crystal caves, a bright summit, and gaps that reward movement gear without requiring it. |
+| Sky-piercing range | A summit in Space, dangerous exposed ledges, and a long protected route through the mountain's interior. |
 
 ## Focus idea: surface mines
 
-![A Terraria-style surface mine with an open quarry, abandoned supports, minecart tracks, and natural cave branches.](concept-art/surface-mine.png)
+![A Terraria-scene study of a large surface mine district with an open quarry, abandoned supports, minecart routes, and natural cave branches.](terraria-scenes/rendered/surface-mine.png)
 
 **Rank.** Foundation example and biome application.
 
 **Purpose.** A surface mine gives the player a visible invitation to go underground. Its abandoned structures tell a small story, while its natural branches keep it from feeling like a repeated prefab.
 
-**Large-scale shape.** The surface begins as a quarry, collapsed cut, or work yard. One main shaft descends in stages. Side tunnels transition from supported excavation to natural regional caves.
+**Large-scale shape.** The mine occupies a broad quarry district with several cuts, work areas, and entrances. Multiple shafts descend in stages and reconnect through side tunnels. The deepest worked passages transition into natural regional caves.
 
 **Natural routes.** Ramps, wooden platforms, ropes, and minecart track make the main descent readable. Collapsed sections create short detours instead of dead ends. A secondary exit can emerge from a hillside or nearby gully.
 
 **Underground connection.** The worked tunnels stop before they dominate the cave system. Beyond the last supports, the mine follows an ore seam or fault into the local cave grammar.
 
-**Landmark variants.** Use an open quarry, a hillside adit, a collapsed headframe, a flooded lower cut, a minecart switch room, or a tiny workers' cabin. A mountain-foot mine can combine with one mountain landmark without consuming another region's landmark budget.
+**Landmark variants.** Use an open quarry, a hillside adit, a collapsed headframe, a flooded lower cut, a minecart switch hall, or a multi-room workers' quarter. A mountain-foot mine can combine with one mountain landmark without consuming another region's landmark budget.
 
 **Vanilla materials.** Use Wood, Boreal Wood where appropriate, wooden beams, fences, platforms, rope, minecart track, torches, chests, work benches, Stone, Dirt, background walls, and biome-specific blocks.
 
@@ -181,7 +198,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Desert mesas and dry channels
 
-![A Terraria-style desert with terraced mesas, a fossil cut, an oasis, and a staged sinkhole entrance.](concept-art/desert-mesas.png)
+![A Terraria-scene study of a desert with terraced mesas, a fossil cut, an oasis, and a staged sinkhole entrance.](terraria-scenes/rendered/desert-mesas.png)
 
 **Rank.** Biome application.
 
@@ -201,7 +218,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Snow shelves and glacial valleys
 
-![A Terraria-style snow biome with broad shelves, a glacial valley, frozen waterfalls, caves, and safe fissure routes.](concept-art/snow-glacial-valley.png)
+![A Terraria-scene study of a snow biome with broad shelves, a glacial valley, frozen falls, caves, and safe fissure routes.](terraria-scenes/rendered/snow-glacial-valley.png)
 
 **Rank.** Biome application.
 
@@ -221,7 +238,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Jungle terraces and cenotes
 
-![A Terraria-style jungle with mud terraces, canopy routes, waterfalls, a wide cenote, and a protected Temple below.](concept-art/jungle-cenote.png)
+![A Terraria-scene study of a jungle with mud terraces, canopy routes, waterfalls, a wide cenote, and layered passages below.](terraria-scenes/rendered/jungle-cenote.png)
 
 **Rank.** Biome application.
 
@@ -241,7 +258,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Evil faults and infected drainage basins
 
-![A Terraria-style Corruption fault with branching chasms, rim paths, thorn bridges, infected water, and Shadow Orbs.](concept-art/corruption-fault.png)
+![A Terraria-scene study of a Corruption fault with branching chasms, rim paths, protected crossings, and several explorable depths.](terraria-scenes/rendered/corruption-fault.png)
 
 **Rank.** Biome application.
 
@@ -261,7 +278,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Hallow ridges and crystal springs
 
-![A Terraria-style Hallow ridge with a preserved surface route, a crystal spring, pearlstone caves, and open meadows.](concept-art/hallow-crystal-ridge.png)
+![A Terraria-scene study of a Hallow ridge with a preserved surface route, crystal slopes, pearlstone caves, and several elevation bands.](terraria-scenes/rendered/hallow-crystal-ridge.png)
 
 **Rank.** Biome application tied to the Hardmode experiment.
 
@@ -281,7 +298,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Coasts and stepped oceans
 
-![A Terraria-style coast with dunes, a sea arch, sealed coastal caves, and ocean shelves descending toward deep water.](concept-art/stepped-ocean-coast.png)
+![A Terraria-scene study of a coast with dunes, sealed coastal caves, and ocean shelves descending toward deep water.](terraria-scenes/rendered/stepped-ocean-coast.png)
 
 **Rank.** Biome application.
 
@@ -299,31 +316,31 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 **Safeguards.** Preserve the ocean volume and valid space for ocean enemies, fishing, and Angler quests. Do not expose the world edge. Seal sea caves against accidental drainage and keep progression chests reachable under normal vanilla expectations.
 
-### Sky shelves and anchored islands
+### Floating highlands and sky-island interiors
 
-![Terraria-style Floating Islands aligned above a mountain, with sparse cloud shelves and large areas of open sky.](concept-art/sky-islands.png)
+![A Terraria-scene study of a floating highland with a broad surface, three interior route bands, large Sunplate halls, vertical shafts, and an explorable underside.](terraria-scenes/rendered/sky-islands.png)
 
-**Rank.** Optional experiment.
+**Rank.** Biome application.
 
-**Purpose.** The sky can echo the terrain below without filling open space or making Floating Islands routine.
+**Purpose.** A Floating Island becomes a sky region worth exploring instead of a small platform that holds one house and chest.
 
-**Large-scale shape.** A few Floating Islands align loosely with mountain ranges or major faults. Small cloud shelves may suggest a broken path without creating a complete bridge across the sky.
+**Large-scale shape.** One floating highland spans several screens and has enough depth for caves, chambers, lakes, and solid mining space. Smaller islands and cloud shelves surround the main mass. A sky-piercing mountain can approach or overlap the highland without turning the two regions into a complete bridge.
 
-**Natural routes.** No starter route depends on a sky island. Mountains can provide sightlines or later access once the player has suitable movement tools.
+**Natural routes.** The highland has separate surface, interior, and underside routes with several connections between them. No required starter route depends on reaching the highland. A sky-piercing mountain can provide a dangerous early approach, while normal access still expects suitable movement tools.
 
-**Underground connection.** Sky structures have no required underground connection. A waterfall may visually connect an island to a highland pond if liquid behavior remains stable.
+**Underground connection.** The highland contains its own underground region. Surface openings descend through cloud-lined caves and Sunplate chambers before reaching underside exits. A waterfall may connect an island lake to a lower cloud basin if liquid behavior remains stable.
 
-**Landmark variants.** Use a paired island, a cloud stair, a rain-fed island pond, or an island above a mountain summit.
+**Landmark variants.** Use a floating plateau, a split highland joined by internal caves, a deep sky lake, a Sunplate ruin district, a cloud cavern, or a highland wrapped around a mountain summit.
 
 **Vanilla materials.** Use Cloud, Rain Cloud, Sunplate, Dirt, Grass, water, and existing Floating Island structures.
 
-**Safeguards.** Preserve required Floating Island loot and world-size counts. Keep open space for wyverns, gravitation travel, and player construction. Treat falling water as experimental because it can cross many protected regions.
+**Safeguards.** Preserve Floating Island loot and distribute it through the larger region without multiplying progression rewards. Keep broad open-sky corridors for wyverns, gravitation travel, and player construction. Do not let a highland form an unbroken bridge across the world. Treat falling water as experimental because it can cross many protected regions.
 
 ## Underground and Cavern applications
 
 ### Rooted underground
 
-![A Terraria-style Underground layer with root columns, dirt chambers, looping slopes, ponds, and stone increasing with depth.](concept-art/rooted-underground.png)
+![A Terraria-scene study of an Underground region with root columns, dirt chambers, looping routes, ponds, and stone increasing with depth.](terraria-scenes/rendered/rooted-underground.png)
 
 **Rank.** Biome application.
 
@@ -343,7 +360,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Underground Desert chambers
 
-![A Terraria-style Underground Desert with staged entrances, sediment layers, fossil halls, loops, and supported crossings.](concept-art/underground-desert.png)
+![A Terraria-scene study of a large Underground Desert with staged entrances, sediment layers, fossil halls, route loops, and supported crossings.](terraria-scenes/rendered/underground-desert.png)
 
 **Rank.** Biome application.
 
@@ -363,7 +380,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Frozen fissures
 
-![A Terraria-style Underground Snow region with tall fissures, ice shelves, water pockets, safe ledges, and a Boreal cabin.](concept-art/frozen-fissures.png)
+![A Terraria-scene study of an Underground Snow region with tall fissures, ice shelves, water pockets, safe ledges, and a Boreal shelter.](terraria-scenes/rendered/frozen-fissures.png)
 
 **Rank.** Biome application.
 
@@ -383,7 +400,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Jungle root network
 
-![A Terraria-style Underground Jungle with connected basins, root arches, dry loops, honey and mushroom pockets, and a sealed Temple.](concept-art/jungle-root-network.png)
+![A Terraria-scene study of an Underground Jungle with connected basins, root arches, dry loops, honey pockets, and large vertical passages.](terraria-scenes/rendered/jungle-root-network.png)
 
 **Rank.** Biome application.
 
@@ -403,7 +420,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Evil and Hallow depths
 
-![Separate Terraria-style Corruption and Hallow cavern regions divided by ordinary stone, with faults, aquifers, and crystal chimneys.](concept-art/evil-hallow-depths.png)
+![A Terraria-scene study of separate Corruption and Hallow depths divided by ordinary stone, with faults, aquifers, and vertical chimneys.](terraria-scenes/rendered/evil-hallow-depths.png)
 
 **Rank.** Biome application tied to the Hardmode experiment.
 
@@ -423,7 +440,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Glowing Mushroom basins
 
-![A Terraria-style Glowing Mushroom basin with a dry rim, central pool, tall mushroom chamber, and buildable floor.](concept-art/glowing-mushroom-basin.png)
+![A Terraria-scene study of a large Glowing Mushroom basin with a dry rim, central pool, tall chambers, and buildable ground.](terraria-scenes/rendered/glowing-mushroom-basin.png)
 
 **Rank.** Biome application.
 
@@ -443,7 +460,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 ### Stone provinces in the Cavern layer
 
-![A Terraria-style Cavern province with stone halls, chimneys, mining zones, ore pockets, water, lava, and route loops.](concept-art/cavern-stone-province.png)
+![A Terraria-scene study of a Cavern province with stone halls, chimneys, mining zones, water, lava, and route loops.](terraria-scenes/rendered/cavern-stone-province.png)
 
 **Rank.** Foundation and biome application.
 
@@ -461,21 +478,21 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 **Safeguards.** Keep ore and gem distribution near vanilla balance. Do not fill the layer with giant empty rooms. Leave ordinary cave networks and solid mining ground between provinces.
 
-### Small underground biomes
+### Secondary underground regions
 
-Granite, Marble, Spider Caves, Bee Hives, and the Aether keep their vanilla identity and required contents. Richer Biomes changes their approaches and nearby terrain more than their internal rules.
+Granite, Marble, Spider Caves, Bee Hives, and the Aether keep their vanilla identity and required contents. When Richer Biomes changes one of them, the result becomes a multi-room region with several routes. The generator leaves an unchanged vanilla site when it cannot allocate enough space for a large version.
 
 | Site | Terrain treatment | Required safeguard |
 | --- | --- | --- |
-| Granite | Place near faults or deep water routes, with a broken stone approach. | Preserve enough biome blocks and walls for enemies and materials. |
-| Marble | Place beside broad Cavern halls or pale stone shelves. | Keep combat space open and avoid burying entrances behind unrelated structures. |
-| Spider Cave | Place in narrow side networks between larger regional caves. | Preserve unsafe walls, chest opportunities, and room for spider enemies. |
-| Bee Hive | Nest within large Jungle mud masses away from major water routes. | Preserve Larva behavior and prevent other passes from opening the hive. |
-| Aether | Set inside a calm deep basin reached through a distinctive stone approach. | Preserve the Shimmer pool, biome materials, world-side placement, and progression behavior. |
+| Granite | Build a deep fault region with stacked water routes, stone shelves, and several chambers. | Preserve enough biome blocks and walls for enemies and materials. |
+| Marble | Build broad terraced halls with pale shelves, collapsed passages, and open combat rooms. | Keep combat space open and avoid burying entrances behind unrelated structures. |
+| Spider Cave | Build a branching web network between larger regional caves, with multiple entries and retreats. | Preserve unsafe walls, chest opportunities, and room for spider enemies. |
+| Bee Hive | Build a large hive complex inside a protected Jungle mud mass, with outer honeycomb routes around the sealed Larva room. | Preserve Larva behavior and prevent other passes from opening the central hive. |
+| Aether | Build a large calm basin with a long stone approach, outer chambers, and several overlook routes around the protected center. | Preserve the Shimmer pool, biome materials, world-side placement, and progression behavior. |
 
 ## The Underworld needs routes between hazards
 
-![A Terraria-style Underworld with ash shelves, lava deltas, pillars, ruined districts, and a long open combat route.](concept-art/underworld-districts.png)
+![A Terraria-scene study of an Underworld with ash shelves, lava deltas, pillars, ruined districts, and a long open combat route.](terraria-scenes/rendered/underworld-districts.png)
 
 **Rank.** Biome application.
 
@@ -504,7 +521,7 @@ Richer Biomes can change the approach to a progression site, but it cannot chang
 | Jungle Temple | A larger approach cavern frames the outer wall without opening it. | A sealed structure, valid door and altar placement, traps, wiring, and required rooms. |
 | Oceans | A coast transition explains the descent into each ocean. | Ocean size, fishing, enemy spawning, quest use, and world-edge protection. |
 | Aether | A quiet stone basin and a distinct approach cave hint that the area is unusual. | Shimmer volume, transmutation use, protected placement, and side-of-world rules. |
-| Floating Islands | Mountains and clouds provide distant visual hints. | World-size counts, houses, chest loot, and open sky around each island. |
+| Floating highlands | Mountains and clouds provide distant visual hints, while the highland contains several exterior and interior districts. | World-size loot expectations, houses, chest contents, and broad open-sky corridors around each region. |
 
 ## Hardmode conversion can follow the world's geology
 
@@ -539,6 +556,8 @@ Large landforms can overlap the Dungeon, the Temple, the Aether, Floating Island
 
 ### Terrain scale
 
+Mountains, floating highlands, mines, and biome regions consume more space than their vanilla equivalents. Test whether every region has several meaningful height bands and enough width for route loops. On smaller worlds, reduce the number of major regions before reducing their size. A large region fails if generation compresses it into one screen or one linear tunnel.
+
 Mountains and deep valleys consume much more vertical space than vanilla hills. Test all world sizes. Keep the Surface, Underground, and Cavern layers thick enough for their normal biomes, structures, and resources.
 
 ### Landmark density
@@ -553,18 +572,19 @@ Validation retries and liquid settling can make generation slow or unpredictable
 
 1. Build the world skeleton with landform regions, protected structure bounds, quiet-space budgets, and a reserved surface route.
 2. Prototype a vertical forest that crosses one valley and one ridge.
-3. Add a cross-biome mountain with a pass, an outer climb, and an internal cave route.
-4. Add a surface mine that merges into the forest's regional caves.
-5. Validate the combined forest, mountain, and mine route with a starter character.
+3. Add a sky-piercing cross-biome mountain with an outer climb and a protected interior crossing.
+4. Add a large surface mine district that merges into the forest's regional caves.
+5. Validate every height band and the combined forest, mountain, and mine route with a starter character.
 6. Add transition zones, then extend the terrain rules to desert, snow, jungle, evil biomes, and oceans.
 7. Add regional Underground and Cavern shapes without changing resource balance.
 8. Prototype local watersheds and settle all liquids before accepting the system.
-9. Reframe progression sites while preserving their internal generation rules.
-10. Add the Underworld terrain districts and confirm that the Wall of Flesh still has enough combat space.
-11. Prototype geological Hardmode conversion last. Keep vanilla conversion as the fallback.
+9. Add a floating highland with surface, interior, and underside routes while preserving sky loot balance.
+10. Reframe progression sites as large explorable regions while preserving their progression rules.
+11. Add the Underworld terrain districts and confirm that the Wall of Flesh still has enough combat space.
+12. Prototype geological Hardmode conversion last. Keep vanilla conversion as the fallback.
 
 ## Out of scope
 
 This design does not add custom tiles, walls, plants, furniture, enemies, bosses, items, loot tables, music, quests, or progression gates. It does not promise compatibility with Calamity, Thorium, Remnants, or other mods that make broad world-generation changes. Those choices can be revisited after the core terrain works on its own.
 
-The first success case is smaller: a new character can leave a calm spawn, choose among several forest routes, cross a mountain without building a dirt staircase, discover a mine from the surface, and follow it into caves that still feel like the biome above.
+The first success case is concrete: a new character can leave a calm spawn, change height several times inside one forest, cross a sky-piercing mountain through its interior, discover a large mine from the surface, and follow the mine into caves that still feel like the biome above.
