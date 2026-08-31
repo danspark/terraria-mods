@@ -628,6 +628,25 @@ def load_scene(path: Path) -> Scene:
                         f"map.{layer} uses {sprite.kind} sprite {sprite.name!r} at {x},{y}; expected {expected}"
                     )
 
+    terrain_rows = layers.get("terrain")
+    object_rows = layers.get("objects")
+    if terrain_rows is not None and object_rows is not None:
+        for y, (terrain_row, object_row) in enumerate(
+            zip(terrain_rows, object_rows, strict=True), start=1
+        ):
+            for x, (terrain_symbol, object_symbol) in enumerate(
+                zip(terrain_row, object_row, strict=True), start=1
+            ):
+                if _empty(terrain_symbol) or _empty(object_symbol):
+                    continue
+                terrain_sprite = palette[terrain_symbol]
+                object_sprite = palette[object_symbol]
+                raise SceneError(
+                    f"map.objects places {object_sprite.name!r} over "
+                    f"map.terrain sprite {terrain_sprite.name!r} at {x},{y}; "
+                    "a Terraria cell cannot contain both terrain and an object"
+                )
+
     for y, row in enumerate(layers.get("shapes", ()), start=1):
         for x, shape in enumerate(row, start=1):
             if shape not in {".", " ", "/", "\\", "_"}:

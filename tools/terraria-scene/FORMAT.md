@@ -180,6 +180,8 @@ All present layers must have the same number of rows and cells. The available la
 | `objects` | `object` | Platforms, ropes, torches, trees, or fixed frames. |
 | `shapes` | No palette lookup | Foreground block shape. |
 
+A cell cannot contain both `terrain` and `objects`. Terraria stores one foreground tile per cell. Use `entities` for artwork that overlays foreground terrain.
+
 The shape tokens are `.`, `/`, `\`, and `_`. A dot is a full block. The slash tokens are Terraria slopes. An underscore is a bottom half block.
 
 Store a large layer in a separate UTF-8 file:
@@ -254,4 +256,4 @@ python3 terraria_scene.py render-tiles world.toml \
 
 `render-tiles` writes independently usable PNG files and `manifest.json`. Neighbor framing, backgrounds, trees, glows, and entities remain continuous across tile boundaries.
 
-`validate` rejects malformed values, undefined map tokens, wrong sprite kinds, invalid source rectangles, and grids with different dimensions. Error coordinates use one-based columns and rows.
+`validate` rejects malformed values, undefined map tokens, wrong sprite kinds, overlapping terrain and objects, invalid source rectangles, and grids with different dimensions. Error coordinates use one-based columns and rows.

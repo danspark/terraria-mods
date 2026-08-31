@@ -24,7 +24,31 @@ class SceneParserTests(unittest.TestCase):
         self.assertEqual((scene.width, scene.height), (64, 34))
         self.assertEqual(scene.boundary, "world")
         self.assertEqual(scene.palette["G"].asset, "Tiles_2")
-        self.assertEqual(scene.layers["objects"][15][23], "=")
+        self.assertEqual(scene.layers["objects"][15][24], "=")
+
+    def test_object_over_terrain_is_rejected(self) -> None:
+        source = """\
+format = 1
+[palette]
+D = "dirt"
+"|" = "rope"
+[map]
+terrain = '''
+D
+'''
+objects = '''
+|
+'''
+"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "overlap.toml"
+            path.write_text(source, encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                scene_tool.SceneError,
+                "places 'rope' over map.terrain sprite 'dirt' at 1,1",
+            ):
+                scene_tool.load_scene(path)
 
     def test_invalid_boundary_is_rejected(self) -> None:
         source = """\
