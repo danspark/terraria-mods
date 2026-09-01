@@ -6,29 +6,49 @@ mod_dir="$(cd "$script_dir/.." && pwd)"
 default_save_dir="${TML_SAVE_DIRECTORY:-$HOME/.local/share/Terraria/tModLoader}"
 playtest_dir="${RICHER_BIOMES_PLAYTEST_DIR:-$mod_dir/.playtest}"
 world_mode="classic"
+world_size="large"
+world_seed="RicherBiomes-Playtest-001"
 
-case "${1:-}" in
-	--classic|'')
-		world_basename="Richer_Biomes_Playtest_Large"
-		;;
-	--journey)
-		world_mode="journey"
-		world_basename="Richer_Biomes_Playtest_Journey"
-		;;
-	--help|-h)
-		printf 'Usage: %s [--classic|--journey]\n' "$0"
-		exit 0
+while (( $# > 0 )); do
+	case "$1" in
+		--classic)
+			world_mode="classic"
+			shift
+			;;
+		--journey)
+			world_mode="journey"
+			shift
+			;;
+		--size)
+			world_size="${2:-}"
+			shift 2
+			;;
+		--seed)
+			world_seed="${2:-}"
+			shift 2
+			;;
+		--help|-h)
+			printf 'Usage: %s [--classic|--journey] [--size small|medium|large] [--seed value]\n' "$0"
+			exit 0
+			;;
+		*)
+			printf 'Unknown argument: %s\n' "$1" >&2
+			exit 2
+			;;
+	esac
+done
+
+case "$world_size" in
+	small|medium|large)
 		;;
 	*)
-		printf 'Usage: %s [--classic|--journey]\n' "$0" >&2
+		printf 'Invalid world size: %s\n' "$world_size" >&2
 		exit 2
 		;;
 esac
 
-if (( $# > 1 )); then
-	printf 'Usage: %s [--classic|--journey]\n' "$0" >&2
-	exit 2
-fi
+safe_seed="$(printf '%s' "$world_seed" | tr -cs 'A-Za-z0-9' '_' | cut -c1-40)"
+world_basename="Richer_Biomes_${world_size}_${world_mode}_${safe_seed}"
 
 source_world="$playtest_dir/Worlds/$world_basename.wld"
 source_sidecar="${source_world%.wld}.twld"

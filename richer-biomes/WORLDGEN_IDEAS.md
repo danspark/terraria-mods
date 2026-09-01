@@ -4,6 +4,21 @@ Richer Biomes reshapes Terraria's existing biomes without replacing their materi
 
 This document defines the intended player experience. It records design rules and candidate terrain families, not an implementation. Ideas marked as experiments need prototypes before they become requirements.
 
+## Implemented majestic-world foundation in 0.3.0
+
+The first complete implementation now covers the strongest ideas in this brief:
+
+- ground-connected twin-peak mountains enter Space and contain two-sided interior crossings, chambers, summit chimneys, cloud belts, themed saddle valleys, and suspension, arch, or rail bridges;
+- floating islands are replaced by 280–440 tile-wide highland masses with surface, interior, and underside routes, satellites, cloud keels, and lakes;
+- every vanilla biome category receives a distinct multi-room, walled, lit, and furnished landmark, including separate buildings at both oceans;
+- every world receives a visible surface mine with an eleven-edge, looped and branching rail graph into deep Caverns plus working, mountain, flooded, collapsed, and sealed world-evil districts;
+- authored walkways use thick solid floors for structure and bounded platform bays for stairs, landings, and downward traversal; bridges add custom wall or truss backgrounds and actuated mountain portals;
+- floating-highland materials form broad Cloud, Rain Cloud, and Sunplate clusters without ordinary Stone or repeated horizontal bands, while organic basins and quarantine shells use bounded edge jitter;
+- strict final-state validation measures real ground, furniture, entrances, connected highland mass, and entrance-connected authored rails after all destructive vanilla passes;
+- the playtest matrix generates, reloads, saves, and reloads small, medium, and large worlds through a pseudo-terminal harness.
+
+The implementation contract lives in `MOD_DESIGN.md`. `WORLDGEN_FUTURE_WORK.md` maps the current coverage and gaps. The reference-world findings, numeric targets, design synthesis, sources, and licensing boundary live in `WORLDGEN_RESEARCH.md`. Ideas below remain the longer-term catalog; an item is not guaranteed unless the implementation contract says so.
+
 The terrain studies in this brief are rendered from reproducible `terraria-scene` sources under `terraria-scenes/sources/`. They use tiles and objects from the installed game to show scale, route structure, and vertical layers. Rendered PNGs stay local under `terraria-scenes/rendered/`; the source files are the portable design artifacts.
 
 ## The world should invite movement
