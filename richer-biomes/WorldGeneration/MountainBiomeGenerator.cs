@@ -4,44 +4,56 @@ using System.Linq;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
+using Terraria.Utilities;
 using Terraria.WorldBuilding;
 
 namespace RicherBiomes.WorldGeneration;
 
 internal static class MountainBiomeGenerator
 {
-	private const int RouteHalfHeight = 5;
+	private const int MinimumRouteRadius = 5;
 
 	public static void CarveInteriors(WorldPlan plan, bool protectSensitiveTiles, bool reserveRoutes)
 	{
 		foreach (MountainRangePlan mountain in plan.Mountains) {
-			WorldRegion region = plan.Regions[mountain.RegionId];
-			int leftX = region.Left + 22;
-			int rightX = region.Right - 22;
-			int hallY = Math.Min((int)Main.worldSurface + 34, mountain.SaddleY + 78);
-			Point leftEntrance = new(leftX, plan.SurfaceAt(leftX) + 1);
-			int leftAlternateX = region.Left + 44;
-			Point leftAlternateEntrance = new(leftAlternateX, plan.SurfaceAt(leftAlternateX) + 1);
-			Point hall = new(mountain.SaddleX, hallY);
-			Point rightEntrance = new(rightX, plan.SurfaceAt(rightX) + 1);
-			int rightAlternateX = region.Right - 44;
-			Point rightAlternateEntrance = new(rightAlternateX, plan.SurfaceAt(rightAlternateX) + 1);
-
-			CarveRoute(leftEntrance, hall, protectSensitiveTiles);
-			CarveRoute(leftAlternateEntrance, hall, protectSensitiveTiles);
-			CarveRoute(hall, rightEntrance, protectSensitiveTiles);
-			CarveRoute(hall, rightAlternateEntrance, protectSensitiveTiles);
-			CarveChamber(new Point(mountain.LeftPeakX, hallY - 18), 22, 12, protectSensitiveTiles);
-			CarveChamber(new Point(mountain.RightPeakX, hallY + 8), 26, 14, protectSensitiveTiles);
-			CarveChimney(plan, mountain.LeftPeakX, hallY - 18, protectSensitiveTiles);
-			CarveChimney(plan, mountain.RightPeakX, hallY + 8, protectSensitiveTiles);
+			MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
+			for (int routeIndex = 0; routeIndex < layout.Routes.Count; routeIndex++) {
+				CarveRoute(plan, mountain, layout.Routes[routeIndex], routeIndex, protectSensitiveTiles);
+			}
+			for (int chamberIndex = 0; chamberIndex < layout.Chambers.Count; chamberIndex++) {
+				CarveChamber(plan, mountain, layout.Chambers[chamberIndex], chamberIndex, protectSensitiveTiles);
+			}
+			foreach (MountainShaft shaft in layout.Shafts) {
+				CarveShaft(plan, mountain, shaft, protectSensitiveTiles);
+			}
 
 			if (reserveRoutes) {
-				ProtectRoute(leftEntrance, hall);
-				ProtectRoute(leftAlternateEntrance, hall);
-				ProtectRoute(hall, rightEntrance);
-				ProtectRoute(hall, rightAlternateEntrance);
+				foreach (Point[] route in layout.Routes) {
+					ProtectRoute(route);
+				}
+				foreach (MountainChamber chamber in layout.Chambers) {
+					Rectangle area = new(
+						chamber.Center.X - chamber.RadiusX - 4,
+						chamber.Center.Y - chamber.RadiusY - 4,
+						chamber.RadiusX * 2 + 9,
+						chamber.RadiusY * 2 + 9);
+					GenVars.structures.AddProtectedStructure(area, padding: 1);
+				}
 			}
+		}
+	}
+
+	public static void DecorateInteriors(WorldPlan plan, GenerationManifest manifest, GenerationProgress progress)
+	{
+		for (int mountainIndex = 0; mountainIndex < plan.Mountains.Count; mountainIndex++) {
+			MountainRangePlan mountain = plan.Mountains[mountainIndex];
+			MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
+			UnifiedRandom random = new(MixSeed(mountain.FeatureSeed, 0x4D44_4543));
+			PlaceClimbAids(layout, random, manifest);
+			PlaceInteriorObjects(plan, mountain, random, manifest);
+			EnsureInteriorDecorationMinimums(plan, mountain, manifest);
+			TileEditor.Frame(MountainArea(plan, mountain), border: 3);
+			progress.Set((double)(mountainIndex + 1) / Math.Max(1, plan.Mountains.Count));
 		}
 	}
 
@@ -91,12 +103,19 @@ internal static class MountainBiomeGenerator
 				Math.Max(45, peakY - 8),
 				region.Width,
 				Math.Min(Main.maxTilesY - 45, (int)Main.worldSurface + 70) - Math.Max(45, peakY - 8));
+			(int caveAirTiles, int wideCavityColumns) = MeasureCavities(area);
 			manifest.Mountains.Add(new MountainRecord(
 				mountain.RegionId,
 				area,
 				peakY,
 				CountEntrances(plan, mountain),
-				cloudTiles));
+				cloudTiles,
+				mountain.InteriorStyle,
+				caveAirTiles,
+				wideCavityColumns,
+				CountTiles(area, TileID.Pots),
+				CountVines(area),
+				CountTiles(area, TileID.Platforms) + CountTiles(area, TileID.Rope)));
 		}
 	}
 
@@ -112,59 +131,283 @@ internal static class MountainBiomeGenerator
 		}
 	}
 
-	private static void CarveRoute(Point start, Point end, bool protectSensitiveTiles)
+	public static void RepairValleyStructures(WorldPlan plan)
 	{
-		int steps = Math.Max(Math.Abs(end.X - start.X), Math.Abs(end.Y - start.Y));
-		for (int step = 0; step <= steps; step++) {
-			double t = steps == 0 ? 0d : (double)step / steps;
-			double eased = t * t * (3d - 2d * t);
-			int x = (int)Math.Round(start.X + (end.X - start.X) * t);
-			int floorY = (int)Math.Round(start.Y + (end.Y - start.Y) * eased);
-			CarveEllipse(x, floorY - RouteHalfHeight, 4, RouteHalfHeight, protectSensitiveTiles);
-			for (int depth = 0; depth < 3; depth++) {
-				if (WorldGen.InWorld(x, floorY + depth, 8) && CanMutate(x, floorY + depth, protectSensitiveTiles)) {
-					TileEditor.SetTerrain(x, floorY + depth, depth == 0 ? TileID.StoneSlab : TileID.Stone);
+		foreach (MountainRangePlan mountain in plan.Mountains) {
+			if (mountain.ValleyTheme == ValleyTheme.SealedEvil) {
+				int surfaceY = plan.SurfaceAt(mountain.SaddleX);
+				BuildSealedEvilGrotto(mountain.SaddleX, surfaceY + 10);
+			}
+			else if (mountain.ValleyTheme is ValleyTheme.Lake or ValleyTheme.Lava) {
+				_ = BuildValley(plan, mountain);
+			}
+		}
+	}
+
+	public static void RepairGroundingSpines(WorldPlan plan)
+	{
+		foreach (MountainRangePlan mountain in plan.Mountains) {
+			SkyHighlandPlan? attachedHighland = plan.SkyHighlands
+				.Where(highland => highland.AttachedMountainRegionId == mountain.RegionId)
+				.Select<SkyHighlandPlan, SkyHighlandPlan?>(highland => highland)
+				.FirstOrDefault();
+			int peakX = attachedHighland is SkyHighlandPlan highland
+				&& Math.Abs(highland.CenterX - mountain.LeftPeakX) < Math.Abs(highland.CenterX - mountain.RightPeakX)
+					? mountain.RightPeakX
+					: mountain.LeftPeakX;
+			foreach (int spineX in new[] { peakX - 12, peakX + 12 }) {
+				int topY = plan.SurfaceAt(spineX);
+				int bottomY = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 55);
+				for (int x = spineX - 4; x <= spineX + 4; x++) {
+					for (int y = plan.SurfaceAt(x); y <= bottomY; y++) {
+						if (TileEditor.IsProtectedTile(Main.tile[x, y]) || IsMineRailEnvelope(x, y)) {
+							continue;
+						}
+						int depth = y - plan.SurfaceAt(x);
+						TileEditor.SetTerrain(x, y, depth == 0 ? TileID.Grass : depth < 7 ? TileID.Dirt : TileID.Stone);
+						if (depth >= 4) {
+							TileEditor.SetWall(x, y, depth < 18 ? WallID.DirtUnsafe : WallID.Stone);
+						}
+					}
+				}
+				for (int portalY = topY + 20; portalY < bottomY - 8; portalY += 27) {
+					for (int x = spineX - 2; x <= spineX + 2; x++) {
+						for (int y = portalY - 7; y < portalY; y++) {
+							if (!TileEditor.IsProtectedTile(Main.tile[x, y]) && !IsMineRailEnvelope(x, y)) {
+								TileEditor.ClearTerrain(x, y);
+								TileEditor.SetWall(x, y, WallID.Stone);
+							}
+						}
+					}
+					for (int length = 0; length < 4; length++) {
+						int vineY = portalY - 7 + length;
+						if (Main.tile[spineX, vineY].HasTile || IsMineRailEnvelope(spineX, vineY)) {
+							break;
+						}
+						TileEditor.SetTerrain(spineX, vineY, VineTypeAt(spineX, portalY - 8));
+					}
 				}
 			}
 		}
 	}
 
-	private static void CarveChamber(Point center, int horizontalRadius, int verticalRadius, bool protectSensitiveTiles)
+	private static bool IsMineRailEnvelope(int x, int y)
 	{
-		CarveEllipse(center.X, center.Y, horizontalRadius, verticalRadius, protectSensitiveTiles);
-		int shelfY = center.Y + verticalRadius - 1;
-		for (int x = center.X - horizontalRadius + 3; x <= center.X + horizontalRadius - 3; x++) {
-			for (int depth = 0; depth < 3; depth++) {
-				if (CanMutate(x, shelfY + depth, protectSensitiveTiles)) {
-					TileEditor.SetTerrain(x, shelfY + depth, depth == 0 ? TileID.StoneSlab : TileID.Stone);
+		for (int offsetX = -1; offsetX <= 1; offsetX++) {
+			for (int offsetY = 0; offsetY <= 7; offsetY++) {
+				Tile tile = Main.tile[x + offsetX, y + offsetY];
+				if (tile.HasTile && tile.TileType == TileID.MinecartTrack) {
+					return true;
 				}
+			}
+		}
+		return false;
+	}
+
+	private static MountainInteriorLayout BuildInteriorLayout(WorldPlan plan, MountainRangePlan mountain)
+	{
+		WorldRegion region = plan.Regions[mountain.RegionId];
+		UnifiedRandom random = new(mountain.FeatureSeed);
+		int leftEntranceX = region.Left + random.Next(18, Math.Min(68, region.Width / 5));
+		int rightEntranceX = region.Right - random.Next(18, Math.Min(68, region.Width / 5));
+		Point leftEntrance = new(leftEntranceX, plan.SurfaceAt(leftEntranceX) + 2);
+		Point rightEntrance = new(rightEntranceX, plan.SurfaceAt(rightEntranceX) + 2);
+		Point leftUpper = Inside(plan, mountain.LeftPeakX + random.Next(-28, 29), mountain.LeftPeakY + random.Next(64, 116));
+		Point rightUpper = Inside(plan, mountain.RightPeakX + random.Next(-28, 29), mountain.RightPeakY + random.Next(64, 116));
+		Point central = Inside(plan, mountain.SaddleX + random.Next(-24, 25), mountain.SaddleY + random.Next(46, 92));
+		Point lower = Inside(plan, mountain.SaddleX + random.Next(-55, 56), (int)Main.worldSurface + random.Next(26, 62));
+		Point leftLower = Inside(plan, region.Left + region.Width * random.Next(28, 42) / 100, (int)Main.worldSurface + random.Next(5, 48));
+		Point rightLower = Inside(plan, region.Left + region.Width * random.Next(60, 75) / 100, (int)Main.worldSurface + random.Next(5, 48));
+		Point leftSummit = new(mountain.LeftPeakX + random.Next(-10, 11), plan.SurfaceAt(mountain.LeftPeakX) + 3);
+		Point rightSummit = new(mountain.RightPeakX + random.Next(-10, 11), plan.SurfaceAt(mountain.RightPeakX) + 3);
+
+		List<Point[]> routes = [];
+		List<MountainShaft> shafts = [];
+		switch (mountain.InteriorStyle) {
+			case MountainInteriorStyle.BranchingGrottoes:
+				routes.Add([leftEntrance, leftLower, leftUpper, central]);
+				routes.Add([central, rightUpper, rightLower, rightEntrance]);
+				routes.Add([leftUpper, lower, rightUpper]);
+				routes.Add([central, leftSummit]);
+				shafts.Add(new MountainShaft(leftSummit, central, random.Next(3, 6)));
+				break;
+			case MountainInteriorStyle.SwitchbackClimb:
+				routes.Add([leftEntrance, leftLower, central, rightUpper, rightSummit]);
+				routes.Add([rightEntrance, rightLower, lower, central]);
+				routes.Add([leftLower, leftUpper, rightUpper]);
+				shafts.Add(new MountainShaft(rightSummit, rightUpper, random.Next(4, 7)));
+				shafts.Add(new MountainShaft(leftUpper, leftLower, random.Next(3, 6)));
+				break;
+			case MountainInteriorStyle.SplitLevelCaves:
+				routes.Add([leftEntrance, leftUpper, central, rightUpper, rightEntrance]);
+				routes.Add([leftLower, lower, rightLower]);
+				routes.Add([leftUpper, leftLower]);
+				routes.Add([rightUpper, rightLower]);
+				shafts.Add(new MountainShaft(leftUpper, leftLower, random.Next(3, 6)));
+				shafts.Add(new MountainShaft(rightUpper, rightLower, random.Next(3, 6)));
+				break;
+			case MountainInteriorStyle.OpenFault:
+				routes.Add([leftEntrance, leftLower, lower]);
+				routes.Add([rightEntrance, rightLower, lower]);
+				routes.Add([leftUpper, central, rightUpper]);
+				routes.Add([leftLower, leftUpper]);
+				routes.Add([rightLower, rightUpper]);
+				Point faultTop = new(mountain.SaddleX, plan.SurfaceAt(mountain.SaddleX) + 1);
+				shafts.Add(new MountainShaft(faultTop, lower, random.Next(7, 11)));
+				break;
+		}
+
+		List<Point> centers = [leftLower, leftUpper, central, lower, rightUpper, rightLower];
+		int extraChambers = mountain.InteriorStyle == MountainInteriorStyle.BranchingGrottoes ? 4 : 2;
+		for (int index = 0; index < extraChambers; index++) {
+			int x = random.Next(region.Left + 70, region.Right - 69);
+			int y = random.Next(plan.SurfaceAt(x) + 24, Math.Min((int)Main.worldSurface + 58, plan.SurfaceAt(x) + 190));
+			centers.Add(new Point(x, y));
+		}
+
+		List<MountainChamber> chambers = [];
+		for (int index = 0; index < centers.Count; index++) {
+			int radiusX = random.Next(20, mountain.InteriorStyle == MountainInteriorStyle.BranchingGrottoes ? 49 : 42);
+			int radiusY = random.Next(12, mountain.InteriorStyle == MountainInteriorStyle.OpenFault ? 31 : 25);
+			chambers.Add(new MountainChamber(centers[index], radiusX, radiusY, OpenToSurface: index == centers.Count - 1 && random.NextBool(3)));
+		}
+
+		return new MountainInteriorLayout(routes, chambers, shafts, [leftEntrance, rightEntrance]);
+	}
+
+	private static Point Inside(WorldPlan plan, int x, int desiredY)
+	{
+		int clampedX = Math.Clamp(x, plan.LeftBoundary + 20, plan.RightBoundary - 20);
+		return new Point(clampedX, Math.Clamp(desiredY, plan.SurfaceAt(clampedX) + 12, (int)Main.worldSurface + 62));
+	}
+
+	private static void CarveRoute(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		IReadOnlyList<Point> points,
+		int routeIndex,
+		bool protectSensitiveTiles)
+	{
+		for (int segment = 1; segment < points.Count; segment++) {
+			Point start = points[segment - 1];
+			Point end = points[segment];
+			int steps = Math.Max(Math.Abs(end.X - start.X), Math.Abs(end.Y - start.Y));
+			if (steps == 0) {
+				continue;
+			}
+			double length = Math.Sqrt((double)(end.X - start.X) * (end.X - start.X) + (double)(end.Y - start.Y) * (end.Y - start.Y));
+			double normalX = -(end.Y - start.Y) / Math.Max(1d, length);
+			double normalY = (end.X - start.X) / Math.Max(1d, length);
+			int bend = 4 + HashNoise(routeIndex * 37 + segment, mountain.FeatureSeed) % 10;
+			for (int step = 0; step <= steps; step++) {
+				double t = (double)step / steps;
+				double wobble = Math.Sin(Math.PI * t) * Math.Sin((t * 2.2d + routeIndex * 0.31d) * Math.PI) * bend;
+				int x = (int)Math.Round(start.X + (end.X - start.X) * t + normalX * wobble);
+				int y = (int)Math.Round(start.Y + (end.Y - start.Y) * t + normalY * wobble);
+				int radius = MinimumRouteRadius + HashNoise(step / 13 + routeIndex * 19, mountain.FeatureSeed + segment * 101) % 4;
+				CarveEllipse(plan, mountain, x, y, radius + 1, radius, routeIndex * 101 + segment, protectSensitiveTiles, allowSurfaceOpening: step < 12 || step > steps - 12);
 			}
 		}
 	}
 
-	private static void CarveChimney(WorldPlan plan, int x, int bottomY, bool protectSensitiveTiles)
+	private static void CarveChamber(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		MountainChamber chamber,
+		int chamberIndex,
+		bool protectSensitiveTiles)
 	{
-		int topY = plan.SurfaceAt(x) + 1;
-		if (topY >= bottomY - 12) {
-			return;
-		}
+		CarveEllipse(
+			plan,
+			mountain,
+			chamber.Center.X,
+			chamber.Center.Y,
+			chamber.RadiusX,
+			chamber.RadiusY,
+			chamberIndex * 211,
+			protectSensitiveTiles,
+			chamber.OpenToSurface);
+	}
 
-		for (int offset = -3; offset <= 3; offset++) {
-			TileEditor.TryPlacePlatformForced(x + offset, topY - 1);
-		}
+	private static void CarveShaft(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		MountainShaft shaft,
+		bool protectSensitiveTiles)
+	{
+		int topY = Math.Min(shaft.Top.Y, shaft.Bottom.Y);
+		int bottomY = Math.Max(shaft.Top.Y, shaft.Bottom.Y);
+		int centerX = (shaft.Top.X + shaft.Bottom.X) / 2;
 		for (int y = topY; y <= bottomY; y++) {
-			for (int offset = -3; offset <= 3; offset++) {
-				if (CanMutate(x + offset, y, protectSensitiveTiles)) {
-					TileEditor.ClearTerrain(x + offset, y);
-					TileEditor.SetWall(x + offset, y, (y - topY) % 30 < 15 ? WallID.Stone : WallID.Planked);
+			double t = (double)(y - topY) / Math.Max(1, bottomY - topY);
+			int x = centerX + (int)Math.Round(Math.Sin(t * Math.PI * 3d + mountain.RegionId) * 3d);
+			CarveEllipse(plan, mountain, x, y, shaft.HalfWidth, 4, y / 9, protectSensitiveTiles, allowSurfaceOpening: y < topY + 10);
+		}
+	}
+
+	private static void CarveEllipse(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		int centerX,
+		int centerY,
+		int horizontalRadius,
+		int verticalRadius,
+		int salt,
+		bool protectSensitiveTiles,
+		bool allowSurfaceOpening)
+	{
+		for (int offsetX = -horizontalRadius; offsetX <= horizontalRadius; offsetX++) {
+			for (int offsetY = -verticalRadius; offsetY <= verticalRadius; offsetY++) {
+				double normalized =
+					(double)(offsetX * offsetX) / Math.Max(1, horizontalRadius * horizontalRadius)
+					+ (double)(offsetY * offsetY) / Math.Max(1, verticalRadius * verticalRadius);
+				double edgeJitter = (HashNoise(centerX + offsetX * 3, centerY + offsetY * 5 + salt) % 1000 / 1000d - 0.5d) * 0.22d;
+				if (normalized > 1d + edgeJitter) {
+					continue;
+				}
+
+				int x = centerX + offsetX;
+				int y = centerY + offsetY;
+				if ((!allowSurfaceOpening && y < plan.SurfaceAt(x) + 4) || !CanMutate(x, y, protectSensitiveTiles)) {
+					continue;
+				}
+				TileEditor.ClearTerrain(x, y);
+				TileEditor.SetWall(x, y, MountainWallAt(plan, mountain, x, y));
+			}
+		}
+	}
+
+	private static ushort MountainWallAt(WorldPlan plan, MountainRangePlan mountain, int x, int y)
+	{
+		int sampleY = Math.Clamp(Math.Max(y, plan.SurfaceAt(x) + 18), 4, Main.maxTilesY - 5);
+		ushort material = Main.tile[x, sampleY].HasTile ? Main.tile[x, sampleY].TileType : TileID.Stone;
+		BiomeKind biome = BiomeClassifier.ClassifySupport(material, x, sampleY);
+		return biome switch {
+			BiomeKind.Snow => WallID.SnowWallUnsafe,
+			BiomeKind.Desert => WallID.Sandstone,
+			BiomeKind.Jungle => WallID.JungleUnsafe,
+			BiomeKind.Evil => WorldGen.crimson ? WallID.CrimstoneUnsafe : WallID.EbonstoneUnsafe,
+			_ => HashNoise(x / 9, mountain.FeatureSeed + y / 7) % 3 == 0 ? WallID.DirtUnsafe : WallID.Stone
+		};
+	}
+
+	private static void PlaceClimbAids(MountainInteriorLayout layout, UnifiedRandom random, GenerationManifest manifest)
+	{
+		foreach (MountainShaft shaft in layout.Shafts) {
+			int topY = Math.Min(shaft.Top.Y, shaft.Bottom.Y);
+			int bottomY = Math.Max(shaft.Top.Y, shaft.Bottom.Y);
+			int x = (shaft.Top.X + shaft.Bottom.X) / 2;
+			for (int y = topY + 2; y < bottomY - 1; y++) {
+				if (IsDecorationExcluded(manifest, x, y)) {
+					continue;
+				}
+				if (!Main.tile[x, y].HasTile) {
+					TileEditor.SetTerrain(x, y, TileID.Rope);
 				}
 			}
-			if (CanMutate(x, y, protectSensitiveTiles)) {
-				TileEditor.SetTerrain(x, y, TileID.Rope);
-			}
-			if ((y - topY) % 12 == 0) {
-				for (int offset = -3; offset <= 3; offset++) {
-					if (offset != 0) {
+			for (int y = topY + random.Next(9, 14); y < bottomY - 5; y += random.Next(10, 17)) {
+				for (int offset = -shaft.HalfWidth; offset <= shaft.HalfWidth; offset++) {
+					if (offset != 0 && !IsDecorationExcluded(manifest, x + offset, y)) {
 						TileEditor.TryPlacePlatformForced(x + offset, y);
 					}
 				}
@@ -172,33 +415,209 @@ internal static class MountainBiomeGenerator
 		}
 	}
 
-	private static void CarveEllipse(
-		int centerX,
-		int centerY,
-		int horizontalRadius,
-		int verticalRadius,
-		bool protectSensitiveTiles)
+	private static void PlaceInteriorObjects(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		UnifiedRandom random,
+		GenerationManifest manifest)
 	{
-		for (int offsetX = -horizontalRadius; offsetX <= horizontalRadius; offsetX++) {
-			for (int offsetY = -verticalRadius; offsetY <= verticalRadius; offsetY++) {
-				double normalized =
-					(double)(offsetX * offsetX) / (horizontalRadius * horizontalRadius)
-					+ (double)(offsetY * offsetY) / (verticalRadius * verticalRadius);
-				if (normalized > 1d) {
-					continue;
-				}
+		Rectangle area = MountainArea(plan, mountain);
+		int potTarget = 5 + random.Next(3, 8);
+		int potsPlaced = 0;
+		for (int attempt = 0; attempt < potTarget * 90 && potsPlaced < potTarget; attempt++) {
+			int x = random.Next(area.Left + 12, area.Right - 13);
+			int y = random.Next(Math.Max(area.Top + 10, plan.SurfaceAt(x) + 8), area.Bottom - 5);
+			if (!CanPlacePot(x, y, manifest)) {
+				continue;
+			}
+			int style = Math.Clamp((y - (int)Main.worldSurface) / 90 + random.Next(0, 2), 0, 11);
+			if (WorldGen.PlacePot(x, y, TileID.Pots, style)) {
+				potsPlaced++;
+			}
+		}
 
-				int x = centerX + offsetX;
-				int y = centerY + offsetY;
-				if (!CanMutate(x, y, protectSensitiveTiles)) {
+		int pileTarget = 8 + random.Next(4, 10);
+		for (int attempt = 0, placed = 0; attempt < pileTarget * 70 && placed < pileTarget; attempt++) {
+			int x = random.Next(area.Left + 10, area.Right - 11);
+			int y = random.Next(Math.Max(area.Top + 8, plan.SurfaceAt(x) + 7), area.Bottom - 4);
+			if (IsDecorationExcluded(manifest, x, y) || !HasClearFloor(x, y)) {
+				continue;
+			}
+			if (TileEditor.TryPlaceSmallPile(x, y, random.Next(0, 6), 0)) {
+				placed++;
+			}
+		}
+
+		int vineTarget = 18 + random.Next(12, 28);
+		for (int attempt = 0, vines = 0; attempt < vineTarget * 90 && vines < vineTarget; attempt++) {
+			int x = random.Next(area.Left + 8, area.Right - 9);
+			int y = random.Next(Math.Max(area.Top + 7, plan.SurfaceAt(x) + 6), area.Bottom - 16);
+			if (IsDecorationExcluded(manifest, x, y) || !TileEditor.IsSolid(x, y - 1)
+				|| Main.tile[x, y].HasTile || Main.tile[x, y].WallType == WallID.None) {
+				continue;
+			}
+
+			ushort vineType = VineTypeAt(x, y - 1);
+			int length = random.Next(3, 13);
+			for (int offset = 0; offset < length; offset++) {
+				int vineY = y + offset;
+				if (IsDecorationExcluded(manifest, x, vineY) || Main.tile[x, vineY].HasTile || Main.tile[x, vineY].LiquidAmount > 0) {
+					break;
+				}
+				TileEditor.SetTerrain(x, vineY, vineType);
+				Main.tile[x, vineY].TileFrameX = 0;
+				Main.tile[x, vineY].TileFrameY = 0;
+				vines++;
+			}
+		}
+
+		for (int attempt = 0, torches = 0; attempt < 500 && torches < 12; attempt++) {
+			int x = random.Next(area.Left + 8, area.Right - 9);
+			int y = random.Next(Math.Max(area.Top + 8, plan.SurfaceAt(x) + 8), area.Bottom - 6);
+			if (!IsDecorationExcluded(manifest, x, y) && Main.tile[x, y].WallType != WallID.None
+				&& TileEditor.TryPlaceTorch(x, y)) {
+				torches++;
+			}
+		}
+	}
+
+	private static void EnsureInteriorDecorationMinimums(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		GenerationManifest manifest)
+	{
+		Rectangle area = MountainArea(plan, mountain);
+		int vineTiles = CountVines(area);
+		for (int x = area.Left + 10; x < area.Right - 10 && vineTiles < 28; x += 3) {
+			for (int y = Math.Max(area.Top + 8, plan.SurfaceAt(x) + 7); y < area.Bottom - 12 && vineTiles < 28; y++) {
+				if (IsDecorationExcluded(manifest, x, y) || !TileEditor.IsSolid(x, y - 1)
+					|| Main.tile[x, y].HasTile || Main.tile[x, y].WallType == WallID.None) {
 					continue;
 				}
-				TileEditor.ClearTerrain(x, y);
-				if (Main.tile[x, y].WallType == WallID.None) {
-					TileEditor.SetWall(x, y, WallID.Stone);
+				ushort vineType = VineTypeAt(x, y - 1);
+				for (int length = 0; length < 7 && vineTiles < 28; length++) {
+					int vineY = y + length;
+					if (IsDecorationExcluded(manifest, x, vineY) || Main.tile[x, vineY].HasTile
+						|| Main.tile[x, vineY].LiquidAmount > 0) {
+						break;
+					}
+					TileEditor.SetTerrain(x, vineY, vineType);
+					vineTiles++;
 				}
 			}
 		}
+
+		int climbTiles = CountTiles(area, TileID.Platforms) + CountTiles(area, TileID.Rope);
+		for (int x = area.Left + 14; x < area.Right - 14 && climbTiles < 28; x += 7) {
+			int run = 0;
+			for (int y = Math.Max(area.Top + 8, plan.SurfaceAt(x) + 8); y < area.Bottom - 5 && climbTiles < 28; y++) {
+				if (IsDecorationExcluded(manifest, x, y) || Main.tile[x, y].HasTile || Main.tile[x, y].WallType == WallID.None) {
+					run = 0;
+					continue;
+				}
+				run++;
+				if (run >= 4) {
+					TileEditor.SetTerrain(x, y, TileID.Rope);
+					climbTiles++;
+				}
+			}
+		}
+	}
+
+	private static bool CanPlacePot(int x, int y, GenerationManifest manifest) =>
+		!IsDecorationExcluded(manifest, x, y)
+		&& !IsDecorationExcluded(manifest, x + 1, y)
+		&& !Main.tile[x, y - 1].HasTile
+		&& !Main.tile[x + 1, y - 1].HasTile
+		&& !Main.tile[x, y].HasTile
+		&& !Main.tile[x + 1, y].HasTile
+		&& Main.tile[x, y].WallType != WallID.None
+		&& Main.tile[x + 1, y].WallType != WallID.None
+		&& TileEditor.IsSolid(x, y + 1)
+		&& TileEditor.IsSolid(x + 1, y + 1);
+
+	private static bool HasClearFloor(int x, int y) =>
+		!Main.tile[x, y].HasTile && !Main.tile[x, y - 1].HasTile && TileEditor.IsSolid(x, y + 1);
+
+	private static ushort VineTypeAt(int x, int supportY)
+	{
+		ushort support = Main.tile[x, supportY].TileType;
+		BiomeKind biome = BiomeClassifier.ClassifySupport(support, x, supportY);
+		return biome switch {
+			BiomeKind.Jungle => TileID.JungleVines,
+			BiomeKind.Evil => WorldGen.crimson ? TileID.CrimsonVines : TileID.CorruptVines,
+			BiomeKind.Mushroom => TileID.MushroomVines,
+			BiomeKind.Underworld => TileID.AshVines,
+			_ => TileID.Vines
+		};
+	}
+
+	private static bool IsDecorationExcluded(GenerationManifest manifest, int x, int y)
+	{
+		Point point = new(x, y);
+		return manifest.Landmarks.Any(record => record.Area.Contains(point))
+			|| manifest.Bridges.Any(record => record.Area.Contains(point))
+			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.SkyHighlands.Any(record => record.Area.Contains(point))
+			|| manifest.MineSections.Any(record => record.Area.Contains(point));
+	}
+
+	private static Rectangle MountainArea(WorldPlan plan, MountainRangePlan mountain)
+	{
+		WorldRegion region = plan.Regions[mountain.RegionId];
+		int top = Math.Max(45, Math.Min(mountain.LeftPeakY, mountain.RightPeakY) - 12);
+		int bottom = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 70);
+		return new Rectangle(region.Left, top, region.Width, bottom - top);
+	}
+
+	private static (int CaveAirTiles, int WideCavityColumns) MeasureCavities(Rectangle area)
+	{
+		int caveAirTiles = 0;
+		int wideColumns = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			int longestRun = 0;
+			int currentRun = 0;
+			for (int y = area.Top; y < area.Bottom; y++) {
+				Tile tile = Main.tile[x, y];
+				if (!TileEditor.IsSolid(x, y) && tile.WallType != WallID.None) {
+					caveAirTiles++;
+					currentRun++;
+					longestRun = Math.Max(longestRun, currentRun);
+				}
+				else {
+					currentRun = 0;
+				}
+			}
+			if (longestRun >= 12) {
+				wideColumns++;
+			}
+		}
+		return (caveAirTiles, wideColumns);
+	}
+
+	private static int CountTiles(Rectangle area, ushort type)
+	{
+		int count = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = area.Top; y < area.Bottom; y++) {
+				count += Main.tile[x, y].HasTile && Main.tile[x, y].TileType == type ? 1 : 0;
+			}
+		}
+		return count;
+	}
+
+	private static int CountVines(Rectangle area)
+	{
+		int count = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = area.Top; y < area.Bottom; y++) {
+				if (Main.tile[x, y].HasTile && Main.tile[x, y].TileType is TileID.Vines or TileID.JungleVines
+					or TileID.CrimsonVines or TileID.CorruptVines or TileID.MushroomVines or TileID.AshVines) {
+					count++;
+				}
+			}
+		}
+		return count;
 	}
 
 	private static bool CanMutate(int x, int y, bool protectSensitiveTiles)
@@ -209,14 +628,18 @@ internal static class MountainBiomeGenerator
 		return !protectSensitiveTiles || !TileEditor.IsProtectedTile(Main.tile[x, y]);
 	}
 
-	private static void ProtectRoute(Point start, Point end)
+	private static void ProtectRoute(IReadOnlyList<Point> points)
 	{
-		int steps = Math.Max(Math.Abs(end.X - start.X), Math.Abs(end.Y - start.Y));
-		for (int step = 0; step <= steps; step += 14) {
-			double t = steps == 0 ? 0d : (double)step / steps;
-			int x = (int)Math.Round(start.X + (end.X - start.X) * t);
-			int y = (int)Math.Round(start.Y + (end.Y - start.Y) * t);
-			GenVars.structures.AddProtectedStructure(new Rectangle(x - 6, y - 8, 13, 16), padding: 1);
+		for (int segment = 1; segment < points.Count; segment++) {
+			Point start = points[segment - 1];
+			Point end = points[segment];
+			int steps = Math.Max(Math.Abs(end.X - start.X), Math.Abs(end.Y - start.Y));
+			for (int step = 0; step <= steps; step += 14) {
+				double t = steps == 0 ? 0d : (double)step / steps;
+				int x = (int)Math.Round(start.X + (end.X - start.X) * t);
+				int y = (int)Math.Round(start.Y + (end.Y - start.Y) * t);
+				GenVars.structures.AddProtectedStructure(new Rectangle(x - 9, y - 9, 19, 19), padding: 1);
+			}
 		}
 	}
 
@@ -413,18 +836,26 @@ internal static class MountainBiomeGenerator
 		for (int step = 0; step <= 11; step++) {
 			int x = endpointX + direction * step;
 			for (int y = deckY - 6; y < deckY; y++) {
+				if (IsMineRailEnvelope(x, y)) {
+					continue;
+				}
 				TileEditor.ClearTerrain(x, y);
 				TileEditor.SetWall(x, y, wall);
 			}
 			for (int depth = 0; depth < 3; depth++) {
-				TileEditor.SetTerrain(x, deckY + depth, depth == 1 ? TileID.StoneSlab : material);
+				if (!IsMineRailEnvelope(x, deckY + depth)) {
+					TileEditor.SetTerrain(x, deckY + depth, depth == 1 ? TileID.StoneSlab : material);
+				}
 			}
 		}
 
 		int gateX = endpointX + direction * 8;
 		for (int gateWidth = 0; gateWidth < 2; gateWidth++) {
 			for (int y = deckY - 5; y < deckY; y++) {
-				TileEditor.SetActuatedTerrain(gateX + direction * gateWidth, y, material);
+				int gateColumn = gateX + direction * gateWidth;
+				if (!IsMineRailEnvelope(gateColumn, y)) {
+					TileEditor.SetActuatedTerrain(gateColumn, y, material);
+				}
 			}
 		}
 	}
@@ -442,32 +873,42 @@ internal static class MountainBiomeGenerator
 
 	private static int CountEntrances(WorldPlan plan, MountainRangePlan mountain)
 	{
-		WorldRegion region = plan.Regions[mountain.RegionId];
 		int entrances = 0;
-		int[][] entranceCandidates = [
-			[region.Left + 22, region.Left + 44],
-			[region.Right - 22, region.Right - 44]
-		];
-		foreach (int[] sideCandidates in entranceCandidates) {
-			bool clear = false;
-			foreach (int entranceX in sideCandidates) {
-				for (int x = entranceX - 7; x <= entranceX + 7 && !clear; x++) {
-					int y = plan.SurfaceAt(x);
-					for (int offsetY = -3; offsetY <= 4; offsetY++) {
-						if (!TileEditor.IsSolid(x, y + offsetY)) {
-							clear = true;
-							break;
-						}
+		MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
+		foreach (Point entrance in layout.Entrances) {
+			int clearCells = 0;
+			for (int x = entrance.X - 5; x <= entrance.X + 5; x++) {
+				for (int y = entrance.Y - 4; y <= entrance.Y + 5; y++) {
+					if (!TileEditor.IsSolid(x, y)) {
+						clearCells++;
 					}
 				}
-				if (clear) {
-					break;
-				}
 			}
-			if (clear) {
+			if (clearCells >= 70) {
 				entrances++;
 			}
 		}
 		return entrances;
 	}
+
+	private static int MixSeed(int seed, int salt)
+	{
+		unchecked {
+			uint value = (uint)seed ^ (uint)salt;
+			value ^= value >> 16;
+			value *= 0x7FEB_352Du;
+			value ^= value >> 15;
+			return (int)value;
+		}
+	}
+
+	private sealed record MountainInteriorLayout(
+		IReadOnlyList<Point[]> Routes,
+		IReadOnlyList<MountainChamber> Chambers,
+		IReadOnlyList<MountainShaft> Shafts,
+		IReadOnlyList<Point> Entrances);
+
+	private readonly record struct MountainChamber(Point Center, int RadiusX, int RadiusY, bool OpenToSurface);
+
+	private readonly record struct MountainShaft(Point Top, Point Bottom, int HalfWidth);
 }

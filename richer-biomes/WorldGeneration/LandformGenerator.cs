@@ -62,7 +62,7 @@ internal static class LandformGenerator
 		int totalColumns = plan.Mountains.Count * 81;
 		foreach (MountainRangePlan mountain in plan.Mountains) {
 			SkyHighlandPlan? attachedHighland = plan.SkyHighlands
-				.Where(highland => highland.MountainRegionId == mountain.RegionId)
+				.Where(highland => highland.AttachedMountainRegionId == mountain.RegionId)
 				.Select<SkyHighlandPlan, SkyHighlandPlan?>(highland => highland)
 				.FirstOrDefault();
 			int primaryPeakX = attachedHighland is SkyHighlandPlan highland

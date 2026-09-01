@@ -13,6 +13,11 @@ internal static class SkyHighlandGenerator
 
 	public static void Apply(WorldPlan plan, GenerationManifest manifest, GenerationProgress progress)
 	{
+		if (plan.SkyHighlands.Count == 0) {
+			progress.Set(1d);
+			return;
+		}
+
 		for (int index = 0; index < plan.SkyHighlands.Count; index++) {
 			SkyHighlandPlan highland = plan.SkyHighlands[index];
 			UnifiedRandom random = new(MixSeed(plan.GenerationSeed, SkySeedSalt, index));
@@ -29,6 +34,9 @@ internal static class SkyHighlandGenerator
 	{
 		for (int index = 0; index < plan.SkyHighlands.Count; index++) {
 			SkyHighlandPlan highland = plan.SkyHighlands[index];
+			if (!highland.HasLake) {
+				continue;
+			}
 			int left = Math.Clamp(highland.CenterX - highland.Width / 2, 55, Main.maxTilesX - highland.Width - 55);
 			int right = left + highland.Width - 1;
 			int centerX = Math.Clamp(highland.CenterX + highland.Width / 5, left + 50, right - 50);
@@ -74,6 +82,31 @@ internal static class SkyHighlandGenerator
 				for (int depth = 0; depth < 3; depth++) {
 					if (!TileEditor.IsProtectedTile(Main.tile[x, floorY + depth])) {
 						TileEditor.SetTerrain(x, floorY + depth, depth == 0 ? TileID.Sunplate : TileID.Cloud);
+					}
+				}
+			}
+			ReinforceThinSupports(new Rectangle(
+				left - 20,
+				Math.Max(45, highland.SurfaceY - 18),
+				highland.Width + 40,
+				highland.Depth + 62));
+		}
+	}
+
+	private static void ReinforceThinSupports(Rectangle area)
+	{
+		for (int x = Math.Max(3, area.Left); x < Math.Min(Main.maxTilesX - 3, area.Right); x++) {
+			for (int y = Math.Max(4, area.Top); y < Math.Min(Main.maxTilesY - 5, area.Bottom); y++) {
+				Tile tile = Main.tile[x, y];
+				if (!tile.HasUnactuatedTile || !Main.tileSolid[tile.TileType] || Main.tileSolidTop[tile.TileType]
+					|| TileEditor.IsSolid(x, y - 1) || TileEditor.IsSolid(x, y - 2) || TileEditor.IsSolid(x, y - 3)
+					|| TileEditor.IsSolid(x, y + 1) || TileEditor.IsSolid(x, y + 2)) {
+					continue;
+				}
+
+				for (int depth = 1; depth <= 2; depth++) {
+					if (CanReplace(x, y + depth)) {
+						TileEditor.SetTerrain(x, y + depth, TileID.Cloud);
 					}
 				}
 			}
@@ -130,26 +163,85 @@ internal static class SkyHighlandGenerator
 
 		int interiorRouteTiles = CarveInteriorChambers(plan, left, right);
 		interiorRouteTiles += CarveInteriorRoutes(plan, left, right, surface, random);
-		int liquidCells = BuildSkyLake(plan, left, right, surface);
+		int liquidCells = plan.HasLake ? BuildSkyLake(plan, left, right, surface) : 0;
+		BuildStructuralButtresses(plan, left, right, surface);
 		cloudTiles += BuildSatellites(plan, left, right, random);
 		Rectangle area = new(left - 20, Math.Max(45, plan.SurfaceY - 18), plan.Width + 40, plan.Depth + 62);
 		TileEditor.Frame(area, border: 3);
-		return new SkyHighlandRecord(area, walkableSurfaceTiles, interiorRouteTiles, cloudTiles, liquidCells);
+		return new SkyHighlandRecord(
+			area,
+			walkableSurfaceTiles,
+			interiorRouteTiles,
+			cloudTiles,
+			liquidCells,
+			plan.Style,
+			plan.AttachedMountainRegionId is not null);
+	}
+
+	private static void BuildStructuralButtresses(SkyHighlandPlan plan, int left, int right, int[] surface)
+	{
+		int interiorY = plan.SurfaceY + Math.Max(26, plan.Depth / 3);
+		int undersideY = plan.SurfaceY + Math.Max(50, plan.Depth * 2 / 3);
+		foreach (int centerX in new[] { left + plan.Width * 22 / 100, left + plan.Width * 78 / 100 }) {
+			for (int x = centerX - 4; x <= centerX + 4; x++) {
+				int topY = surface[x - left];
+				for (int y = topY; y <= undersideY + 2; y++) {
+					if (CanReplace(x, y)) {
+						TileEditor.SetTerrain(x, y, y == topY ? TileID.Grass : y < topY + 5 ? TileID.Dirt : TileID.Cloud);
+					}
+				}
+			}
+
+			int routeLeft = left + plan.Width / 10;
+			int upperAmplitude = plan.Style == SkyHighlandStyle.BrokenArchipelago ? 7 : 4;
+			double upperPeriod = plan.Style switch {
+				SkyHighlandStyle.TerracedMeadow => 31d,
+				SkyHighlandStyle.CloudBasin => 19d,
+				SkyHighlandStyle.BrokenArchipelago => 13d,
+				_ => 23d
+			};
+			int upperFloorY = interiorY + (int)Math.Round(Math.Sin((centerX - routeLeft) / upperPeriod) * upperAmplitude);
+			int lowerFloorY = undersideY + (int)Math.Round(
+				Math.Sin((centerX - routeLeft) / (plan.Style == SkyHighlandStyle.CloudBasin ? 14d : 23d)) * 3d);
+			CarveButtressPortal(centerX, upperFloorY, height: 8, wallSalt: plan.CenterX + 1201);
+			CarveButtressPortal(centerX, lowerFloorY, height: 7, wallSalt: plan.CenterX + 1301);
+		}
+	}
+
+	private static void CarveButtressPortal(int centerX, int floorY, int height, int wallSalt)
+	{
+		for (int x = centerX - 2; x <= centerX + 2; x++) {
+			for (int y = floorY - height; y < floorY; y++) {
+				TileEditor.ClearTerrain(x, y);
+				TileEditor.SetWall(x, y, SampleSkyNoise(x, y, wallSalt) > 0.5d ? WallID.DiscWall : WallID.Cloud);
+			}
+		}
 	}
 
 	private static int[] BuildSurfaceProfile(SkyHighlandPlan plan, UnifiedRandom random, int left, int right)
 	{
 		int[] surface = new int[plan.Width];
-		int previous = plan.SurfaceY + random.Next(-2, 3);
+		int previous = plan.SurfaceY + random.Next(-5, 6);
 		int nextControlX = left;
 		for (int x = left; x <= right; x++) {
 			int edgeDistance = Math.Min(x - left, right - x);
-			int edgeDrop = Math.Max(0, 14 - edgeDistance / 2);
+			int edgeDrop = plan.Style switch {
+				SkyHighlandStyle.TerracedMeadow => Math.Max(0, 12 - edgeDistance / 2),
+				SkyHighlandStyle.CloudBasin => Math.Max(0, 18 - edgeDistance / 2),
+				SkyHighlandStyle.BrokenArchipelago => Math.Max(0, 25 - edgeDistance),
+				_ => 14
+			};
 			if (x >= nextControlX) {
-				previous = Math.Clamp(previous + random.Next(-3, 4), plan.SurfaceY - 7, plan.SurfaceY + 8);
-				nextControlX = x + random.Next(28, 47);
+				int amplitude = plan.Style == SkyHighlandStyle.BrokenArchipelago ? 7 : 4;
+				previous = Math.Clamp(previous + random.Next(-amplitude, amplitude + 1), plan.SurfaceY - 11, plan.SurfaceY + 13);
+				nextControlX = x + random.Next(
+					plan.Style == SkyHighlandStyle.TerracedMeadow ? 36 : 19,
+					plan.Style == SkyHighlandStyle.TerracedMeadow ? 65 : 48);
 			}
-			surface[x - left] = previous + edgeDrop;
+			int basin = plan.Style == SkyHighlandStyle.CloudBasin
+				? (int)Math.Round(Math.Sin(Math.PI * (x - left) / Math.Max(1, plan.Width - 1)) * 6d)
+				: 0;
+			surface[x - left] = previous + edgeDrop + basin;
 		}
 
 		for (int x = 1; x < surface.Length; x++) {
@@ -176,11 +268,18 @@ internal static class SkyHighlandGenerator
 		int routeLeft = left + plan.Width / 10;
 		int routeRight = right - plan.Width / 10;
 		for (int x = routeLeft; x <= routeRight; x++) {
-			int wave = (int)Math.Round(Math.Sin((x - routeLeft) / 23d) * 4d);
+			double upperPeriod = plan.Style switch {
+				SkyHighlandStyle.TerracedMeadow => 31d,
+				SkyHighlandStyle.CloudBasin => 19d,
+				SkyHighlandStyle.BrokenArchipelago => 13d,
+				_ => 23d
+			};
+			int waveAmplitude = plan.Style == SkyHighlandStyle.BrokenArchipelago ? 7 : 4;
+			int wave = (int)Math.Round(Math.Sin((x - routeLeft) / upperPeriod) * waveAmplitude);
 			int floorY = interiorY + wave;
-			ushort upperWall = (x - routeLeft) % 92 < 46 ? WallID.DiscWall : WallID.Cloud;
+			ushort upperWall = SampleSkyNoise(x, floorY, plan.CenterX + 331) > 0.48d ? WallID.DiscWall : WallID.Cloud;
 			routeTiles += CarveCorridorColumn(x, floorY, 8, upperWall);
-			if ((x - routeLeft) % 34 == 17) {
+			if (HashNoise(x, floorY, plan.CenterX + 719) % 47 == 0) {
 				TileEditor.TryPlaceTorch(x, floorY - 2);
 			}
 
@@ -188,12 +287,17 @@ internal static class SkyHighlandGenerator
 			// Extending it nearly edge-to-edge keeps the lake, ruins, and interior
 			// caverns as districts of one traversable biome instead of separate shelves.
 			if (x >= left + 20 && x <= right - 20) {
-				int lowerWave = (int)Math.Round(Math.Sin((x - routeLeft) / 19d) * 2d);
+				int lowerWave = (int)Math.Round(Math.Sin((x - routeLeft) / (plan.Style == SkyHighlandStyle.CloudBasin ? 14d : 23d)) * 3d);
 				routeTiles += CarveCorridorColumn(x, undersideY + lowerWave, 7, WallID.Cloud);
 			}
 		}
 
-		int[] connectors = [left + plan.Width / 3, right - plan.Width / 3];
+		int[] connectors = plan.Style switch {
+			SkyHighlandStyle.TerracedMeadow => [left + plan.Width / 3, right - plan.Width / 3],
+			SkyHighlandStyle.CloudBasin => [left + plan.Width / 2],
+			SkyHighlandStyle.BrokenArchipelago => [left + plan.Width / 4, left + plan.Width / 2, right - plan.Width / 4],
+			_ => [left + plan.Width / 3, right - plan.Width / 3]
+		};
 		foreach (int x in connectors) {
 			int surfaceY = surface[x - left];
 			int topY = surfaceY + 1;
@@ -206,7 +310,10 @@ internal static class SkyHighlandGenerator
 			for (int y = topY; y <= bottomY; y++) {
 				for (int offset = -3; offset <= 3; offset++) {
 					TileEditor.ClearTerrain(x + offset, y);
-					TileEditor.SetWall(x + offset, y, (y - topY) % 28 < 14 ? WallID.DiscWall : WallID.Cloud);
+					TileEditor.SetWall(
+						x + offset,
+						y,
+						SampleSkyNoise(x + offset, y, plan.CenterX + 887) > 0.5d ? WallID.DiscWall : WallID.Cloud);
 				}
 				TileEditor.SetTerrain(x, y, TileID.Rope);
 				if ((y - topY) % 11 == 0) {
@@ -231,13 +338,19 @@ internal static class SkyHighlandGenerator
 	private static int CarveInteriorChambers(SkyHighlandPlan plan, int left, int right)
 	{
 		int carved = 0;
-		for (int chamberIndex = 0; chamberIndex < 4; chamberIndex++) {
-			int centerX = left + plan.Width * (chamberIndex + 1) / 5;
+		int chamberCount = plan.Style switch {
+			SkyHighlandStyle.TerracedMeadow => 3,
+			SkyHighlandStyle.CloudBasin => 5,
+			SkyHighlandStyle.BrokenArchipelago => 6,
+			_ => 4
+		};
+		for (int chamberIndex = 0; chamberIndex < chamberCount; chamberIndex++) {
+			int centerX = left + plan.Width * (chamberIndex + 1) / (chamberCount + 1);
 			int centerY = chamberIndex % 2 == 0
 				? plan.SurfaceY + Math.Max(24, plan.Depth / 3) + 8
 				: plan.SurfaceY + Math.Max(48, plan.Depth * 2 / 3) - 7;
-			int radiusX = 24 + HashNoise(centerX, centerY, plan.CenterX) % 15;
-			int radiusY = 12 + HashNoise(centerX, centerY, plan.CenterX + 71) % 7;
+			int radiusX = 20 + HashNoise(centerX, centerY, plan.CenterX) % (plan.Style == SkyHighlandStyle.BrokenArchipelago ? 24 : 17);
+			int radiusY = 10 + HashNoise(centerX, centerY, plan.CenterX + 71) % 11;
 			for (int offsetX = -radiusX; offsetX <= radiusX; offsetX++) {
 				for (int offsetY = -radiusY; offsetY <= radiusY; offsetY++) {
 					double normalized =
@@ -253,7 +366,7 @@ internal static class SkyHighlandGenerator
 						continue;
 					}
 					TileEditor.ClearTerrain(x, y);
-					TileEditor.SetWall(x, y, (offsetX + chamberIndex * 9) % 22 < 11 ? WallID.DiscWall : WallID.Cloud);
+					TileEditor.SetWall(x, y, SampleSkyNoise(x, y, plan.CenterX + chamberIndex * 43) > 0.5d ? WallID.DiscWall : WallID.Cloud);
 					carved++;
 				}
 			}
@@ -319,7 +432,7 @@ internal static class SkyHighlandGenerator
 	private static int BuildSatellites(SkyHighlandPlan plan, int left, int right, UnifiedRandom random)
 	{
 		int cloudTiles = 0;
-		int biomeOutcrops = Math.Min(4, plan.SatelliteCount);
+		int biomeOutcrops = Math.Min(plan.Style == SkyHighlandStyle.BrokenArchipelago ? 7 : 4, plan.SatelliteCount);
 		for (int index = 0; index < biomeOutcrops; index++) {
 			int direction = index % 2 == 0 ? -1 : 1;
 			int centerX = direction < 0

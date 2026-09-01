@@ -203,7 +203,7 @@ if ! grep -Eq "Loading World: .*Width: $expected_width, Height: $expected_height
 	printf 'The saved world did not reload with the requested size and mode.\n' >&2
 	exit 1
 fi
-if ! grep -Eq 'Loaded Richer Biomes manifest v3: landmarks=11; mountains=[1-9][0-9]*; bridges=[1-9][0-9]*; skyHighlands=[1-9][0-9]*; mine=present; validation=valid=True' "$reload_log"; then
+if ! grep -Eq 'Loaded Richer Biomes manifest v4: landmarks=11; mountains=[1-9][0-9]*; bridges=[1-9][0-9]*; skyHighlands=[1-9][0-9]*; mine=present; validation=valid=True' "$reload_log"; then
 	printf 'The first reload did not recover the complete Richer Biomes feature manifest.\n' >&2
 	exit 1
 fi
@@ -221,7 +221,7 @@ fi
 
 persistence_log="$playtest_dir/Logs/server-$world_size-$world_mode-$safe_seed-persistence.log"
 cp "$server_log" "$persistence_log"
-if ! grep -Eq 'Loaded Richer Biomes manifest v3: landmarks=11; mountains=[1-9][0-9]*; bridges=[1-9][0-9]*; skyHighlands=[1-9][0-9]*; mine=present; validation=valid=True' "$persistence_log"; then
+if ! grep -Eq 'Loaded Richer Biomes manifest v4: landmarks=11; mountains=[1-9][0-9]*; bridges=[1-9][0-9]*; skyHighlands=[1-9][0-9]*; mine=present; validation=valid=True' "$persistence_log"; then
 	printf 'The Richer Biomes feature manifest did not survive the reload/save/reload cycle.\n' >&2
 	exit 1
 fi

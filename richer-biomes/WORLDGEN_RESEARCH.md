@@ -36,6 +36,19 @@ The second audit used `Majesty-Matrix-Large-001` (`1180213525`) and eight in-gam
 
 The durable response is a set of shape-aware contracts. Structural floors are at least three tiles thick. Platforms mark only transitions. Bridge portals are wired and actuated. Material fields use correlated clusters rather than stripes. Mine rails are an explicit cyclic graph rasterized as flat and exact 45-degree segments. Organic chambers and containment shells vary their edge by column, and every late destructive pass is followed by a final ownership repair before validation.
 
+## Variance and clearance audit
+
+The 2026-09-01 follow-up generated three small worlds plus medium and large worlds, then rendered the large world at tile resolution with crops for every authored feature. It found and corrected interactions that a single exact seed did not expose:
+
+- late mountain grounding columns could close regional cave routes, so the final route repair now removes only natural terrain and runs after the grounding repair;
+- bridge portals and summit repairs could cross a mine entrance, so all mountain mutations preserve the rail clearance envelope;
+- an upper rail branch could place its Living Wood support inside a lower branch's headroom, so supports now consult the complete planned graph before placement;
+- terraces, valleys, landmarks, and mine districts could hide an early biome seam, so only boundaries still observable in the finished world remain in the manifest;
+- measuring a transition at the nearest center crossing confused incidental material flecks with the authored boundary, so validation now samples the deterministic boundary at two-tile depth intervals;
+- a highland touching every mountain made the relationship look mandatory, so attachment is capped at one and is planned only one third of the time.
+
+The visual result established several useful scale rules. Mountain cave quality needs both total wall-backed air and horizontal distribution; raw air count alone can hide one large void. Sky biomes need style-level changes to satellite count, lake use, and route layout, not only a different outline. Landmark clearance is best expressed as a measured open arch rather than a door-placement result. Rail clearance must be owned by the union of the graph because branches can cross at different elevations.
+
 ## Design synthesis
 
 Beautiful procedural regions need more than a silhouette. The reusable grammar for Richer Biomes is:
@@ -74,6 +87,7 @@ Build the macro shape first, then add bounded jitter. Jitter should disturb a co
 - Use a readable base, roof line, vertical rhythm, divider, loft or balcony, entrances, and a biome silhouette.
 - Furniture should imply use: work area, seating, table surface, storage or books, lighting, and debris. Empty wall-backed rooms are unfinished.
 - Use several wall fields, framed windows, roof trim, dormers or chimneys, supported porches, and a bounded loft opening. A platform strip is not a substitute for a floor plan.
+- Exploration landmarks that resemble houses must deliberately fail the real NPC-housing query when NPC occupation would bypass progression. Unsafe walls, open side arches, and no doors are stronger evidence than assuming a ruin is invalid.
 - Record bounds from the final floor. On sloped terrain, a first surface sample can sit below the actual building and make later decoration or validation operate outside its owner.
 
 ### Surface mine
@@ -97,9 +111,10 @@ Build the macro shape first, then add bounded jitter. Jitter should disturb a co
 All world sizes also require:
 
 - at least one ground-connected mountain with 32 Space-band columns;
-- two visible foothill entrances and 24 cloud-belt tiles per mountain;
+- two visible foothill entrances, 24 cloud-belt tiles, broad wall-backed caves, wide cavities, pots, vines, and climbing aids per mountain;
 - one valley and one bridge per mountain;
-- eleven furnished biome landmarks, including both oceans;
+- eleven furnished biome landmarks, including both oceans, with open side approaches, no authored doors, and failed NPC-housing queries;
+- at least two surviving organic transition seams on small worlds and three on medium or large worlds;
 - all eleven required mine edges and every authored rail cell connected to the surface entrance;
 - at least three degree-three mine junctions, two independent rail cycles, and four horizontal rail edges;
 - three-tile bridge decks with platform drop bays, custom background panels, clear headroom, and at least sixteen actuated portal cells;
@@ -129,23 +144,26 @@ Richer Biomes 0.3.0 uses its own algorithms and vanilla Terraria tile IDs. Exter
 
 ## 0.3.0 verification record
 
-The final package was tested on 2026-08-31 with the repository matrix. Each row completed generation, strict tile validation, first reload, save, and second reload with manifest version 3 intact.
+The final package was tested on 2026-09-01 with tModLoader 2026.07.3.0. Each row completed generation, strict tile validation, first reload, save, and second reload with manifest version 4 intact.
 
-| Mode and size | Seed | Mountains / bridges / highlands | Landmarks | Cave routes | Mine entrance component |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Classic small | `Majesty-Matrix-Small-001` | 1 / 1 / 1 | 11 | 4 | 1,907 tiles |
-| Journey medium | `Majesty-Matrix-Medium-001` | 2 / 2 / 2 | 11 | 4 | 2,481 tiles |
-| Classic large | `Majesty-Matrix-Large-001` | 2 / 2 / 2 | 11 | 6 | 3,149 tiles |
+| Mode and size | Seed | Mountains / bridges / highlands | Highland relation and styles | Visible seams | Cave routes | Mine entrance component |
+| --- | --- | ---: | --- | ---: | ---: | ---: |
+| Classic small | `Majesty-Matrix-Small-001` | 1 / 1 / 1 | detached Cloud Basin | 6 | 5 | 2,041 tiles |
+| Journey medium | `Majesty-Matrix-Medium-001` | 2 / 2 / 2 | detached Terraced Meadow; detached Broken Archipelago | 7 | 6 | 2,542 tiles |
+| Classic large | `Majesty-Matrix-Large-001` | 2 / 2 / 2 | attached Cloud Basin; detached Broken Archipelago | 8 | 9 | 2,834 tiles |
 
-An independent tModLoader 2026.07.3.0 inspection loaded the final exact-seed `.wld` and scanned its tile grid. It found:
+Separate small-seed audits covered both Corruption and Crimson and produced detached, attached Meadow, and attached Archipelago outcomes. Together with the final matrix, those runs demonstrate that a mountain connection is an occurrence rather than a requirement and that all three sky styles survive final validation.
 
-- textual seed `Majesty-Matrix-Large-001` and numeric seed `1180213525` embedded in the world file;
-- both planned mountain regions ground-connected into Space, with grounded peaks at y=267 and y=263 and cloud-connected authored terrain reaching the upper sky;
-- two biome-scale connected sky bodies measuring 672×200 and 413×197 tiles, with lakes, layered routes, and retained platform shafts;
-- 20–28 retained furnishing tiles, three to five wall types, complete door footprints, and bounded platform openings in every landmark;
-- the authored 3,149-tile mine as the largest rail component, spanning y=388–1222 with 427 surface, 910 Underground, and 1,812 Cavern track tiles, plus 1,954 nearby beam cells;
-- an irregular sealed evil annex with a wired actuated gate, plus distinct flooded and collapsed districts;
-- the expected 0.3.0 manifest and validation summary after the reload/save/reload cycle.
+An independent tModLoader inspection loaded the final large `.wld`, scanned its tile grid, and rendered a full map plus feature crops. It found:
+
+- two Space-height, ground-connected mountain ranges using different interior grammars; the recorded wall-backed cave areas were 79,153 and 51,872 cells, with wide chambers across 646 of 704 and 509 of 559 columns;
+- 188 and 152 retained pot tiles, 251 and 179 vine tiles, and 126 and 1,061 climbing-aid tiles in the two mountain ranges;
+- one attached 527×208 Cloud Basin and one detached 517×213 Broken Archipelago, with 12,974 and 16,318 interior-route cells;
+- two bridges with different structure over themed valleys;
+- eleven retained surface transitions with irregular depth profiles after feature-occluded seams were omitted, including mountain-scale blends that remain organic through the full above-surface body;
+- eleven landmarks measuring 61–79 tiles wide with three to five rooms, 34–43 retained furnishing cells, open approaches, no authored doors, and failed housing checks;
+- a 2,834-tile authored mine component spanning a visible workyard, mountain rail, three working stations, flooded works, collapse, and sealed evil annex; all eleven required edges retained six tiles of headroom and connected to the surface entrance;
+- the expected manifest and validation summary after the reload/save/reload cycle.
 
 The final build artifact and the package installed in the normal tModLoader Mods directory were compared byte-for-byte after the last build. The release handoff records the resulting SHA-256 outside the packaged research file so the digest does not change itself.
 

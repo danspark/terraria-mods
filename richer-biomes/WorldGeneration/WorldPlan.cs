@@ -43,6 +43,21 @@ internal enum BridgeStyle
 	RailTrestle
 }
 
+internal enum MountainInteriorStyle
+{
+	BranchingGrottoes,
+	SwitchbackClimb,
+	SplitLevelCaves,
+	OpenFault
+}
+
+internal enum SkyHighlandStyle
+{
+	TerracedMeadow,
+	CloudBasin,
+	BrokenArchipelago
+}
+
 internal enum MineSectionKind
 {
 	Workyard,
@@ -85,15 +100,19 @@ internal readonly record struct MountainRangePlan(
 	int RightPeakX,
 	int RightPeakY,
 	ValleyTheme ValleyTheme,
-	BridgeStyle BridgeStyle);
+	BridgeStyle BridgeStyle,
+	MountainInteriorStyle InteriorStyle,
+	int FeatureSeed);
 
 internal readonly record struct SkyHighlandPlan(
-	int MountainRegionId,
+	int? AttachedMountainRegionId,
 	int CenterX,
 	int SurfaceY,
 	int Width,
 	int Depth,
-	int SatelliteCount);
+	int SatelliteCount,
+	SkyHighlandStyle Style,
+	bool HasLake);
 
 internal readonly record struct MineRoute(Point Start, Point End, bool HasTrack, bool Required);
 
@@ -146,14 +165,21 @@ internal readonly record struct LandmarkRecord(
 	int AnchorX,
 	int AnchorY,
 	int RoomCount,
-	int FurnitureCount);
+	int FurnitureCount,
+	int LayoutVariant);
 
 internal readonly record struct MountainRecord(
 	int RegionId,
 	Rectangle Area,
 	int PeakY,
 	int EntranceCount,
-	int CloudTiles);
+	int CloudTiles,
+	MountainInteriorStyle InteriorStyle,
+	int CaveAirTiles,
+	int WideCavityColumns,
+	int PotTiles,
+	int VineTiles,
+	int ClimbAidTiles);
 
 internal readonly record struct ValleyRecord(ValleyTheme Theme, Rectangle Area, int LiquidCells);
 
@@ -164,7 +190,15 @@ internal readonly record struct SkyHighlandRecord(
 	int WalkableSurfaceTiles,
 	int InteriorRouteTiles,
 	int CloudTiles,
-	int LiquidCells);
+	int LiquidCells,
+	SkyHighlandStyle Style,
+	bool MountainAttached);
+
+internal readonly record struct BiomeTransitionRecord(
+	BiomeKind LeftBiome,
+	BiomeKind RightBiome,
+	Rectangle Area,
+	int ModifiedCells);
 
 internal readonly record struct SurfaceMineRecord(
 	Rectangle Area,
@@ -177,7 +211,7 @@ internal readonly record struct SurfaceMineRecord(
 
 internal sealed class GenerationManifest
 {
-	public const int CurrentVersion = 3;
+	public const int CurrentVersion = 4;
 
 	public int GenerationSeed { get; init; }
 	public List<BuildTerrace> Terraces { get; } = [];
@@ -186,6 +220,7 @@ internal sealed class GenerationManifest
 	public List<ValleyRecord> Valleys { get; } = [];
 	public List<BridgeRecord> Bridges { get; } = [];
 	public List<SkyHighlandRecord> SkyHighlands { get; } = [];
+	public List<BiomeTransitionRecord> BiomeTransitions { get; } = [];
 	public List<MineSection> MineSections { get; } = [];
 	public SurfaceMineRecord? SurfaceMine { get; set; }
 	public Dictionary<BiomeKind, int> AccentCounts { get; } = [];

@@ -14,7 +14,7 @@ internal static class SurfaceMineGenerator
 	private const int MineSeedSalt = 0x4D49_4E45;
 	private const int CorridorHeadroom = 6;
 
-	public static SurfaceMinePlan PlanAndReserve(WorldPlan worldPlan)
+	public static SurfaceMinePlan PlanAndReserve(WorldPlan worldPlan, GenerationManifest manifest)
 	{
 		UnifiedRandom random = new(MixSeed(worldPlan.GenerationSeed, MineSeedSalt));
 		int halfWidth = Main.maxTilesX switch {
@@ -41,7 +41,7 @@ internal static class SurfaceMineGenerator
 			}
 
 			SurfaceMinePlan candidate = CreatePlan(worldPlan, centerX, halfWidth, random.Next());
-			if (!CanPlace(candidate)) {
+			if (!CanPlace(candidate, manifest)) {
 				continue;
 			}
 
@@ -93,24 +93,22 @@ internal static class SurfaceMineGenerator
 			progress.Set((double)(plan.Sections.Count + index + 1) / (plan.Routes.Count + plan.Sections.Count));
 		}
 
-		foreach (Point point in plannedTrack) {
-			PrepareTrackCell(point, plannedTrack);
-		}
-		foreach (Point point in plannedTrack) {
-			TileEditor.TryPlaceMinecartTrack(point.X, point.Y);
-		}
-		foreach (Point point in plannedTrack) {
-			if (HasTile(point.X, point.Y, TileID.MinecartTrack)) {
-				Minecart.FrameTrack(point.X, point.Y, pound: false, mute: true);
-			}
-		}
-		BuildQuarantineGates(plan);
+		OwnTrackGraph(plannedTrack);
 		foreach (MineSection section in plan.Sections) {
-			furnitureCount += BuildLowerWorkDisplay(section, plannedTrack);
+			int displayFurniture = BuildLowerWorkDisplay(section, plannedTrack);
+			if (displayFurniture == 0 && section.Kind is MineSectionKind.Working or MineSectionKind.MountainRail) {
+				displayFurniture = BuildCompactWorkAlcove(section, plannedTrack);
+			}
+			furnitureCount += displayFurniture;
 		}
 		furnitureCount += BuildWorkyardLoft(plan.Entrance);
 
 		RefillFloodedSection(plan);
+		// Furnishings, quarantine gates, and display decks are authored after the
+		// first rail pass. Give the connected graph final ownership of its exact
+		// cells and clearance envelope so no district can sever a branch.
+		OwnTrackGraph(plannedTrack);
+		BuildQuarantineGates(plan);
 
 		int trackTiles = plannedTrack.Count(point => HasTile(point.X, point.Y, TileID.MinecartTrack));
 		int supportTiles = CountTiles(plan.Area, TileID.WoodenBeam);
@@ -125,26 +123,60 @@ internal static class SurfaceMineGenerator
 			connectedRoutes);
 	}
 
+	public static void RepairTrackGraph(SurfaceMinePlan plan, GenerationManifest manifest)
+	{
+		HashSet<Point> plannedTrack = plan.Routes
+			.Where(route => route.HasTrack)
+			.SelectMany(Rasterize)
+			.ToHashSet();
+		OwnTrackGraph(plannedTrack);
+		BuildQuarantineGates(plan);
+
+		SurfaceMineRecord existing = manifest.SurfaceMine
+			?? throw new InvalidOperationException("The surface mine cannot be repaired before it is furnished.");
+		manifest.SurfaceMine = existing with {
+			TrackTiles = plannedTrack.Count(point => HasTile(point.X, point.Y, TileID.MinecartTrack)),
+			SupportTiles = CountTiles(plan.Area, TileID.WoodenBeam),
+			ConnectedRouteCount = plan.Routes.Count(route => route.Required && RouteSurvived(route))
+		};
+	}
+
+	private static void OwnTrackGraph(HashSet<Point> plannedTrack)
+	{
+		foreach (Point point in plannedTrack) {
+			PrepareTrackCell(point, plannedTrack);
+		}
+		foreach (Point point in plannedTrack) {
+			TileEditor.TryPlaceMinecartTrack(point.X, point.Y);
+		}
+		foreach (Point point in plannedTrack) {
+			if (HasTile(point.X, point.Y, TileID.MinecartTrack)) {
+				Minecart.FrameTrack(point.X, point.Y, pound: false, mute: true);
+			}
+		}
+	}
+
 	private static SurfaceMinePlan CreatePlan(WorldPlan worldPlan, int centerX, int halfWidth, int featureSeed)
 	{
+		UnifiedRandom random = new(featureSeed);
 		int surfaceY = worldPlan.SurfaceAt(centerX - halfWidth + 35) - 1;
-		int wing = halfWidth * 13 / 20;
-		int levelDrop = Math.Max(96, wing - 24);
-		int upperY = (int)Main.worldSurface + 82;
+		int wing = halfWidth * random.Next(66, 79) / 100;
+		int levelDrop = Math.Clamp(random.Next(104, 136), 96, wing - 32);
+		int upperY = (int)Main.worldSurface + random.Next(68, 108);
 		int middleY = Math.Min((int)Main.rockLayer + 44, upperY + levelDrop);
 		int deepY = Math.Min(
 			Math.Min(Main.UnderworldLayer - 170, (int)Main.rockLayer + 275),
 			middleY + levelDrop);
 		Point p0 = new(centerX - halfWidth + 35, surfaceY);
-		Point upperWest = new(centerX - wing, upperY);
-		Point upperJunction = new(centerX, upperY + 6);
-		Point upperEast = new(centerX + wing, upperY + 10);
-		Point middleWest = new(centerX - wing, middleY + 14);
-		Point middleJunction = new(centerX, middleY + 5);
-		Point middleEast = new(centerX + wing, middleY + 10);
-		Point deepWest = new(centerX - wing, deepY + 14);
-		Point deepJunction = new(centerX, deepY + 5);
-		Point deepEast = new(centerX + wing, deepY + 10);
+		Point upperWest = new(centerX - wing, upperY + random.Next(-4, 5));
+		Point upperJunction = new(centerX + random.Next(-12, 13), upperY + random.Next(-3, 6));
+		Point upperEast = new(centerX + wing, upperY + random.Next(-2, 7));
+		Point middleWest = new(centerX - wing + random.Next(-8, 9), middleY + random.Next(-4, 7));
+		Point middleJunction = new(centerX + random.Next(-12, 13), middleY + random.Next(-3, 6));
+		Point middleEast = new(centerX + wing + random.Next(-8, 9), middleY + random.Next(-4, 7));
+		Point deepWest = new(centerX - wing + random.Next(-8, 9), deepY + random.Next(-4, 7));
+		Point deepJunction = new(centerX + random.Next(-12, 13), deepY + random.Next(-3, 6));
+		Point deepEast = new(centerX + wing + random.Next(-8, 9), deepY + random.Next(-4, 7));
 
 		List<MineRoute> routes = [
 			new(p0, upperEast, HasTrack: true, Required: true),
@@ -161,41 +193,74 @@ internal static class SurfaceMineGenerator
 		];
 
 		List<MineSection> sections = [
-			new(0, MineSectionKind.Workyard, Centered(p0.X + 15, p0.Y - 7, 56, 30), p0),
-			new(1, MineSectionKind.Working, Centered(upperEast.X, upperEast.Y, 46, 24), upperEast),
-			new(2, MineSectionKind.MountainRail, Centered(upperWest.X, upperWest.Y, 54, 26), upperWest),
-			new(3, MineSectionKind.Working, Centered(middleJunction.X, middleJunction.Y, 56, 28), middleJunction),
-			new(4, MineSectionKind.Working, Centered(deepJunction.X, deepJunction.Y, 60, 30), deepJunction)
+			new(0, MineSectionKind.Workyard, Centered(p0.X + 20, p0.Y - 8, random.Next(68, 83), random.Next(34, 42)), p0),
+			new(1, MineSectionKind.Working, Centered(upperEast.X, upperEast.Y, random.Next(74, 91), random.Next(38, 47)), upperEast),
+			new(2, MineSectionKind.MountainRail, Centered(upperWest.X, upperWest.Y, random.Next(82, 101), random.Next(40, 51)), upperWest),
+			new(3, MineSectionKind.Working, Centered(middleJunction.X, middleJunction.Y, random.Next(88, 107), random.Next(42, 53)), middleJunction),
+			new(4, MineSectionKind.Working, Centered(deepJunction.X, deepJunction.Y, random.Next(96, 117), random.Next(44, 57)), deepJunction)
 		];
 
-		Point floodedCenter = new(middleEast.X + 72, middleEast.Y + 34);
-		Point collapsedCenter = new(deepWest.X + 76, deepWest.Y + 38);
-		Point evilCenter = new(middleWest.X - 82, middleWest.Y + 36);
-		sections.Add(new MineSection(5, MineSectionKind.Flooded, Centered(floodedCenter.X, floodedCenter.Y, 52, 30), floodedCenter));
-		sections.Add(new MineSection(6, MineSectionKind.Collapsed, Centered(collapsedCenter.X, collapsedCenter.Y, 54, 28), collapsedCenter));
-		sections.Add(new MineSection(7, MineSectionKind.SealedEvil, Centered(evilCenter.X, evilCenter.Y, 64, 36), evilCenter));
-		routes.Add(new MineRoute(middleEast, floodedCenter, HasTrack: true, Required: false));
-		routes.Add(new MineRoute(deepWest, collapsedCenter, HasTrack: true, Required: false));
-		routes.Add(new MineRoute(middleWest, evilCenter, HasTrack: true, Required: false));
+		bool floodedOnEast = random.NextBool();
+		Point floodedOrigin = floodedOnEast ? middleEast : middleWest;
+		Point evilOrigin = floodedOnEast ? middleWest : middleEast;
+		Point collapsedOrigin = random.NextBool() ? deepWest : deepEast;
+		int floodedDirection = Math.Sign(floodedOrigin.X - centerX);
+		int evilDirection = Math.Sign(evilOrigin.X - centerX);
+		int collapsedDirection = Math.Sign(collapsedOrigin.X - centerX);
+		Point floodedCenter = new(floodedOrigin.X + floodedDirection * random.Next(70, 101), floodedOrigin.Y + random.Next(27, 44));
+		Point collapsedCenter = new(collapsedOrigin.X + collapsedDirection * random.Next(72, 106), collapsedOrigin.Y + random.Next(31, 49));
+		Point evilCenter = new(evilOrigin.X + evilDirection * random.Next(82, 118), evilOrigin.Y + random.Next(30, 49));
+		sections.Add(new MineSection(5, MineSectionKind.Flooded, Centered(floodedCenter.X, floodedCenter.Y, random.Next(78, 95), random.Next(40, 51)), floodedCenter));
+		sections.Add(new MineSection(6, MineSectionKind.Collapsed, Centered(collapsedCenter.X, collapsedCenter.Y, random.Next(82, 101), random.Next(39, 50)), collapsedCenter));
+		sections.Add(new MineSection(7, MineSectionKind.SealedEvil, Centered(evilCenter.X, evilCenter.Y, random.Next(90, 109), random.Next(47, 59)), evilCenter));
+		routes.Add(new MineRoute(floodedOrigin, floodedCenter, HasTrack: true, Required: false));
+		routes.Add(new MineRoute(collapsedOrigin, collapsedCenter, HasTrack: true, Required: false));
+		routes.Add(new MineRoute(evilOrigin, evilCenter, HasTrack: true, Required: false));
 
-		int top = Math.Max(40, sections.Min(section => section.Area.Top) - 20);
-		int bottom = Math.Min(Main.UnderworldLayer - 80, sections.Max(section => section.Area.Bottom) + 24);
-		Rectangle area = new(centerX - halfWidth - 20, top, halfWidth * 2 + 41, bottom - top);
+		int left = Math.Max(30, Math.Min(sections.Min(section => section.Area.Left), routes.Min(route => Math.Min(route.Start.X, route.End.X))) - 20);
+		int right = Math.Min(Main.maxTilesX - 31, Math.Max(sections.Max(section => section.Area.Right), routes.Max(route => Math.Max(route.Start.X, route.End.X) + 1)) + 20);
+		int top = Math.Max(40, Math.Min(sections.Min(section => section.Area.Top), routes.Min(route => Math.Min(route.Start.Y, route.End.Y))) - 20);
+		int bottom = Math.Min(Main.UnderworldLayer - 80, Math.Max(sections.Max(section => section.Area.Bottom), routes.Max(route => Math.Max(route.Start.Y, route.End.Y) + 1)) + 24);
+		Rectangle area = new(left, top, right - left, bottom - top);
 		return new SurfaceMinePlan(featureSeed, area, p0, sections, routes);
 	}
 
 	private static Rectangle Centered(int x, int y, int width, int height) =>
 		new(x - width / 2, y - height / 2, width, height);
 
-	private static bool CanPlace(SurfaceMinePlan plan)
+	private static bool CanPlace(SurfaceMinePlan plan, GenerationManifest manifest)
 	{
 		if (!WorldGen.InWorld(plan.Area.Left, plan.Area.Top, 30)
 			|| !WorldGen.InWorld(plan.Area.Right - 1, plan.Area.Bottom - 1, 30)) {
 			return false;
 		}
+		MineSection workyard = plan.Sections.First(section => section.Kind == MineSectionKind.Workyard);
+		Rectangle workyardBuffer = new(
+			workyard.Area.X - 24,
+			workyard.Area.Y - 12,
+			workyard.Area.Width + 48,
+			workyard.Area.Height + 24);
+		if (manifest.BiomeTransitions.Any(transition => transition.Area.Intersects(workyardBuffer))) {
+			return false;
+		}
+		MineRoute surfaceDescent = plan.Routes[0];
+		foreach (BuildTerrace terrace in manifest.Terraces) {
+			Rectangle terraceBuffer = new(
+				terrace.Area.X - 12,
+				terrace.Area.Y - 10,
+				terrace.Area.Width + 24,
+				terrace.Area.Height + 20);
+			if (terraceBuffer.Intersects(workyardBuffer)
+				|| Rasterize(surfaceDescent).Any(terraceBuffer.Contains)) {
+				return false;
+			}
+		}
 
 		foreach (MineSection section in plan.Sections) {
-			if (!TileEditor.IsSafeForTerrainFeature(section.Area) || !GenVars.structures.CanPlace(section.Area, padding: 3)) {
+			// The mine is itself a major world structure and may replace ordinary
+			// terrain reservations. Tile-level checks still reject chests, altars,
+			// dungeon/temple blocks, Shimmer, wiring, and other progression state.
+			if (!TileEditor.IsSafeForTerrainFeature(section.Area)) {
 				return false;
 			}
 		}
@@ -260,7 +325,7 @@ internal static class SurfaceMineGenerator
 			int innerBottom = outerBottom - localShell;
 			for (int y = innerTop; y <= innerBottom; y++) {
 				TileEditor.ClearTerrain(x, y);
-				TileEditor.SetWall(x, y, (x - area.Left) % 18 < 9 ? wall : WallID.Planked);
+				TileEditor.SetWall(x, y, Noise(section.Id, x / 7 + y / 9, 137) % 100 < 58 ? wall : WallID.Planked);
 			}
 			for (int floorDepth = 0; floorDepth < 3 && innerBottom - floorDepth >= innerTop; floorDepth++) {
 				TileEditor.SetTerrain(x, innerBottom - floorDepth, section.Kind == MineSectionKind.SealedEvil
@@ -284,6 +349,35 @@ internal static class SurfaceMineGenerator
 				for (int y = floorY - height; y < floorY; y++) {
 					TileEditor.SetTerrain(x, y, y % 2 == 0 ? TileID.Stone : TileID.Dirt);
 				}
+			}
+		}
+
+		BuildDistrictPlatforms(section);
+	}
+
+	private static void BuildDistrictPlatforms(MineSection section)
+	{
+		int deckY = section.Center.Y + Math.Clamp(section.Area.Height / 4, 8, 13);
+		int centerGap = section.Kind == MineSectionKind.Flooded ? 11 : 7;
+		for (int x = section.Area.Left + 8; x < section.Area.Right - 8; x++) {
+			bool gap = Math.Abs(x - section.Center.X) <= centerGap;
+			for (int y = deckY - 7; y < deckY; y++) {
+				TileEditor.ClearTerrain(x, y);
+				TileEditor.SetWall(x, y, Noise(section.Id, x / 5 + y / 7, 241) % 100 < 62 ? WallID.Planked : WallID.Stone);
+			}
+			if (gap) {
+				TileEditor.TryPlacePlatformForced(x, deckY);
+			}
+			else {
+				TileEditor.SetTerrain(x, deckY, TileID.WoodenBeam);
+				TileEditor.SetTerrain(x, deckY + 1, TileID.LivingWood);
+			}
+		}
+
+		int supportGap = 13 + Noise(section.Id, section.Center.X, 307) % 8;
+		for (int x = section.Area.Left + 10; x < section.Area.Right - 9; x += supportGap) {
+			for (int y = deckY + 2; y <= Math.Min(section.Area.Bottom - 4, deckY + 10); y++) {
+				TileEditor.SetTerrain(x, y, TileID.WoodenBeam);
 			}
 		}
 	}
@@ -329,20 +423,21 @@ internal static class SurfaceMineGenerator
 	{
 		int index = 0;
 		foreach (Point point in Rasterize(route)) {
-			for (int offsetY = -CorridorHeadroom; offsetY <= 0; offsetY++) {
-				TileEditor.ClearTerrain(point.X, point.Y + offsetY);
-				TileEditor.SetWall(point.X, point.Y + offsetY, index % 64 < 32 ? WallID.Planked : WallID.Stone);
-			}
-			for (int depth = 1; depth <= 3; depth++) {
-				TileEditor.SetTerrain(point.X, point.Y + depth, depth == 1 ? TileID.WoodenBeam : TileID.LivingWood);
+			for (int offsetX = -2; offsetX <= 2; offsetX++) {
+				for (int offsetY = -CorridorHeadroom - 1; offsetY <= 0; offsetY++) {
+					TileEditor.ClearTerrain(point.X + offsetX, point.Y + offsetY);
+					ushort wall = Noise(route.Start.X + route.End.X, (point.X + offsetX) / 9 + (point.Y + offsetY) / 7, 401) % 100 < 57
+						? WallID.Planked
+						: WallID.Stone;
+					TileEditor.SetWall(point.X + offsetX, point.Y + offsetY, wall);
+				}
+				for (int depth = 1; depth <= 3; depth++) {
+					TileEditor.SetTerrain(point.X + offsetX, point.Y + depth, depth == 1 ? TileID.WoodenBeam : TileID.LivingWood);
+				}
 			}
 
-			if (index % 12 == 0) {
-				for (int offsetY = -CorridorHeadroom + 1; offsetY <= 3; offsetY++) {
-					if (offsetY != 0) {
-						TileEditor.SetTerrain(point.X, point.Y + offsetY, TileID.WoodenBeam);
-					}
-				}
+			if (index % (11 + Noise(route.Start.X, route.End.X, 457) % 8) == 0) {
+				TileEditor.SetTerrain(point.X, point.Y - CorridorHeadroom - 1, TileID.WoodenBeam);
 				TileEditor.TryPlaceTorch(point.X + 1, point.Y - 3);
 			}
 			index++;
@@ -387,21 +482,34 @@ internal static class SurfaceMineGenerator
 
 	private static void PrepareTrackCell(Point point, HashSet<Point> plannedTrack)
 	{
-		for (int y = point.Y - CorridorHeadroom; y < point.Y; y++) {
-			if (plannedTrack.Contains(new Point(point.X, y))) {
-				continue;
-			}
-			if (!HasTile(point.X, y, TileID.WoodenBeam)) {
-				TileEditor.ClearTerrain(point.X, y);
+		for (int offsetX = -2; offsetX <= 2; offsetX++) {
+			for (int y = point.Y - CorridorHeadroom - 1; y < point.Y; y++) {
+				if (!plannedTrack.Contains(new Point(point.X + offsetX, y))) {
+					TileEditor.ClearTerrain(point.X + offsetX, y);
+				}
 			}
 		}
 		// A support from a crossing branch may occupy the rail cell. Rails own this
 		// exact coordinate; beams remain in the headroom and below the track.
 		TileEditor.ClearTerrain(point.X, point.Y);
-		if (!plannedTrack.Contains(new Point(point.X, point.Y + 1))
+		Point support = new(point.X, point.Y + 1);
+		if (!plannedTrack.Contains(support)
+			&& !IsReservedTrackHeadroom(support, plannedTrack)
 			&& !TileEditor.IsSolid(point.X, point.Y + 1)) {
 			TileEditor.SetTerrain(point.X, point.Y + 1, TileID.LivingWood);
 		}
+	}
+
+	private static bool IsReservedTrackHeadroom(Point cell, HashSet<Point> plannedTrack)
+	{
+		for (int offsetX = -2; offsetX <= 2; offsetX++) {
+			for (int depth = 1; depth <= CorridorHeadroom + 1; depth++) {
+				if (plannedTrack.Contains(new Point(cell.X + offsetX, cell.Y + depth))) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	private static void BuildHeadframe(Point entrance)
@@ -437,14 +545,15 @@ internal static class SurfaceMineGenerator
 			return 0;
 		}
 
-		int floorY = section.Center.Y;
+		int floorY = section.Center.Y + Math.Clamp(section.Area.Height / 4, 8, 13) - 1;
 		int count = 0;
-		count += TryPlaceFurniture(section.Area.Left + 7, floorY, TileID.WorkBenches) ? 1 : 0;
-		count += TryPlaceFurniture(section.Area.Left + 13, floorY, TileID.Tables) ? 1 : 0;
-		count += TryPlaceFurniture(section.Area.Left + 17, floorY, TileID.Chairs) ? 1 : 0;
-		count += TryPlaceFurniture(section.Area.Right - 9, floorY, TileID.Anvils) ? 1 : 0;
-		count += TileEditor.TryPlaceSmallPile(section.Area.Right - 5, floorY, section.Id % 6, 0) ? 1 : 0;
-		count += TileEditor.TryPlaceSmallPile(section.Area.Center.X + 4, floorY, (section.Id + 3) % 6, 0) ? 1 : 0;
+		count += TryPlaceFurniture(section.Area.Left + 10, floorY, TileID.WorkBenches) ? 1 : 0;
+		count += TryPlaceFurniture(section.Area.Left + 18, floorY, TileID.Tables) ? 1 : 0;
+		count += TryPlaceFurniture(section.Area.Left + 23, floorY, TileID.Chairs) ? 1 : 0;
+		count += TryPlaceFurniture(section.Area.Right - 12, floorY, TileID.Anvils) ? 1 : 0;
+		count += TryPlaceFurniture(section.Area.Right - 20, floorY, TileID.Bookcases) ? 1 : 0;
+		count += TileEditor.TryPlaceSmallPile(section.Area.Right - 7, floorY, section.Id % 6, 0) ? 1 : 0;
+		count += TileEditor.TryPlaceSmallPile(section.Area.Center.X + 13, floorY, (section.Id + 3) % 6, 0) ? 1 : 0;
 		TileEditor.TryPlaceTorch(section.Area.Center.X, section.Area.Top + 5);
 		return count;
 	}
@@ -516,6 +625,33 @@ internal static class SurfaceMineGenerator
 		PlaceChairFootprint(displayCenterX + 7, displayFloorY);
 		TileEditor.TryPlaceTorch(displayCenterX + 9, displayFloorY - 4);
 		return 3;
+	}
+
+	private static int BuildCompactWorkAlcove(MineSection section, HashSet<Point> plannedTrack)
+	{
+		for (int floorY = section.Area.Top + 12; floorY < section.Area.Bottom - 5; floorY += 7) {
+			for (int centerX = section.Area.Left + 12; centerX < section.Area.Right - 12; centerX += 10) {
+				Rectangle alcove = new(centerX - 10, floorY - 7, 21, 10);
+				if (plannedTrack.Any(alcove.Contains)) {
+					continue;
+				}
+
+				for (int x = alcove.Left; x < alcove.Right; x++) {
+					for (int y = alcove.Top; y < floorY; y++) {
+						TileEditor.ClearTerrain(x, y);
+						TileEditor.SetWall(x, y, (x - alcove.Left) % 8 < 4 ? WallID.Planked : WallID.LivingWoodUnsafe);
+					}
+					TileEditor.SetTerrain(x, floorY, TileID.LivingWood);
+					TileEditor.SetTerrain(x, floorY + 1, TileID.LivingWood);
+				}
+				PlaceWorkbenchFootprint(centerX - 7, floorY - 1);
+				PlaceTableFootprint(centerX, floorY - 1);
+				PlaceChairFootprint(centerX + 7, floorY - 1);
+				TileEditor.TryPlaceTorch(centerX + 9, floorY - 4);
+				return 3;
+			}
+		}
+		return 0;
 	}
 
 	private static int BuildWorkyardLoft(Point entrance)
@@ -627,6 +763,15 @@ internal static class SurfaceMineGenerator
 					}
 				}
 				for (int y = trackY - 6; y < trackY; y++) {
+					TileEditor.SetActuatedTerrain(columnX, y, TileID.GrayBrick);
+				}
+			}
+
+			int innerGateX = section.Center.X + direction * 10;
+			int innerTrackY = Math.Clamp(section.Center.Y, section.Area.Top + 10, section.Area.Bottom - 3);
+			for (int width = 0; width < 4; width++) {
+				int columnX = innerGateX + direction * width;
+				for (int y = innerTrackY - 8; y < innerTrackY; y++) {
 					TileEditor.SetActuatedTerrain(columnX, y, TileID.GrayBrick);
 				}
 			}

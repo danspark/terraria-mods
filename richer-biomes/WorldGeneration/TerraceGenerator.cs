@@ -18,7 +18,7 @@ internal static class TerraceGenerator
 	{
 		for (int index = 0; index < plan.TerraceRequests.Count; index++) {
 			TerraceRequest request = plan.TerraceRequests[index];
-			if (!TryReserve(request, request.Required, respectStructureMap: !request.Required, out BuildTerrace terrace, out string failure)) {
+			if (!TryReserve(plan, request, request.Required, respectStructureMap: !request.Required, out BuildTerrace terrace, out string failure)) {
 				if (request.Required) {
 					throw new InvalidOperationException(
 						"Richer Biomes could not preserve the required spawn building terrace. " + failure);
@@ -84,7 +84,7 @@ internal static class TerraceGenerator
 		}
 
 		foreach (TerraceRequest candidate in FinalCandidates(plan, manifest)) {
-			if (TryReserve(candidate, spawnTerrace: false, respectStructureMap, out BuildTerrace terrace, out string _)) {
+			if (TryReserve(plan, candidate, spawnTerrace: false, respectStructureMap, out BuildTerrace terrace, out string _)) {
 				manifest.Terraces.Add(terrace);
 			}
 
@@ -95,6 +95,7 @@ internal static class TerraceGenerator
 	}
 
 	private static bool TryReserve(
+		WorldPlan plan,
 		TerraceRequest request,
 		bool spawnTerrace,
 		bool respectStructureMap,
@@ -111,9 +112,28 @@ internal static class TerraceGenerator
 			}
 
 			int maximumRepairableRelief = spawnTerrace ? 96 : 12;
-			if (!TryMeasureSurface(left, right, out int surfaceY, out int relief) || relief > maximumRepairableRelief) {
+			if (!TryMeasureSurface(left, right, out int surfaceY, out int relief)) {
 				rejections.Add($"x={centerX}: surface relief {relief}");
 				continue;
+			}
+			if (relief > maximumRepairableRelief) {
+				if (!spawnTerrace) {
+					rejections.Add($"x={centerX}: surface relief {relief}");
+					continue;
+				}
+
+				int plannedSurfaceY = plan.SurfaceAt(centerX);
+				Rectangle repairColumn = new(left, 45, request.Width, plannedSurfaceY - 45 + 17);
+				if (!TileEditor.IsSafeForTerrainFeature(repairColumn)) {
+					rejections.Add($"x={centerX}: high-relief spawn column contains protected state");
+					continue;
+				}
+
+				Flatten(left, right, plannedSurfaceY);
+				if (!TryMeasureSurface(left, right, out surfaceY, out relief) || relief > 2) {
+					rejections.Add($"x={centerX}: planned-surface repair left {relief} relief");
+					continue;
+				}
 			}
 
 			Rectangle area = new(left, surfaceY - 12, request.Width, 28);

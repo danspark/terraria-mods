@@ -8,10 +8,11 @@ This document defines the intended player experience. It records design rules an
 
 The first complete implementation now covers the strongest ideas in this brief:
 
-- ground-connected twin-peak mountains enter Space and contain two-sided interior crossings, chambers, summit chimneys, cloud belts, themed saddle valleys, and suspension, arch, or rail bridges;
-- floating islands are replaced by 280–440 tile-wide highland masses with surface, interior, and underside routes, satellites, cloud keels, and lakes;
-- every vanilla biome category receives a distinct multi-room, walled, lit, and furnished landmark, including separate buildings at both oceans;
+- ground-connected twin-peak mountains enter Space and select from four two-sided interior cave grammars with wide chambers, summit climbs, pots, rubble, vines, cloud belts, themed saddle valleys, and suspension, arch, or rail bridges;
+- floating islands are replaced by 280–440 tile-wide Terraced Meadow, Cloud Basin, or Broken Archipelago masses with surface, interior, and underside routes, satellites, cloud keels, and optional lakes; at most one may touch a mountain, and detached placement is normal;
+- every vanilla biome category receives a large, distinct, multi-room, walled, lit, and furnished exploration landmark, including separate structures at both oceans; open arches, unsafe walls, and no authored doors keep them invalid as NPC housing;
 - every world receives a visible surface mine with an eleven-edge, looped and branching rail graph into deep Caverns plus working, mountain, flooded, collapsed, and sealed world-evil districts;
+- adjacent surface biomes receive wide, depth-varying material seams instead of vertical palette lines, with final visibility checks after feature ownership;
 - authored walkways use thick solid floors for structure and bounded platform bays for stairs, landings, and downward traversal; bridges add custom wall or truss backgrounds and actuated mountain portals;
 - floating-highland materials form broad Cloud, Rain Cloud, and Sunplate clusters without ordinary Stone or repeated horizontal bands, while organic basins and quarantine shells use bounded edge jitter;
 - strict final-state validation measures real ground, furniture, entrances, connected highland mass, and entrance-connected authored rails after all destructive vanilla passes;

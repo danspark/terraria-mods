@@ -11,7 +11,7 @@ namespace RicherBiomes.WorldGeneration;
 
 internal static class LandmarkGenerator
 {
-	private const int MaximumStructureHeight = 30;
+	private const int MaximumStructureHeight = 42;
 	private const int CandidateBudget = 420;
 	private const int LandmarkSeedSalt = 0x1D4B_62F3;
 
@@ -32,7 +32,7 @@ internal static class LandmarkGenerator
 	{
 		for (int index = 0; index < manifest.Landmarks.Count; index++) {
 			LandmarkRecord landmark = manifest.Landmarks[index];
-			LandmarkLayout layout = ResolveLayout(landmark.Biome);
+			LandmarkLayout layout = ResolveLayout(landmark.Biome, landmark.LayoutVariant);
 			LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.AnchorX, landmark.AnchorY);
 			Commit(new LandmarkCandidate(
 				landmark.Biome,
@@ -47,18 +47,35 @@ internal static class LandmarkGenerator
 		}
 	}
 
+	public static void RepairTraversal(GenerationManifest manifest)
+	{
+		foreach (LandmarkRecord landmark in manifest.Landmarks) {
+			LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.AnchorX, landmark.AnchorY);
+			RepairLandmarkTraversal(landmark);
+			CarveOpenEntrances(
+				landmark.Area,
+				landmark.AnchorY,
+				landmark.Area.Left + 4,
+				landmark.Area.Right - 5,
+				style.Foundation);
+			TileEditor.Frame(landmark.Area, border: 2);
+		}
+	}
+
 	private static List<LandmarkRequest> BuildRequests(WorldPlan plan)
 	{
 		int inlandLeft = plan.CoastMargin + 30;
 		int inlandRight = Main.maxTilesX - plan.CoastMargin - 31;
 		return [
+			// Claim the scarce beach shelves before inland landmarks consider the
+			// same boundary terrain. The later candidates respect these footprints.
+			new(BiomeKind.Ocean, 75, plan.CoastMargin + 150, Required: true),
+			new(BiomeKind.Ocean, Main.maxTilesX - plan.CoastMargin - 151, Main.maxTilesX - 76, Required: true),
 			new(BiomeKind.Forest, inlandLeft, inlandRight, Required: true),
 			new(BiomeKind.Snow, inlandLeft, inlandRight, Required: true),
 			new(BiomeKind.Desert, inlandLeft, inlandRight, Required: true),
 			new(BiomeKind.Jungle, inlandLeft, inlandRight, Required: true),
 			new(BiomeKind.Evil, inlandLeft, inlandRight, Required: true),
-			new(BiomeKind.Ocean, 75, plan.CoastMargin + 30, Required: true),
-			new(BiomeKind.Ocean, Main.maxTilesX - plan.CoastMargin - 31, Main.maxTilesX - 76, Required: true),
 			new(BiomeKind.Sky, inlandLeft, inlandRight, Required: true),
 			new(BiomeKind.Mushroom, inlandLeft, inlandRight, Required: true),
 			new(BiomeKind.Cavern, inlandLeft, inlandRight, Required: true),
@@ -73,7 +90,7 @@ internal static class LandmarkGenerator
 		GenerationManifest manifest,
 		UnifiedRandom random)
 	{
-		LandmarkLayout layout = ResolveLayout(request.Biome);
+		LandmarkLayout layout = ResolveLayout(request.Biome, random.Next(3));
 		LandmarkCandidate? best = null;
 		for (int attempt = 0; attempt < CandidateBudget; attempt++) {
 			int x = random.Next(request.LeftX, request.RightX + 1);
@@ -104,6 +121,14 @@ internal static class LandmarkGenerator
 			&& TryCreatePreparedSurfaceCandidate(request, layout, spawnX, surfaceMine, manifest, out LandmarkCandidate surfaceFallback)) {
 			best = surfaceFallback;
 		}
+		if (best is null && request.Biome == BiomeKind.Ocean
+			&& TryCreateOceanPierCandidate(request, layout, spawnX, surfaceMine, manifest, out LandmarkCandidate pierFallback)) {
+			best = pierFallback;
+		}
+		if (best is null && request.Biome is (BiomeKind.Forest or BiomeKind.Snow or BiomeKind.Desert or BiomeKind.Jungle)
+			&& TryCreateEmbeddedCandidate(request, layout, spawnX, surfaceMine, manifest, out LandmarkCandidate embeddedBiomeFallback)) {
+			best = embeddedBiomeFallback;
+		}
 
 		if (best is null) {
 			return false;
@@ -123,8 +148,59 @@ internal static class LandmarkGenerator
 			accepted.AnchorX,
 			accepted.GroundY,
 			accepted.Layout.RoomCount,
-			FurnitureCount: 0));
+			FurnitureCount: 0,
+			accepted.Layout.Variant));
 		return true;
+	}
+
+	private static bool TryCreateOceanPierCandidate(
+		LandmarkRequest request,
+		LandmarkLayout layout,
+		int spawnX,
+		SurfaceMinePlan surfaceMine,
+		GenerationManifest manifest,
+		out LandmarkCandidate candidate)
+	{
+		LandmarkCandidate? best = null;
+		int firstCenter = request.LeftX + layout.Width / 2;
+		int lastCenter = request.RightX - layout.Width / 2;
+		for (int centerX = firstCenter; centerX <= lastCenter; centerX += 3) {
+			int waterTop = -1;
+			for (int y = 45; y <= Math.Min(Main.maxTilesY - 45, (int)Main.worldSurface + 120); y++) {
+				Tile tile = Main.tile[centerX, y];
+				if (tile.LiquidAmount > 0 && tile.LiquidType == LiquidID.Water) {
+					waterTop = y;
+					break;
+				}
+			}
+			if (waterTop < 0) {
+				continue;
+			}
+
+			int groundY = Math.Max(58, waterTop - 2);
+			Rectangle area = new(centerX - layout.Width / 2, groundY - layout.Height, layout.Width, layout.Height + 10);
+			if (!TileEditor.IsSafeForTerrainFeature(area)
+				|| Inflated(surfaceMine.Area, 8).Intersects(area)
+				|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
+				|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
+				|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))) {
+				continue;
+			}
+
+			LandmarkCandidate current = new(
+				BiomeKind.Ocean,
+				centerX,
+				groundY,
+				area,
+				layout,
+				Math.Abs(centerX - spawnX) / 30);
+			if (best is null || current.Score > best.Value.Score) {
+				best = current;
+			}
+		}
+
+		candidate = best ?? default;
+		return best is not null;
 	}
 
 	private static bool TryCreatePreparedSurfaceCandidate(
@@ -152,7 +228,8 @@ internal static class LandmarkGenerator
 				}
 				minimumGround = Math.Min(minimumGround, supportY);
 				maximumGround = Math.Max(maximumGround, supportY);
-				if (BiomeClassifier.ClassifySupport(Main.tile[x, supportY].TileType, x, supportY) == request.Biome) {
+				if (request.Biome == BiomeKind.Ocean
+					|| BiomeClassifier.ClassifySupport(Main.tile[x, supportY].TileType, x, supportY) == request.Biome) {
 					matchingSupports++;
 				}
 			}
@@ -165,10 +242,11 @@ internal static class LandmarkGenerator
 			// leaves a biome with no naturally calm footprint. Extend ownership above
 			// the highest nearby ground so the roof cannot remain buried in a slope.
 			int top = Math.Min(maximumGround - layout.Height, minimumGround - 6);
-			Rectangle area = new(left, top, layout.Width, maximumGround + 30 - top);
+			Rectangle area = new(left, top, layout.Width, maximumGround + 10 - top);
 			if (Inflated(surfaceMine.Area, 8).Intersects(area)
 				|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
 				|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
+				|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
 				|| !TileEditor.IsSafeForTerrainFeature(area)) {
 				continue;
 			}
@@ -208,11 +286,12 @@ internal static class LandmarkGenerator
 					continue;
 				}
 
-				Rectangle area = new(x - layout.Width / 2, y - layout.Height, layout.Width, layout.Height + 30);
+				Rectangle area = new(x - layout.Width / 2, y - layout.Height, layout.Width, layout.Height + 10);
 				if (!TileEditor.IsSafeForTerrainFeature(area)
 					|| Inflated(surfaceMine.Area, 8).Intersects(area)
 					|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
-					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))) {
+					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
+					|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))) {
 					continue;
 				}
 
@@ -272,10 +351,11 @@ internal static class LandmarkGenerator
 		// The landmark floor follows the highest support in its footprint. Derive the
 		// owned rectangle from that final floor, not from the first anchor sample;
 		// otherwise a sloped cavern can put the entire house above its own bounds.
-		Rectangle area = new(left, maximumGround - layout.Height, layout.Width, layout.Height + 30);
+		Rectangle area = new(left, maximumGround - layout.Height, layout.Width, layout.Height + 10);
 		if (Inflated(surfaceMine.Area, 8).Intersects(area)
 			|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
 			|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
+			|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
 			|| !TileEditor.IsSafeForTerrainFeature(area)) {
 			candidate = default;
 			return false;
@@ -374,31 +454,40 @@ internal static class LandmarkGenerator
 
 		return biome switch {
 			BiomeKind.Forest => new LandmarkStyle(TileID.LivingWood, TileID.LivingWood, WallID.LivingWoodUnsafe, WallID.Planked),
-			BiomeKind.Snow => new LandmarkStyle(TileID.BorealWood, TileID.BorealWood, WallID.BorealWood, WallID.Planked),
-			BiomeKind.Desert => new LandmarkStyle(TileID.SandstoneBrick, TileID.SandstoneColumn, WallID.SandstoneBrick, WallID.Planked),
+			BiomeKind.Snow => new LandmarkStyle(TileID.BorealWood, TileID.BorealWood, WallID.SnowWallUnsafe, WallID.Stone),
+			BiomeKind.Desert => new LandmarkStyle(TileID.SandstoneBrick, TileID.SandstoneColumn, WallID.Sandstone, WallID.Stone),
 			BiomeKind.Jungle => new LandmarkStyle(TileID.LivingMahogany, TileID.RichMahogany, WallID.JungleUnsafe, WallID.Planked),
-			BiomeKind.Ocean => new LandmarkStyle(TileID.PalmWood, TileID.PalmWood, WallID.PalmWood, WallID.Planked),
+			BiomeKind.Ocean => new LandmarkStyle(TileID.PalmWood, TileID.PalmWood, WallID.Sandstone, WallID.LivingWoodUnsafe),
 			BiomeKind.Sky => new LandmarkStyle(TileID.Sunplate, TileID.Sunplate, WallID.DiscWall, WallID.Cloud),
 			BiomeKind.Mushroom => new LandmarkStyle(TileID.MushroomBlock, TileID.MushroomBlock, WallID.MushroomUnsafe, WallID.Planked),
 			BiomeKind.Cavern => new LandmarkStyle(TileID.GrayBrick, TileID.WoodenBeam, WallID.Stone, WallID.Planked),
-			BiomeKind.Underworld => new LandmarkStyle(TileID.AshWood, TileID.AshWood, WallID.AshWood, WallID.Planked),
+			BiomeKind.Underworld => new LandmarkStyle(TileID.AshWood, TileID.AshWood, WallID.HellstoneBrickUnsafe, WallID.ObsidianBrickUnsafe),
 			_ => new LandmarkStyle(TileID.GrayBrick, TileID.WoodenBeam, WallID.Stone, WallID.Planked)
 		};
 	}
 
-	private static LandmarkLayout ResolveLayout(BiomeKind biome) => biome switch {
-		BiomeKind.Forest => new LandmarkLayout(45, 24, 3, 0),
-		BiomeKind.Snow => new LandmarkLayout(41, 25, 3, 1),
-		BiomeKind.Desert => new LandmarkLayout(49, 24, 3, 2),
-		BiomeKind.Jungle => new LandmarkLayout(43, 27, 4, 3),
-		BiomeKind.Evil => new LandmarkLayout(39, 23, 2, 4),
-		BiomeKind.Ocean => new LandmarkLayout(47, 22, 3, 5),
-		BiomeKind.Sky => new LandmarkLayout(51, 24, 4, 6),
-		BiomeKind.Mushroom => new LandmarkLayout(41, 23, 2, 7),
-		BiomeKind.Cavern => new LandmarkLayout(48, 22, 3, 8),
-		BiomeKind.Underworld => new LandmarkLayout(45, 22, 3, 9),
-		_ => new LandmarkLayout(41, 22, 2, 0)
-	};
+	private static LandmarkLayout ResolveLayout(BiomeKind biome, int variant)
+	{
+		LandmarkLayout layout = biome switch {
+			BiomeKind.Forest => new LandmarkLayout(57, 30, 4, 0, variant),
+			BiomeKind.Snow => new LandmarkLayout(59, 31, 4, 1, variant),
+			BiomeKind.Desert => new LandmarkLayout(65, 30, 4, 2, variant),
+			BiomeKind.Jungle => new LandmarkLayout(61, 34, 5, 3, variant),
+			BiomeKind.Evil => new LandmarkLayout(55, 29, 3, 4, variant),
+			BiomeKind.Ocean => new LandmarkLayout(63, 29, 4, 5, variant),
+			BiomeKind.Sky => new LandmarkLayout(69, 30, 5, 6, variant),
+			BiomeKind.Mushroom => new LandmarkLayout(57, 29, 3, 7, variant),
+			BiomeKind.Cavern => new LandmarkLayout(66, 30, 4, 8, variant),
+			BiomeKind.Underworld => new LandmarkLayout(61, 29, 4, 9, variant),
+			_ => new LandmarkLayout(57, 29, 3, 0, variant)
+		};
+
+		return variant switch {
+			1 => layout with { Width = layout.Width + 8, Height = layout.Height + 3, RoofVariant = layout.RoofVariant + 2 },
+			2 => layout with { Width = layout.Width + 14, Height = layout.Height + 1, RoomCount = layout.RoomCount + 1, RoofVariant = layout.RoofVariant + 5 },
+			_ => layout
+		};
+	}
 
 	private static void Commit(LandmarkCandidate candidate, LandmarkStyle style)
 	{
@@ -503,6 +592,7 @@ internal static class LandmarkGenerator
 		TileEditor.TryPlaceTorch(rightColumn - 2, groundY - 6);
 		BuildArchitecturalDetails(candidate, style, leftColumn, rightColumn, roofY);
 		AddBiomeSilhouette(candidate, style, leftColumn, rightColumn, roofY);
+		CarveOpenEntrances(candidate.Area, groundY, leftColumn, rightColumn, style.Foundation);
 		TileEditor.Frame(candidate.Area);
 	}
 
@@ -514,20 +604,11 @@ internal static class LandmarkGenerator
 		int floorY = groundY - 1;
 		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.AnchorX, groundY);
 		int count = 0;
-		count += TryPlaceDoor(leftColumn, groundY, style.Foundation) ? 1 : 0;
-		count += TryPlaceDoor(rightColumn, groundY, style.Foundation) ? 1 : 0;
-		if (!HasNearbyType(leftColumn, groundY - 2, TileID.ClosedDoor, 1, 2)
-			&& !HasNearbyType(rightColumn, groundY - 2, TileID.ClosedDoor, 1, 2)) {
-			count += TryPlaceDoor(landmark.AnchorX - 3, groundY, style.Foundation) ? 1 : 0;
-			if (!HasNearbyType(landmark.AnchorX - 3, groundY - 2, TileID.ClosedDoor, 1, 2)) {
-				count += TryPlaceDoor(landmark.AnchorX + 3, groundY, style.Foundation) ? 1 : 0;
-			}
-		}
-		count += TryPlaceFurniture(leftColumn + 5, floorY, TileID.WorkBenches) ? 1 : 0;
-		count += TryPlaceFurniture(leftColumn + 11, floorY, TileID.Tables) ? 1 : 0;
-		count += TryPlaceFurniture(leftColumn + 15, floorY, TileID.Chairs) ? 1 : 0;
-		count += TryPlaceFurniture(rightColumn - 8, floorY, TileID.Bookcases) ? 1 : 0;
-		count += TryPlaceFurniture(rightColumn - 13, floorY, TileID.Benches) ? 1 : 0;
+		count += TryPlaceFurniture(leftColumn + 8, floorY, TileID.WorkBenches) ? 1 : 0;
+		count += TryPlaceFurniture(leftColumn + 15, floorY, TileID.Tables) ? 1 : 0;
+		count += TryPlaceFurniture(leftColumn + 20, floorY, TileID.Chairs) ? 1 : 0;
+		count += TryPlaceFurniture(rightColumn - 10, floorY, TileID.Bookcases) ? 1 : 0;
+		count += TryPlaceFurniture(rightColumn - 17, floorY, TileID.Benches) ? 1 : 0;
 		count += TileEditor.TryPlaceSmallPile(rightColumn - 3, floorY, (int)landmark.Biome % 6, 0) ? 1 : 0;
 
 		if (landmark.RoomCount >= 3) {
@@ -540,6 +621,7 @@ internal static class LandmarkGenerator
 		TileEditor.TryPlaceTorch(landmark.AnchorX + 3, groundY - 6);
 		WorldGen.PlaceTile(landmark.AnchorX, landmark.Area.Top + 7, TileID.Chandeliers, mute: true, forced: false);
 		RepairLandmarkTraversal(landmark);
+		CarveOpenEntrances(landmark.Area, groundY, leftColumn, rightColumn, style.Foundation);
 		if (CountFurnitureTiles(landmark.Area) == 0) {
 			int stageY = groundY - 3;
 			for (int x = landmark.AnchorX - 12; x <= landmark.AnchorX + 12; x++) {
@@ -563,7 +645,7 @@ internal static class LandmarkGenerator
 
 	private static void RepairLandmarkTraversal(LandmarkRecord landmark)
 	{
-		LandmarkLayout layout = ResolveLayout(landmark.Biome);
+		LandmarkLayout layout = ResolveLayout(landmark.Biome, landmark.LayoutVariant);
 		if (layout.RoomCount < 3) {
 			return;
 		}
@@ -579,6 +661,36 @@ internal static class LandmarkGenerator
 			int stepLeft = dividerX - 5 - step * 3;
 			for (int x = stepLeft; x < stepLeft + 3; x++) {
 				TileEditor.TryPlacePlatformForced(x, stepY);
+			}
+		}
+	}
+
+	private static void CarveOpenEntrances(
+		Rectangle area,
+		int groundY,
+		int leftColumn,
+		int rightColumn,
+		ushort foundation)
+	{
+		foreach (int centerX in new[] { leftColumn, rightColumn }) {
+			for (int x = centerX - 3; x <= centerX + 3; x++) {
+				for (int y = groundY - 8; y < groundY; y++) {
+					TileEditor.ClearTerrain(x, y, clearWall: Math.Abs(x - centerX) >= 2);
+				}
+				for (int depth = 0; depth < 3; depth++) {
+					TileEditor.SetTerrain(x, groundY + depth, foundation);
+				}
+			}
+
+			int outsideDirection = centerX == leftColumn ? -1 : 1;
+			for (int step = 1; step <= 7; step++) {
+				int x = centerX + outsideDirection * step;
+				if (x <= area.Left || x >= area.Right - 1) {
+					continue;
+				}
+				for (int y = groundY - 6; y < groundY; y++) {
+					TileEditor.ClearTerrain(x, y, clearWall: true);
+				}
 			}
 		}
 	}
@@ -637,17 +749,6 @@ internal static class LandmarkGenerator
 			}
 		}
 		return count;
-	}
-
-	private static bool TryPlaceDoor(int x, int groundY, ushort lintelType)
-	{
-		for (int y = groundY - 3; y < groundY; y++) {
-			TileEditor.ClearTerrain(x, y);
-		}
-		TileEditor.SetTerrain(x, groundY - 4, lintelType);
-		TileEditor.SetTerrain(x, groundY, lintelType);
-		WorldGen.PlaceDoor(x, groundY - 2, TileID.ClosedDoor);
-		return HasNearbyType(x, groundY - 2, TileID.ClosedDoor, 1, 2);
 	}
 
 	private static bool TryPlaceFurniture(int x, int floorY, ushort tileType)
@@ -814,8 +915,16 @@ internal static class LandmarkGenerator
 		int leftColumn = candidate.Area.Left + 4;
 		int rightColumn = candidate.Area.Right - 5;
 		int roofY = candidate.GroundY - candidate.Layout.Height + 4;
-		for (int y = roofY + 7; y < candidate.GroundY - 3; y++) {
+		// The lower eight tiles of each outer column are deliberate open arches.
+		// Validate the retained upper posts instead of requiring the entrance voids
+		// to still contain the pillars that CarveOpenEntrances removes.
+		for (int y = roofY + 7; y < candidate.GroundY - 8; y++) {
 			if (!HasType(leftColumn, y, style.Pillar) || !HasType(rightColumn, y, style.Pillar)) {
+				return false;
+			}
+		}
+		for (int y = candidate.GroundY - 7; y < candidate.GroundY; y++) {
+			if (Main.tile[leftColumn, y].HasTile || Main.tile[rightColumn, y].HasTile) {
 				return false;
 			}
 		}
@@ -864,5 +973,5 @@ internal static class LandmarkGenerator
 
 	private readonly record struct LandmarkStyle(ushort Foundation, ushort Pillar, ushort Wall, ushort AccentWall);
 
-	private readonly record struct LandmarkLayout(int Width, int Height, int RoomCount, int RoofVariant);
+	private readonly record struct LandmarkLayout(int Width, int Height, int RoomCount, int RoofVariant, int Variant);
 }

@@ -46,6 +46,7 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		InsertAfter(tasks, "Wavy Caves", new RicherBiomesPass("Richer Biomes: carve regional cave routes", 45d, CarveCaves), ref totalWeight);
 		InsertAfter(tasks, "Corruption", new RicherBiomesPass("Richer Biomes: reopen regional cave routes", 24d, RepairCaves), ref totalWeight);
 		InsertAfter(tasks, "Richer Biomes: reopen regional cave routes", new RicherBiomesPass("Richer Biomes: reopen mountain crossings", 18d, RepairMountainCrossings), ref totalWeight);
+		InsertAfter(tasks, "Richer Biomes: reopen mountain crossings", new RicherBiomesPass("Richer Biomes: blend surface biome seams", 18d, BlendBiomeTransitions), ref totalWeight);
 		InsertAfter(tasks, "Shimmer", new RicherBiomesPass("Richer Biomes: reserve building terraces", 8d, ReserveTerraces), ref totalWeight);
 		InsertAfter(tasks, "Richer Biomes: reserve building terraces", new RicherBiomesPass("Richer Biomes: reserve surface mine", 8d, ReserveSurfaceMine), ref totalWeight);
 		InsertAfter(tasks, "Hives", new RicherBiomesPass("Richer Biomes: form mountain valleys", 18d, BuildMountainValleys), ref totalWeight);
@@ -59,7 +60,8 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		InsertAfter(tasks, "Stalac", new RicherBiomesPass("Richer Biomes: scatter biome accents", 12d, AddAccents), ref totalWeight);
 		InsertAfter(tasks, "Final Cleanup", new RicherBiomesPass("Richer Biomes: furnish biome landmarks", 20d, FurnishLandmarks), ref totalWeight);
 		InsertAfter(tasks, "Richer Biomes: furnish biome landmarks", new RicherBiomesPass("Richer Biomes: lay connected mine rails", 36d, FurnishSurfaceMine), ref totalWeight);
-		InsertAfter(tasks, "Richer Biomes: lay connected mine rails", new RicherBiomesPass("Richer Biomes: record final features", 8d, RecordFinalFeatures), ref totalWeight);
+		InsertAfter(tasks, "Richer Biomes: lay connected mine rails", new RicherBiomesPass("Richer Biomes: decorate mountain interiors", 18d, DecorateMountainInteriors), ref totalWeight);
+		InsertAfter(tasks, "Richer Biomes: decorate mountain interiors", new RicherBiomesPass("Richer Biomes: record final features", 8d, RecordFinalFeatures), ref totalWeight);
 		InsertAfter(tasks, "Richer Biomes: record final features", new RicherBiomesPass("Richer Biomes: validate replacement world", 24d, Validate), ref totalWeight);
 	}
 
@@ -86,6 +88,7 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		tag["valleys"] = _manifest.Valleys.Select(SerializeValley).ToList();
 		tag["bridges"] = _manifest.Bridges.Select(SerializeBridge).ToList();
 		tag["skyHighlands"] = _manifest.SkyHighlands.Select(SerializeSkyHighland).ToList();
+		tag["biomeTransitions"] = _manifest.BiomeTransitions.Select(SerializeBiomeTransition).ToList();
 		tag["mineSections"] = _manifest.MineSections.Select(SerializeMineSection).ToList();
 		if (_manifest.SurfaceMine is SurfaceMineRecord surfaceMine) {
 			tag["surfaceMine"] = SerializeSurfaceMine(surfaceMine);
@@ -127,7 +130,8 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 				saved.GetInt("anchorX"),
 				saved.GetInt("anchorY"),
 				saved.ContainsKey("rooms") ? saved.GetInt("rooms") : 1,
-				saved.ContainsKey("furniture") ? saved.GetInt("furniture") : 0));
+				saved.ContainsKey("furniture") ? saved.GetInt("furniture") : 0,
+				saved.ContainsKey("layoutVariant") ? saved.GetInt("layoutVariant") : 0));
 		}
 
 		foreach (TagCompound saved in tag.GetList<TagCompound>("mountains")) {
@@ -136,7 +140,13 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 				DeserializeRectangle(saved),
 				saved.GetInt("peakY"),
 				saved.GetInt("entrances"),
-				saved.GetInt("cloudTiles")));
+				saved.GetInt("cloudTiles"),
+				saved.ContainsKey("interiorStyle") ? (MountainInteriorStyle)saved.GetInt("interiorStyle") : MountainInteriorStyle.BranchingGrottoes,
+				saved.ContainsKey("caveAirTiles") ? saved.GetInt("caveAirTiles") : 0,
+				saved.ContainsKey("wideCavityColumns") ? saved.GetInt("wideCavityColumns") : 0,
+				saved.ContainsKey("potTiles") ? saved.GetInt("potTiles") : 0,
+				saved.ContainsKey("vineTiles") ? saved.GetInt("vineTiles") : 0,
+				saved.ContainsKey("climbAidTiles") ? saved.GetInt("climbAidTiles") : 0));
 		}
 		foreach (TagCompound saved in tag.GetList<TagCompound>("valleys")) {
 			manifest.Valleys.Add(new ValleyRecord(
@@ -156,7 +166,16 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 				saved.GetInt("surfaceTiles"),
 				saved.GetInt("routeTiles"),
 				saved.GetInt("cloudTiles"),
-				saved.GetInt("liquidCells")));
+				saved.GetInt("liquidCells"),
+				saved.ContainsKey("style") ? (SkyHighlandStyle)saved.GetInt("style") : SkyHighlandStyle.TerracedMeadow,
+				saved.ContainsKey("mountainAttached") && saved.GetBool("mountainAttached")));
+		}
+		foreach (TagCompound saved in tag.GetList<TagCompound>("biomeTransitions")) {
+			manifest.BiomeTransitions.Add(new BiomeTransitionRecord(
+				(BiomeKind)saved.GetInt("leftBiome"),
+				(BiomeKind)saved.GetInt("rightBiome"),
+				DeserializeRectangle(saved),
+				saved.GetInt("modifiedCells")));
 		}
 		foreach (TagCompound saved in tag.GetList<TagCompound>("mineSections")) {
 			Microsoft.Xna.Framework.Rectangle area = DeserializeRectangle(saved);
@@ -243,6 +262,12 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		progress.Set(1d);
 	}
 
+	private void BlendBiomeTransitions(GenerationProgress progress, GameConfiguration _)
+	{
+		progress.Message = "Breaking up straight biome seams with interleaved terrain";
+		BiomeTransitionGenerator.Apply(RequirePlan(), RequireManifest(), progress);
+	}
+
 	private void ReserveTerraces(GenerationProgress progress, GameConfiguration _)
 	{
 		progress.Message = "Protecting calm ground for building";
@@ -259,7 +284,7 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 	private void ReserveSurfaceMine(GenerationProgress progress, GameConfiguration _)
 	{
 		progress.Message = "Planning a guaranteed connected surface mine";
-		_surfaceMinePlan = SurfaceMineGenerator.PlanAndReserve(RequirePlan());
+		_surfaceMinePlan = SurfaceMineGenerator.PlanAndReserve(RequirePlan(), RequireManifest());
 		progress.Set(1d);
 	}
 
@@ -296,6 +321,12 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		SurfaceMineGenerator.FurnishAndLayTrack(RequireMinePlan(), RequireManifest(), progress);
 	}
 
+	private void DecorateMountainInteriors(GenerationProgress progress, GameConfiguration _)
+	{
+		progress.Message = "Adding pots, rubble, vines, light, and climb routes inside mountains";
+		MountainBiomeGenerator.DecorateInteriors(RequirePlan(), RequireManifest(), progress);
+	}
+
 	private void RepairLateCaves(GenerationProgress progress, GameConfiguration _)
 	{
 		progress.Message = "Reopening protected regional routes after destructive micro-biomes";
@@ -322,7 +353,9 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 
 	private void FurnishLandmarks(GenerationProgress progress, GameConfiguration _)
 	{
-		progress.Message = "Furnishing biome homes, workshops, and lookouts";
+		progress.Message = "Furnishing open biome workshops, ruins, and lookouts";
+		BiomeTransitionGenerator.Repair(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RepairValleyStructures(RequirePlan());
 		TerraceGenerator.RepairReserved(RequireManifest());
 		LandmarkGenerator.Furnish(RequireManifest(), progress);
 	}
@@ -350,6 +383,20 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		// so a highland remains one biome-scale body instead of isolated shelves.
 		SkyHighlandGenerator.RepairKeels(RequirePlan());
 		MountainBiomeGenerator.RepairBridgePortals(RequirePlan());
+		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan());
+		RegionalCaveGenerator.RepairRequiredRoutes(
+			RequirePlan(),
+			progress,
+			respectStructureMap: false,
+			naturalTilesOnly: true);
+		TerraceGenerator.RepairReserved(RequireManifest());
+		BiomeTransitionGenerator.Repair(RequirePlan(), RequireManifest());
+		int occludedTransitions = BiomeTransitionGenerator.RetainObservable(RequirePlan(), RequireManifest());
+		if (occludedTransitions > 0) {
+			Mod.Logger.Info($"Richer Biomes omitted {occludedTransitions} surface seams occluded by final feature ownership.");
+		}
+		LandmarkGenerator.RepairTraversal(RequireManifest());
+		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
 		MountainBiomeGenerator.RecordFinalState(RequirePlan(), RequireManifest());
 		progress.Set(1d);
 	}
@@ -410,14 +457,21 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		["anchorX"] = landmark.AnchorX,
 		["anchorY"] = landmark.AnchorY,
 		["rooms"] = landmark.RoomCount,
-		["furniture"] = landmark.FurnitureCount
+		["furniture"] = landmark.FurnitureCount,
+		["layoutVariant"] = landmark.LayoutVariant
 	};
 
 	private static TagCompound SerializeMountain(MountainRecord mountain) => WithRectangle(mountain.Area, new TagCompound {
 		["regionId"] = mountain.RegionId,
 		["peakY"] = mountain.PeakY,
 		["entrances"] = mountain.EntranceCount,
-		["cloudTiles"] = mountain.CloudTiles
+		["cloudTiles"] = mountain.CloudTiles,
+		["interiorStyle"] = (int)mountain.InteriorStyle,
+		["caveAirTiles"] = mountain.CaveAirTiles,
+		["wideCavityColumns"] = mountain.WideCavityColumns,
+		["potTiles"] = mountain.PotTiles,
+		["vineTiles"] = mountain.VineTiles,
+		["climbAidTiles"] = mountain.ClimbAidTiles
 	});
 
 	private static TagCompound SerializeValley(ValleyRecord valley) => WithRectangle(valley.Area, new TagCompound {
@@ -434,7 +488,15 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		["surfaceTiles"] = highland.WalkableSurfaceTiles,
 		["routeTiles"] = highland.InteriorRouteTiles,
 		["cloudTiles"] = highland.CloudTiles,
-		["liquidCells"] = highland.LiquidCells
+		["liquidCells"] = highland.LiquidCells,
+		["style"] = (int)highland.Style,
+		["mountainAttached"] = highland.MountainAttached
+	});
+
+	private static TagCompound SerializeBiomeTransition(BiomeTransitionRecord transition) => WithRectangle(transition.Area, new TagCompound {
+		["leftBiome"] = (int)transition.LeftBiome,
+		["rightBiome"] = (int)transition.RightBiome,
+		["modifiedCells"] = transition.ModifiedCells
 	});
 
 	private static TagCompound SerializeMineSection(MineSection section) => WithRectangle(section.Area, new TagCompound {

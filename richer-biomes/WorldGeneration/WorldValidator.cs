@@ -17,6 +17,7 @@ internal static class WorldValidator
 		int connectedCaves = ValidateCaves(plan, errors);
 		ValidateTerraces(plan, manifest, errors);
 		ValidateLandmarks(manifest, errors);
+		ValidateBiomeTransitions(plan, manifest, errors);
 		ValidateBridgesAndValleys(plan, manifest, errors);
 		ValidateSkyHighlands(plan, manifest, errors);
 		int mineTrackTiles = ValidateSurfaceMine(surfaceMinePlan, manifest, errors);
@@ -112,6 +113,30 @@ internal static class WorldValidator
 			if (record is MountainRecord cloudRecord && cloudRecord.CloudTiles < 24) {
 				errors.Add($"mountain region {region.Id} retained only {cloudRecord.CloudTiles} cloud-belt tiles");
 			}
+			if (record is not MountainRecord interior) {
+				errors.Add($"mountain region {region.Id} has no final interior record");
+				continue;
+			}
+			int minimumCaveAir = interior.Area.Width * 16;
+			if (interior.CaveAirTiles < minimumCaveAir) {
+				errors.Add($"mountain region {region.Id} retained only {interior.CaveAirTiles} wall-backed cave cells; expected {minimumCaveAir}");
+			}
+			if (interior.WideCavityColumns < interior.Area.Width / 3) {
+				errors.Add($"mountain region {region.Id} has wide chambers in only {interior.WideCavityColumns}/{interior.Area.Width} columns");
+			}
+			if (interior.PotTiles < 6) {
+				errors.Add($"mountain region {region.Id} retained only {interior.PotTiles} pot tiles");
+			}
+			if (interior.VineTiles < 20) {
+				errors.Add($"mountain region {region.Id} retained only {interior.VineTiles} vine tiles");
+			}
+			if (interior.ClimbAidTiles < 18) {
+				errors.Add($"mountain region {region.Id} retained only {interior.ClimbAidTiles} rope or platform tiles");
+			}
+		}
+
+		if (plan.Mountains.Count > 1 && plan.Mountains.Select(mountain => mountain.InteriorStyle).Distinct().Count() < 2) {
+			errors.Add("all planned mountains use the same interior route style");
 		}
 
 		if (validMountains == 0) {
@@ -126,41 +151,59 @@ internal static class WorldValidator
 		int bottom = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 75);
 		int width = region.Width;
 		int groundingBandTop = Math.Max(top, (int)Main.worldSurface + 45);
+		int height = bottom - top + 1;
+		bool[] connected = new bool[width * height];
+		Queue<Point> queue = new();
+		for (int x = region.Left; x <= region.Right; x++) {
+			for (int y = groundingBandTop; y <= bottom; y++) {
+				if (!IsMountainGround(x, y)) {
+					continue;
+				}
+				int index = x - region.Left + (y - top) * width;
+				if (!connected[index]) {
+					connected[index] = true;
+					queue.Enqueue(new Point(x, y));
+				}
+			}
+		}
+		ReadOnlySpan<Point> directions = [new(1, 0), new(-1, 0), new(0, 1), new(0, -1)];
+		while (queue.Count > 0) {
+			Point current = queue.Dequeue();
+			foreach (Point direction in directions) {
+				Point next = current + direction;
+				if (next.X < region.Left || next.X > region.Right || next.Y < top || next.Y > bottom
+					|| !IsMountainEnvelope(next.X, next.Y)) {
+					continue;
+				}
+				int index = next.X - region.Left + (next.Y - top) * width;
+				if (!connected[index]) {
+					connected[index] = true;
+					queue.Enqueue(next);
+				}
+			}
+		}
+
 		int[] surface = Enumerable.Repeat(int.MaxValue, width).ToArray();
 		for (int x = region.Left; x <= region.Right; x++) {
-			int candidateY = int.MaxValue;
 			for (int y = top; y <= bottom; y++) {
-				if (IsMountainGround(x, y)) {
-					candidateY = y;
+				int index = x - region.Left + (y - top) * width;
+				if (connected[index]) {
+					surface[x - region.Left] = y;
 					break;
 				}
 			}
-			if (candidateY == int.MaxValue) {
-				continue;
-			}
-
-			int longestGap = 0;
-			int currentGap = 0;
-			bool reachedGroundingBand = false;
-			for (int y = candidateY; y <= bottom; y++) {
-				if (IsMountainGround(x, y)) {
-					currentGap = 0;
-					if (y >= groundingBandTop) {
-						reachedGroundingBand = true;
-					}
-				}
-				else {
-					currentGap++;
-					longestGap = Math.Max(longestGap, currentGap);
-				}
-			}
-			// Authored galleries are ten tiles tall. A larger break indicates a truly
-			// floating shelf rather than a tunnel passing through grounded terrain.
-			if (reachedGroundingBand && longestGap <= 18) {
-				surface[x - region.Left] = candidateY;
-			}
 		}
 		return surface;
+	}
+
+	private static bool IsMountainEnvelope(int x, int y)
+	{
+		if (IsMountainGround(x, y)) {
+			return true;
+		}
+		ushort wall = Main.tile[x, y].WallType;
+		return wall is WallID.DirtUnsafe or WallID.Stone or WallID.SnowWallUnsafe or WallID.JungleUnsafe
+			or WallID.Sandstone or WallID.EbonstoneUnsafe or WallID.CrimstoneUnsafe;
 	}
 
 	private static bool IsMountainGround(int x, int y)
@@ -331,33 +374,39 @@ internal static class WorldValidator
 		}
 
 		foreach (LandmarkRecord landmark in manifest.Landmarks) {
+			Rectangle authoredArea = new(
+				landmark.Area.Left,
+				landmark.Area.Top,
+				landmark.Area.Width,
+				landmark.AnchorY - landmark.Area.Top + 3);
 			if (!WorldGen.InWorld(landmark.Area.Left, landmark.Area.Top, 8)
 				|| !WorldGen.InWorld(landmark.Area.Right - 1, landmark.Area.Bottom - 1, 8)) {
 				errors.Add($"{landmark.Biome} landmark extends outside world padding");
 			}
-			if (landmark.Area.Width < 39 || landmark.RoomCount < 2) {
+			if (landmark.Area.Width < 55 || landmark.RoomCount < 3) {
 				errors.Add($"{landmark.Biome} landmark is not a multi-room structure ({landmark.Area.Width} tiles, {landmark.RoomCount} rooms)");
 			}
-			int doorTiles = CountTiles(landmark.Area, TileID.ClosedDoor);
-			bool enclosedHouse = landmark.Biome is BiomeKind.Forest or BiomeKind.Snow or BiomeKind.Desert
-				or BiomeKind.Jungle or BiomeKind.Evil or BiomeKind.Ocean or BiomeKind.Sky;
-			if (enclosedHouse && doorTiles < 3) {
-				errors.Add($"{landmark.Biome} landmark has no complete door footprint");
+			int doorTiles = CountTiles(authoredArea, TileID.ClosedDoor);
+			if (doorTiles > 0) {
+				errors.Add($"{landmark.Biome} landmark retained {doorTiles} closed-door tiles instead of open traversal arches");
 			}
 			int furnitureTiles = CountFurnitureTiles(landmark.Area);
-			int minimumFurnitureTiles = enclosedHouse ? 4 : 1;
-			if (landmark.FurnitureCount < 6 || furnitureTiles < minimumFurnitureTiles) {
+			if (landmark.FurnitureCount < 6 || furnitureTiles < 4) {
 				errors.Add($"{landmark.Biome} landmark retained {landmark.FurnitureCount} placed objects across {furnitureTiles} furniture tiles");
 			}
-			if (enclosedHouse) {
-				HashSet<ushort> wallTypes = CollectWallTypes(landmark.Area);
-				if (wallTypes.Count < 2 || CountWalls(landmark.Area, WallID.Glass) < 12) {
-					errors.Add($"{landmark.Biome} landmark has a flat interior palette ({wallTypes.Count} wall types, {CountWalls(landmark.Area, WallID.Glass)} glass wall cells)");
-				}
-				int furnitureFamilies = CountFurnitureFamilies(landmark.Area);
-				if (furnitureFamilies < 3) {
-					errors.Add($"{landmark.Biome} landmark retained only {furnitureFamilies} furniture families");
-				}
+			HashSet<ushort> wallTypes = CollectWallTypes(landmark.Area);
+			if (wallTypes.Count < 2 || CountWalls(landmark.Area, WallID.Glass) < 12) {
+				errors.Add($"{landmark.Biome} landmark has a flat interior palette ({wallTypes.Count} wall types, {CountWalls(landmark.Area, WallID.Glass)} glass wall cells)");
+			}
+			int furnitureFamilies = CountFurnitureFamilies(landmark.Area);
+			if (furnitureFamilies < 3) {
+				errors.Add($"{landmark.Biome} landmark retained only {furnitureFamilies} furniture families");
+			}
+			if (!HasOpenLandmarkEntrances(landmark, out string entranceReason)) {
+				errors.Add($"{landmark.Biome} landmark has blocked traversal: {entranceReason}");
+			}
+			if (TryFindValidHousing(authoredArea, out Point validHousingProbe)) {
+				errors.Add($"{landmark.Biome} landmark is valid NPC housing near {validHousingProbe.X},{validHousingProbe.Y}");
 			}
 			int thickFloorColumns = 0;
 			for (int x = landmark.Area.Left; x < landmark.Area.Right; x++) {
@@ -373,6 +422,32 @@ internal static class WorldValidator
 				if (platforms < 10 || platforms > 48) {
 					errors.Add($"{landmark.Biome} landmark has {platforms} platform tiles; expected bounded stairs and drop portals");
 				}
+			}
+		}
+	}
+
+	private static void ValidateBiomeTransitions(WorldPlan plan, GenerationManifest manifest, List<string> errors)
+	{
+		int minimumTransitions = Main.maxTilesX <= 4200 ? 2 : 3;
+		if (manifest.BiomeTransitions.Count < minimumTransitions) {
+			errors.Add($"only {manifest.BiomeTransitions.Count} irregular surface transitions were recorded; expected at least {minimumTransitions}");
+		}
+
+		foreach (BiomeTransitionRecord transition in manifest.BiomeTransitions) {
+			if (transition.ModifiedCells < transition.Area.Width * 3) {
+				errors.Add($"{transition.LeftBiome}-{transition.RightBiome} transition at x={transition.Area.Center.X} changed only {transition.ModifiedCells} cells");
+			}
+			if (!BiomeTransitionGenerator.TryMeasureBoundary(
+				plan,
+				manifest,
+				transition,
+				out int observedCrossings,
+				out int crossingSpan,
+				out string samples)) {
+				errors.Add(
+					$"{transition.LeftBiome}-{transition.RightBiome} transition at x={transition.Area.Center.X} "
+					+ $"still follows a near-straight or unobservable material boundary; "
+					+ $"observed={observedCrossings}, span={crossingSpan}, sampled crossings=[{samples}]");
 			}
 		}
 	}
@@ -463,7 +538,7 @@ internal static class WorldValidator
 
 		for (int index = 0; index < manifest.SkyHighlands.Count; index++) {
 			SkyHighlandRecord highland = manifest.SkyHighlands[index];
-			int minimumWidth = Main.maxTilesX switch { <= 4200 => 280, <= 6400 => 360, _ => 440 };
+			int minimumWidth = index < plan.SkyHighlands.Count ? plan.SkyHighlands[index].Width : 260;
 			if (highland.Area.Width < minimumWidth) {
 				errors.Add($"floating highland {index} spans only {highland.Area.Width} tiles; expected at least {minimumWidth}");
 			}
@@ -489,7 +564,8 @@ internal static class WorldValidator
 			if (highland.InteriorRouteTiles < 350) {
 				errors.Add($"floating highland {index} recorded only {highland.InteriorRouteTiles} carved route cells");
 			}
-			if (CountLiquid(highland.Area, LiquidID.Water) < 80) {
+			bool requiresLake = index < plan.SkyHighlands.Count && plan.SkyHighlands[index].HasLake;
+			if (requiresLake && CountLiquid(highland.Area, LiquidID.Water) < 80) {
 				errors.Add($"floating highland {index} lost its sealed sky lake");
 			}
 			int platformTiles = CountTiles(highland.Area, TileID.Platforms);
@@ -500,6 +576,15 @@ internal static class WorldValidator
 			if (thinSupports > minimumWidth / 5) {
 				errors.Add($"floating highland {index} retained {thinSupports} unsupported one-tile walking cells");
 			}
+		}
+		if (manifest.SkyHighlands.Count > 1 && manifest.SkyHighlands.All(highland => highland.MountainAttached)) {
+			errors.Add("every floating highland is attached to a mountain");
+		}
+		if (manifest.SkyHighlands.Count(highland => highland.MountainAttached) > 1) {
+			errors.Add("more than one floating highland is attached to a mountain");
+		}
+		if (manifest.SkyHighlands.Count > 1 && manifest.SkyHighlands.Select(highland => highland.Style).Distinct().Count() < 2) {
+			errors.Add("all floating highlands use the same district style");
 		}
 	}
 
@@ -522,6 +607,22 @@ internal static class WorldValidator
 		foreach (MineSectionKind kind in requiredKinds) {
 			if (!manifest.MineSections.Any(section => section.Kind == kind)) {
 				errors.Add($"the guaranteed surface mine has no {kind} section");
+			}
+		}
+		foreach (MineSection section in manifest.MineSections) {
+			if (section.Area.Width < 68 || section.Area.Height < 34) {
+				errors.Add($"mine section {section.Id} ({section.Kind}) is only {section.Area.Width}x{section.Area.Height}");
+			}
+			int openWallCells = CountOpenWallCells(section.Area);
+			if (openWallCells < section.Area.Width * 5) {
+				errors.Add($"mine section {section.Id} ({section.Kind}) retained only {openWallCells} open background cells");
+			}
+			if (section.Kind is MineSectionKind.Working or MineSectionKind.MountainRail
+				&& CountFurnitureFamilies(section.Area) < 2) {
+				errors.Add($"mine section {section.Id} ({section.Kind}) has no distinct work destination");
+			}
+			if (TryFindValidHousing(section.Area, out Point mineHousingProbe)) {
+				errors.Add($"mine section {section.Id} ({section.Kind}) forms valid NPC housing near {mineHousingProbe.X},{mineHousingProbe.Y}");
 			}
 		}
 
@@ -584,6 +685,18 @@ internal static class WorldValidator
 					reason = "disconnected";
 					break;
 				}
+				for (int offsetX = -1; offsetX <= 1 && failure is null; offsetX++) {
+					for (int offsetY = -6; offsetY < 0; offsetY++) {
+						if (TileEditor.IsSolid(point.X + offsetX, point.Y + offsetY)
+							&& !HasTile(point.X + offsetX, point.Y + offsetY, TileID.MinecartTrack)) {
+							Tile blocker = Main.tile[point.X + offsetX, point.Y + offsetY];
+							failure = point;
+							reason = $"blocked-clearance ({offsetX},{offsetY}) type={blocker.TileType} "
+								+ $"frame={blocker.TileFrameX},{blocker.TileFrameY} actuated={blocker.IsActuated}";
+							break;
+						}
+					}
+				}
 			}
 			if (failure is Point failedPoint) {
 				errors.Add($"mine rail edge {routeIndex} has a {reason} authored cell at {failedPoint}");
@@ -617,8 +730,9 @@ internal static class WorldValidator
 			if (shellTops.Count < 7) {
 				errors.Add($"the mine's evil annex still has a rectangular shell profile ({shellTops.Count} distinct top rows)");
 			}
-			if (CountActuators(irregularQuarantine.Area) < 12) {
-				errors.Add("the mine's evil annex has no passable actuated quarantine gate");
+			int gateActuators = CountActuators(irregularQuarantine.Area);
+			if (gateActuators < 12) {
+				errors.Add($"the mine's evil annex retained only {gateActuators} actuators for its passable quarantine gates");
 			}
 		}
 
@@ -685,6 +799,84 @@ internal static class WorldValidator
 		}
 
 		return largest;
+	}
+
+	private static bool HasOpenLandmarkEntrances(LandmarkRecord landmark, out string reason)
+	{
+		int leftColumn = landmark.Area.Left + 4;
+		int rightColumn = landmark.Area.Right - 5;
+		int leftOpen = CountOpenEntryColumns(leftColumn, landmark.AnchorY);
+		int rightOpen = CountOpenEntryColumns(rightColumn, landmark.AnchorY);
+		if (leftOpen < 5 || rightOpen < 5) {
+			reason = $"left arch has {leftOpen}/7 clear columns and right arch has {rightOpen}/7";
+			return false;
+		}
+
+		int clearInteriorColumns = 0;
+		int interiorColumns = 0;
+		for (int x = leftColumn + 5; x <= rightColumn - 5; x++) {
+			interiorColumns++;
+			bool clear = true;
+			for (int y = landmark.AnchorY - 5; y < landmark.AnchorY; y++) {
+				clear &= !TileEditor.IsSolid(x, y);
+			}
+			if (clear) {
+				clearInteriorColumns++;
+			}
+		}
+		if (clearInteriorColumns < interiorColumns * 2 / 3) {
+			reason = $"only {clearInteriorColumns}/{interiorColumns} ground-floor columns have five-tile headroom";
+			return false;
+		}
+
+		reason = string.Empty;
+		return true;
+	}
+
+	private static int CountOpenEntryColumns(int centerX, int groundY)
+	{
+		int open = 0;
+		for (int x = centerX - 3; x <= centerX + 3; x++) {
+			bool clear = true;
+			for (int y = groundY - 7; y < groundY; y++) {
+				clear &= !TileEditor.IsSolid(x, y);
+			}
+			open += clear ? 1 : 0;
+		}
+		return open;
+	}
+
+	private static bool TryFindValidHousing(Rectangle area, out Point probe)
+	{
+		for (int x = area.Left + 4; x < area.Right - 4; x += 4) {
+			for (int y = area.Top + 4; y < area.Bottom - 4; y += 3) {
+				if (TileEditor.IsSolid(x, y) || !WorldGen.StartRoomCheck(x, y) || !WorldGen.RoomNeeds(NPCID.Guide)) {
+					continue;
+				}
+				WorldGen.ScoreRoom(ignoreNPC: -1, npcTypeAskingToScoreRoom: NPCID.Guide);
+				if (WorldGen.canSpawn && WorldGen.hiScore > 0) {
+					probe = new Point(x, y);
+					return true;
+				}
+			}
+		}
+
+		probe = default;
+		return false;
+	}
+
+	private static int CountOpenWallCells(Rectangle area)
+	{
+		int count = 0;
+		for (int x = Math.Max(2, area.Left); x < Math.Min(Main.maxTilesX - 2, area.Right); x++) {
+			for (int y = Math.Max(2, area.Top); y < Math.Min(Main.maxTilesY - 2, area.Bottom); y++) {
+				Tile tile = Main.tile[x, y];
+				if (!TileEditor.IsSolid(x, y) && tile.WallType != WallID.None) {
+					count++;
+				}
+			}
+		}
+		return count;
 	}
 
 	private static bool IsHighlandMass(int x, int y)

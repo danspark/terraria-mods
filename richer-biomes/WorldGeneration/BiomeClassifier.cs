@@ -42,7 +42,7 @@ internal static class BiomeClassifier
 		if (y >= Main.UnderworldLayer) {
 			return BiomeKind.Underworld;
 		}
-		if (y < Main.worldSurface * 0.48d && tileType is TileID.Cloud or TileID.RainCloud or TileID.Sunplate) {
+		if (y < Main.worldSurface * 0.48d && IsNaturalSupport(tileType)) {
 			return BiomeKind.Sky;
 		}
 		if (x < Main.maxTilesX / 20 || x > Main.maxTilesX - Main.maxTilesX / 20) {

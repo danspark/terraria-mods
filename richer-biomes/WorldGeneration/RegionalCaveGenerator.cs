@@ -26,7 +26,8 @@ internal static class RegionalCaveGenerator
 		WorldPlan plan,
 		GenerationProgress progress,
 		bool reserveRoutes = false,
-		bool respectStructureMap = true)
+		bool respectStructureMap = true,
+		bool naturalTilesOnly = false)
 	{
 		bool[]? allTilesAllowed = null;
 		if (respectStructureMap) {
@@ -48,7 +49,7 @@ internal static class RegionalCaveGenerator
 			}
 
 			UnifiedRandom random = new(MixSeed(plan.GenerationSeed, CaveSeedSalt, cave.RegionId, originalIndex));
-			CarveCurve(cave, random, protectSensitiveTiles: true, allTilesAllowed);
+			CarveCurve(cave, random, protectSensitiveTiles: true, allTilesAllowed, naturalTilesOnly);
 			if (reserveRoutes) {
 				ProtectCurve(cave);
 			}
@@ -61,7 +62,8 @@ internal static class RegionalCaveGenerator
 		PlannedCave cave,
 		UnifiedRandom random,
 		bool protectSensitiveTiles,
-		bool[]? allTilesAllowed)
+		bool[]? allTilesAllowed,
+		bool naturalTilesOnly = false)
 	{
 		double approximateLength = Vector2.Distance(cave.Start.ToVector2(), cave.Midpoint.ToVector2())
 			+ Vector2.Distance(cave.Midpoint.ToVector2(), cave.End.ToVector2());
@@ -86,7 +88,8 @@ internal static class RegionalCaveGenerator
 				Math.Max(3, (int)Math.Round(radius)),
 				Math.Max(3, (int)Math.Round(radius * 0.72d)),
 				protectSensitiveTiles,
-				allTilesAllowed);
+				allTilesAllowed,
+				naturalTilesOnly);
 		}
 	}
 
@@ -129,7 +132,8 @@ internal static class RegionalCaveGenerator
 		int horizontalRadius,
 		int verticalRadius,
 		bool protectSensitiveTiles,
-		bool[]? allTilesAllowed)
+		bool[]? allTilesAllowed,
+		bool naturalTilesOnly = false)
 	{
 		for (int offsetX = -horizontalRadius; offsetX <= horizontalRadius; offsetX++) {
 			for (int offsetY = -verticalRadius; offsetY <= verticalRadius; offsetY++) {
@@ -145,7 +149,8 @@ internal static class RegionalCaveGenerator
 				if (!WorldGen.InWorld(x, y, 5)
 					|| protectSensitiveTiles && (TileEditor.IsProtectedTile(Main.tile[x, y])
 						|| allTilesAllowed is not null
-							&& !GenVars.structures.CanPlace(new Rectangle(x, y, 1, 1), allTilesAllowed, padding: 0))) {
+							&& !GenVars.structures.CanPlace(new Rectangle(x, y, 1, 1), allTilesAllowed, padding: 0))
+					|| naturalTilesOnly && !IsNaturalRouteMaterial(Main.tile[x, y])) {
 					continue;
 				}
 				TileEditor.ClearTerrain(x, y);
@@ -155,6 +160,13 @@ internal static class RegionalCaveGenerator
 			}
 		}
 	}
+
+	private static bool IsNaturalRouteMaterial(Tile tile) => !tile.HasTile || tile.TileType is
+		TileID.Dirt or TileID.Stone or TileID.Grass or TileID.ClayBlock
+		or TileID.SnowBlock or TileID.IceBlock or TileID.BreakableIce
+		or TileID.Sand or TileID.HardenedSand or TileID.Sandstone
+		or TileID.Mud or TileID.JungleGrass or TileID.CorruptJungleGrass or TileID.CrimsonJungleGrass
+		or TileID.Ebonstone or TileID.Crimstone or TileID.Ebonsand or TileID.Crimsand;
 
 	private static int MixSeed(int seed, int salt, int feature, int index)
 	{
