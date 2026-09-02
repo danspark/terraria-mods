@@ -13,6 +13,11 @@ internal static class TorchGodTempleGenerator
 {
 	internal const int RequiredLitTorches = 100;
 	internal const int TriggerRadius = 40;
+	internal const int MinimumPlatformTiles = 72;
+	internal const int MinimumWideArenaRows = 12;
+	internal const double MinimumArenaOpenRatio = 0.82d;
+	internal const int MinimumUnsafeWallCells = 120;
+	internal const double MinimumMasonryWallRatio = 0.65d;
 
 	private const int TempleSeedSalt = 0x5447_4F44;
 	private const int RandomCandidateBudget = 420;
@@ -185,7 +190,40 @@ internal static class TorchGodTempleGenerator
 		return tileType == palette.PrimaryBrick || tileType == palette.SecondaryBrick;
 	}
 
+	internal static bool IsTempleMasonryWall(TorchTempleTheme theme, ushort wallType)
+	{
+		TemplePalette palette = ResolvePalette(theme);
+		return wallType == palette.PrimaryWall || wallType == palette.SecondaryWall;
+	}
+
+	internal static bool IsTempleUnsafeWall(TorchTempleTheme theme, ushort wallType) =>
+		wallType == ResolvePalette(theme).UnsafeWall;
+
+	internal static bool HasValidWallSemantics(TorchTempleTheme theme)
+	{
+		TemplePalette palette = ResolvePalette(theme);
+		return palette.PrimaryWall != WallID.None
+			&& palette.SecondaryWall != WallID.None
+			&& palette.UnsafeWall != WallID.None
+			&& Main.wallHouse[palette.PrimaryWall]
+			&& Main.wallHouse[palette.SecondaryWall]
+			&& !Main.wallHouse[palette.UnsafeWall];
+	}
+
+	internal static bool ContainsBodyCell(TorchGodTemplePlan plan, int x, int y) =>
+		IsInsideBodyShape(plan, x, y);
+
 	internal static int ExpectedTorchStyle(TorchTempleTheme theme) => ResolvePalette(theme).TorchStyle;
+
+	internal static Rectangle ArenaInterior(TorchGodTemplePlan plan)
+	{
+		Rectangle body = plan.BodyArea;
+		int left = body.Left + 12;
+		int top = body.Top + body.Height / 3;
+		int right = body.Right - 12;
+		int bottom = MainFloorY(plan);
+		return new Rectangle(left, top, right - left, bottom - top);
+	}
 
 	private static bool TryCreateCandidate(
 		WorldPlan worldPlan,
@@ -201,10 +239,10 @@ internal static class TorchGodTempleGenerator
 		(int width, int height, int shellThickness) = ResolveDimensions(layout, featureSeed);
 		Rectangle body = new(centerX - width / 2, centerY - height / 2, width, height);
 		int mainFloorY = body.Bottom - 7;
-		int altarSupportY = mainFloorY - 3;
-		Point activationPoint = new(centerX - 5, altarSupportY - 2);
+		int altarSupportY = mainFloorY - 1;
+		Point activationPoint = new(centerX, altarSupportY - 4);
 		Point chestTopLeft = new(centerX - 1, altarSupportY - 2);
-		Point missingTorch = new(centerX, chestTopLeft.Y - 6);
+		Point missingTorch = new(centerX + 3, altarSupportY - 1);
 		Rectangle triggerArea = ActivationArea(activationPoint);
 
 		if (!WorldGen.InWorld(triggerArea.Left, triggerArea.Top, 30)
@@ -308,10 +346,10 @@ internal static class TorchGodTempleGenerator
 		int widthJitter = Math.Abs(MixSeed(featureSeed, 0x5749_4454)) % 3 * 2;
 		int heightJitter = Math.Abs(MixSeed(featureSeed, 0x4845_4947)) % 3 * 2;
 		return layout switch {
-			TorchTempleLayout.SunkenBasilica => (67 + widthJitter, 41 + heightJitter, 3),
-			TorchTempleLayout.TwinSanctum => (69 + widthJitter, 43 + heightJitter, 3),
-			TorchTempleLayout.SteppedReliquary => (63 + widthJitter, 45 + heightJitter, 2 + Math.Abs(featureSeed) % 2),
-			TorchTempleLayout.CrucibleVault => (59 + widthJitter, 41 + heightJitter, 3),
+			TorchTempleLayout.SunkenBasilica => (75 + widthJitter, 49 + heightJitter, 3),
+			TorchTempleLayout.TwinSanctum => (79 + widthJitter, 51 + heightJitter, 3),
+			TorchTempleLayout.SteppedReliquary => (73 + widthJitter, 53 + heightJitter, 2 + Math.Abs(featureSeed) % 2),
+			TorchTempleLayout.CrucibleVault => (71 + widthJitter, 49 + heightJitter, 3),
 			_ => throw new ArgumentOutOfRangeException(nameof(layout), layout, null)
 		};
 	}
@@ -396,7 +434,7 @@ internal static class TorchGodTempleGenerator
 
 				if (IsInteriorCell(plan, x, y)) {
 					TileEditor.ClearTerrain(x, y);
-					TileEditor.SetWall(x, y, palette.UnsafeWall);
+					TileEditor.SetWall(x, y, TempleWallAt(plan, palette, x, y));
 				}
 				else {
 					ushort material = OrganicBoundary.Field(
@@ -408,7 +446,7 @@ internal static class TorchGodTempleGenerator
 						? palette.SecondaryBrick
 						: palette.PrimaryBrick;
 					TileEditor.SetTerrain(x, y, material);
-					TileEditor.SetWall(x, y, palette.UnsafeWall);
+					TileEditor.SetWall(x, y, TempleWallAt(plan, palette, x, y));
 				}
 			}
 		}
@@ -474,10 +512,13 @@ internal static class TorchGodTempleGenerator
 		return dx <= Math.Clamp(broadHalfWidth + jitter, 8, halfWidth - 1);
 	}
 
-	private static bool IsInteriorCell(TorchGodTemplePlan plan, int x, int y)
+	private static bool IsInteriorCell(TorchGodTemplePlan plan, int x, int y) =>
+		IsInsideBodyInset(plan, x, y, plan.ShellThickness);
+
+	private static bool IsInsideBodyInset(TorchGodTemplePlan plan, int x, int y, int inset)
 	{
-		for (int offsetX = -plan.ShellThickness; offsetX <= plan.ShellThickness; offsetX++) {
-			for (int offsetY = -plan.ShellThickness; offsetY <= plan.ShellThickness; offsetY++) {
+		for (int offsetX = -inset; offsetX <= inset; offsetX++) {
+			for (int offsetY = -inset; offsetY <= inset; offsetY++) {
 				if (!IsInsideBodyShape(plan, x + offsetX, y + offsetY)) {
 					return false;
 				}
@@ -486,71 +527,119 @@ internal static class TorchGodTempleGenerator
 		return true;
 	}
 
+	private static ushort TempleWallAt(TorchGodTemplePlan plan, TemplePalette palette, int x, int y)
+	{
+		if (!IsInsideBodyInset(plan, x, y, plan.ShellThickness + 2)) {
+			return palette.UnsafeWall;
+		}
+
+		int safetySeamX = plan.BodyArea.Center.X + OrganicBoundary.Profile(
+			y,
+			plan.FeatureSeed ^ 0x5746_4953,
+			19,
+			7,
+			4,
+			2);
+		double erosion = OrganicBoundary.Field(
+			x,
+			y,
+			plan.FeatureSeed ^ 0x5745_524F,
+			29,
+			10);
+		if (Math.Abs(x - safetySeamX) <= 1 || erosion < 0.2d) {
+			return palette.UnsafeWall;
+		}
+
+		double material = OrganicBoundary.Field(
+			x,
+			y,
+			plan.FeatureSeed ^ 0x574D_4154,
+			17,
+			6);
+		return material > 0.68d ? palette.SecondaryWall : palette.PrimaryWall;
+	}
+
 	private static void BuildArchitecture(TorchGodTemplePlan plan, TemplePalette palette)
 	{
+		Rectangle body = plan.BodyArea;
 		int centerX = plan.BodyArea.Center.X;
 		int floorY = MainFloorY(plan);
-		BuildStructuralRun(plan, palette, plan.BodyArea.Left + 5, plan.BodyArea.Right - 6, floorY, 3);
-		BuildColumn(plan, palette, centerX - 19, floorY - 1, floorY - 17, 3);
-		BuildColumn(plan, palette, centerX + 17, floorY - 1, floorY - 17, 3);
+		int arenaLeft = body.Left + plan.ShellThickness + 2;
+		int arenaRight = body.Right - plan.ShellThickness - 3;
+		BuildStructuralRun(plan, palette, body.Left + 5, body.Right - 6, floorY, 3);
+		BuildColumn(plan, palette, arenaLeft, floorY - 1, floorY - 15, 3);
+		BuildColumn(plan, palette, arenaRight - 2, floorY - 1, floorY - 15, 3);
 
 		switch (plan.Layout) {
 			case TorchTempleLayout.SunkenBasilica:
-				BuildTwinLedges(plan, palette, floorY - 13, 8, 7);
-				BuildTwinLedges(plan, palette, floorY - 24, 14, 12);
-				BuildPlatformStair(plan, palette, centerX - 9, floorY - 1, -1, 11);
-				BuildPlatformStair(plan, palette, centerX + 9, floorY - 1, 1, 11);
+				BuildSplitPlatformTier(plan, palette, arenaLeft + 5, arenaRight - 5, floorY - 12, centerX, 7);
+				BuildSplitPlatformTier(plan, palette, arenaLeft + 11, arenaRight - 11, floorY - 25, centerX, 4);
+				BuildPlatformStair(plan, palette, arenaLeft + 4, floorY - 1, 1, 11);
+				BuildPlatformStair(plan, palette, arenaRight - 4, floorY - 1, -1, 11);
+				BuildPlatformStair(plan, palette, centerX - 10, floorY - 13, -1, 10);
+				BuildPlatformStair(plan, palette, centerX + 10, floorY - 13, 1, 10);
 				break;
 			case TorchTempleLayout.TwinSanctum:
-				BuildTwinLedges(plan, palette, floorY - 11, 7, 6);
-				BuildTwinLedges(plan, palette, floorY - 22, 9, 9);
-				BuildColumn(plan, palette, centerX - 28, floorY - 2, floorY - 28, 2);
-				BuildColumn(plan, palette, centerX + 26, floorY - 2, floorY - 28, 2);
-				BuildPlatformStair(plan, palette, centerX - 8, floorY - 1, -1, 10);
-				BuildPlatformStair(plan, palette, centerX + 8, floorY - 1, 1, 10);
+				BuildPlatformRun(plan, palette, arenaLeft + 5, centerX - 8, floorY - 10);
+				BuildPlatformRun(plan, palette, centerX + 8, arenaRight - 5, floorY - 14);
+				BuildPlatformRun(plan, palette, arenaLeft + 11, centerX - 6, floorY - 25);
+				BuildPlatformRun(plan, palette, centerX + 6, arenaRight - 11, floorY - 25);
+				BuildPlatformStair(plan, palette, arenaLeft + 4, floorY - 1, 1, 9);
+				BuildPlatformStair(plan, palette, arenaRight - 4, floorY - 1, -1, 13);
+				BuildPlatformStair(plan, palette, centerX - 9, floorY - 11, -1, 12);
+				BuildPlatformStair(plan, palette, centerX + 9, floorY - 15, 1, 8);
 				break;
 			case TorchTempleLayout.SteppedReliquary:
-				BuildLedge(plan, palette, plan.BodyArea.Left + 7, centerX - 6, floorY - 9, 2);
-				BuildLedge(plan, palette, centerX + 6, plan.BodyArea.Right - 8, floorY - 15, 3);
-				BuildLedge(plan, palette, plan.BodyArea.Left + 12, centerX - 8, floorY - 23, 2);
-				BuildPlatformStair(plan, palette, centerX - 8, floorY - 1, -1, 8);
-				BuildPlatformStair(plan, palette, centerX + 8, floorY - 1, 1, 13);
+				BuildPlatformRun(plan, palette, arenaLeft + 4, centerX - 5, floorY - 8);
+				BuildPlatformRun(plan, palette, centerX + 5, arenaRight - 4, floorY - 16);
+				BuildPlatformRun(plan, palette, arenaLeft + 10, centerX + 4, floorY - 25);
+				BuildPlatformStair(plan, palette, arenaLeft + 3, floorY - 1, 1, 7);
+				BuildPlatformStair(plan, palette, arenaRight - 3, floorY - 1, -1, 15);
+				BuildPlatformStair(plan, palette, centerX - 7, floorY - 9, -1, 14);
 				break;
 			case TorchTempleLayout.CrucibleVault:
-				BuildTwinLedges(plan, palette, floorY - 12, 10, 9);
-				BuildTwinLedges(plan, palette, floorY - 21, 15, 13);
-				BuildPlatformStair(plan, palette, centerX - 8, floorY - 1, -1, 10);
-				BuildPlatformStair(plan, palette, centerX + 8, floorY - 1, 1, 10);
+				BuildSplitPlatformTier(plan, palette, arenaLeft + 4, arenaRight - 4, floorY - 11, centerX, 10);
+				BuildSplitPlatformTier(plan, palette, arenaLeft + 8, arenaRight - 8, floorY - 17, centerX, 4);
+				BuildSplitPlatformTier(plan, palette, arenaLeft + 12, arenaRight - 12, floorY - 22, centerX, 6);
+				BuildPlatformStair(plan, palette, arenaLeft + 4, floorY - 1, 1, 10);
+				BuildPlatformStair(plan, palette, arenaRight - 4, floorY - 1, -1, 10);
+				BuildPlatformStair(plan, palette, centerX - 12, floorY - 12, -1, 8);
+				BuildPlatformStair(plan, palette, centerX + 12, floorY - 12, 1, 8);
 				break;
 		}
 
-		BuildCentralArch(plan, palette, centerX, floorY);
+		foreach ((int x, int supportY, int _) in FurnitureLedges(plan)) {
+			BuildStructuralRun(plan, palette, x - 4, x + 4, supportY, 2);
+		}
 	}
 
-	private static void BuildTwinLedges(
-		TorchGodTemplePlan plan,
-		TemplePalette palette,
-		int y,
-		int centerGap,
-		int edgeInset)
-	{
-		BuildLedge(plan, palette, plan.BodyArea.Left + edgeInset, plan.BodyArea.Center.X - centerGap, y, 2);
-		BuildLedge(plan, palette, plan.BodyArea.Center.X + centerGap, plan.BodyArea.Right - edgeInset - 1, y, 2);
-	}
-
-	private static void BuildLedge(
+	private static void BuildSplitPlatformTier(
 		TorchGodTemplePlan plan,
 		TemplePalette palette,
 		int left,
 		int right,
 		int y,
-		int thickness)
+		int centerX,
+		int centerHalfGap)
 	{
-		BuildStructuralRun(plan, palette, left, right, y, thickness);
-		for (int x = left + 2; x <= right - 2; x += 5 + Math.Abs(MixSeed(plan.FeatureSeed, x ^ y)) % 4) {
-			if (WorldGen.InWorld(x, y - 1, 3) && !Main.tile[x, y - 1].HasTile) {
-				TileEditor.TryPlacePlatform(x, y - 1, palette.PlatformStyle);
+		BuildPlatformRun(plan, palette, left, centerX - centerHalfGap - 1, y);
+		BuildPlatformRun(plan, palette, centerX + centerHalfGap + 1, right, y);
+	}
+
+	private static void BuildPlatformRun(
+		TorchGodTemplePlan plan,
+		TemplePalette palette,
+		int left,
+		int right,
+		int y)
+	{
+		for (int x = left; x <= right; x++) {
+			if (!IsInteriorCell(plan, x, y)) {
+				continue;
 			}
+			TileEditor.ClearTerrain(x, y);
+			TileEditor.SetWall(x, y, TempleWallAt(plan, palette, x, y));
+			TileEditor.TryPlacePlatformForced(x, y, palette.PlatformStyle);
 		}
 	}
 
@@ -569,7 +658,7 @@ internal static class TorchGodTempleGenerator
 				}
 				double field = OrganicBoundary.Field(x, y, plan.FeatureSeed ^ 0x4C45_4447, 11, 4);
 				TileEditor.SetTerrain(x, y, field > 0.73d ? palette.SecondaryBrick : palette.PrimaryBrick);
-				TileEditor.SetWall(x, y, palette.UnsafeWall);
+				TileEditor.SetWall(x, y, TempleWallAt(plan, palette, x, y));
 			}
 		}
 	}
@@ -586,7 +675,7 @@ internal static class TorchGodTempleGenerator
 			for (int y = top; y <= bottom; y++) {
 				if (IsInsideBodyShape(plan, x, y)) {
 					TileEditor.SetTerrain(x, y, (y + x) % 7 == 0 ? palette.SecondaryBrick : palette.PrimaryBrick);
-					TileEditor.SetWall(x, y, palette.UnsafeWall);
+					TileEditor.SetWall(x, y, TempleWallAt(plan, palette, x, y));
 				}
 			}
 		}
@@ -607,7 +696,7 @@ internal static class TorchGodTempleGenerator
 				continue;
 			}
 			TileEditor.ClearTerrain(x, y);
-			TileEditor.SetWall(x, y, palette.UnsafeWall);
+			TileEditor.SetWall(x, y, TempleWallAt(plan, palette, x, y));
 			TileEditor.TryPlaceSlopedPlatform(
 				x,
 				y,
@@ -616,55 +705,29 @@ internal static class TorchGodTempleGenerator
 		}
 	}
 
-	private static void BuildCentralArch(
-		TorchGodTemplePlan plan,
-		TemplePalette palette,
-		int centerX,
-		int floorY)
-	{
-		int radiusX = plan.Layout == TorchTempleLayout.CrucibleVault ? 13 : 15;
-		int radiusY = plan.Layout == TorchTempleLayout.SunkenBasilica ? 22 : 19;
-		for (int dx = -radiusX; dx <= radiusX; dx++) {
-			for (int dy = -radiusY; dy <= 0; dy++) {
-				double normalized = dx * dx / (double)(radiusX * radiusX)
-					+ dy * dy / (double)(radiusY * radiusY);
-				if (normalized is < 0.72d or > 1.08d) {
-					continue;
-				}
-				int x = centerX + dx;
-				int y = floorY - 1 + dy;
-				if (IsInsideBodyShape(plan, x, y)) {
-					TileEditor.SetTerrain(x, y, palette.SecondaryBrick);
-					TileEditor.SetWall(x, y, palette.UnsafeWall);
-				}
-			}
-		}
-	}
-
 	private static void BuildAltarAndEmptySocket(TorchGodTemplePlan plan, TemplePalette palette)
 	{
 		int altarSupportY = plan.ChestTopLeft.Y + 2;
 		int centerX = plan.BodyArea.Center.X;
-		for (int x = centerX - 5; x <= centerX + 5; x++) {
+		for (int x = centerX - 4; x <= centerX + 4; x++) {
 			for (int y = altarSupportY; y < MainFloorY(plan); y++) {
-				TileEditor.SetTerrain(x, y, Math.Abs(x - centerX) >= 4
+				TileEditor.SetTerrain(x, y, Math.Abs(x - centerX) >= 3
 					? palette.SecondaryBrick
 					: palette.PrimaryBrick);
-				TileEditor.SetWall(x, y, palette.UnsafeWall);
+				TileEditor.SetWall(x, y, TempleWallAt(plan, palette, x, y));
 			}
 		}
 
-		for (int x = plan.MissingTorch.X - 5; x <= plan.MissingTorch.X + 5; x++) {
-			for (int y = plan.MissingTorch.Y - 4; y <= plan.MissingTorch.Y + 4; y++) {
-				bool border = Math.Abs(x - plan.MissingTorch.X) >= 4
-					|| y <= plan.MissingTorch.Y - 3;
-				if (border) {
-					TileEditor.SetTerrain(x, y, palette.SecondaryBrick);
-				}
-				else {
+		for (int x = plan.MissingTorch.X - 1; x <= plan.MissingTorch.X + 1; x++) {
+			for (int y = plan.MissingTorch.Y - 1; y <= plan.MissingTorch.Y; y++) {
+				bool socket = x == plan.MissingTorch.X && y == plan.MissingTorch.Y;
+				if (socket) {
 					TileEditor.ClearTerrain(x, y);
 				}
-				TileEditor.SetWall(x, y, palette.UnsafeWall);
+				else {
+					TileEditor.SetTerrain(x, y, palette.SecondaryBrick);
+				}
+				TileEditor.SetWall(x, y, TempleWallAt(plan, palette, x, y));
 			}
 		}
 		TileEditor.ClearTerrain(plan.MissingTorch.X, plan.MissingTorch.Y);
@@ -797,7 +860,7 @@ internal static class TorchGodTempleGenerator
 							continue;
 						}
 						TileEditor.ClearTerrain(tileX, tileY);
-						TileEditor.SetWall(tileX, tileY, palette.UnsafeWall);
+						TileEditor.SetWall(tileX, tileY, TempleWallAt(plan, palette, tileX, tileY));
 					}
 				}
 			}
@@ -807,13 +870,14 @@ internal static class TorchGodTempleGenerator
 	private static int Furnish(TorchGodTemplePlan plan, TemplePalette palette)
 	{
 		int floorY = MainFloorY(plan);
-		int centerX = plan.BodyArea.Center.X;
+		int left = plan.BodyArea.Left + plan.ShellThickness + 8;
+		int right = plan.BodyArea.Right - plan.ShellThickness - 9;
 		int placed = 0;
-		placed += TryPlaceFurniture(centerX - 23, floorY, TileID.WorkBenches, palette.WorkbenchStyle) ? 1 : 0;
-		placed += TryPlaceFurniture(centerX - 16, floorY, TileID.Anvils, 0) ? 1 : 0;
-		placed += TryPlaceFurniture(centerX + 19, floorY, palette.TableTile, palette.TableStyle) ? 1 : 0;
-		placed += TryPlaceFurniture(centerX + 13, floorY, TileID.Chairs, palette.ChairStyle) ? 1 : 0;
-		placed += TryPlaceFurniture(centerX + 26, floorY, TileID.Chairs, palette.ChairStyle) ? 1 : 0;
+		placed += TryPlaceFurniture(left, floorY, TileID.WorkBenches, palette.WorkbenchStyle) ? 1 : 0;
+		placed += TryPlaceFurniture(left + 8, floorY, TileID.Anvils, 0) ? 1 : 0;
+		placed += TryPlaceFurniture(right, floorY, palette.TableTile, palette.TableStyle) ? 1 : 0;
+		placed += TryPlaceFurniture(right - 7, floorY, TileID.Chairs, palette.ChairStyle) ? 1 : 0;
+		placed += TryPlaceFurniture(right + 5, floorY, TileID.Chairs, palette.ChairStyle) ? 1 : 0;
 
 		foreach ((int x, int supportY, int role) in FurnitureLedges(plan)) {
 			(ushort tileType, int style) = (role % 5) switch {
@@ -833,31 +897,32 @@ internal static class TorchGodTempleGenerator
 
 	private static IEnumerable<(int X, int SupportY, int Role)> FurnitureLedges(TorchGodTemplePlan plan)
 	{
-		int centerX = plan.BodyArea.Center.X;
+		int leftX = plan.BodyArea.Left + plan.ShellThickness + 8;
+		int rightX = plan.BodyArea.Right - plan.ShellThickness - 9;
 		int floorY = MainFloorY(plan);
 		switch (plan.Layout) {
 			case TorchTempleLayout.SunkenBasilica:
-				yield return (centerX - 23, floorY - 13, 0);
-				yield return (centerX + 23, floorY - 13, 1);
-				yield return (centerX - 18, floorY - 24, 2);
-				yield return (centerX + 18, floorY - 24, 3);
+				yield return (leftX, floorY - 13, 0);
+				yield return (rightX, floorY - 13, 1);
+				yield return (leftX + 4, floorY - 26, 2);
+				yield return (rightX - 4, floorY - 26, 3);
 				break;
 			case TorchTempleLayout.TwinSanctum:
-				yield return (centerX - 23, floorY - 11, 3);
-				yield return (centerX + 23, floorY - 11, 0);
-				yield return (centerX - 21, floorY - 22, 1);
-				yield return (centerX + 21, floorY - 22, 2);
+				yield return (leftX, floorY - 11, 3);
+				yield return (rightX, floorY - 15, 0);
+				yield return (leftX + 4, floorY - 26, 1);
+				yield return (rightX - 4, floorY - 26, 2);
 				break;
 			case TorchTempleLayout.SteppedReliquary:
-				yield return (centerX - 20, floorY - 9, 4);
-				yield return (centerX + 20, floorY - 15, 0);
-				yield return (centerX - 17, floorY - 23, 3);
+				yield return (leftX, floorY - 9, 4);
+				yield return (rightX, floorY - 17, 0);
+				yield return (leftX + 4, floorY - 26, 3);
 				break;
 			case TorchTempleLayout.CrucibleVault:
-				yield return (centerX - 20, floorY - 12, 2);
-				yield return (centerX + 20, floorY - 12, 4);
-				yield return (centerX - 17, floorY - 21, 0);
-				yield return (centerX + 17, floorY - 21, 1);
+				yield return (leftX, floorY - 12, 2);
+				yield return (rightX, floorY - 12, 4);
+				yield return (leftX + 5, floorY - 23, 0);
+				yield return (rightX - 5, floorY - 23, 1);
 				break;
 		}
 	}
@@ -889,7 +954,7 @@ internal static class TorchGodTempleGenerator
 		for (int x = topLeft.X; x <= topLeft.X + 1; x++) {
 			for (int y = topLeft.Y; y <= topLeft.Y + 1; y++) {
 				TileEditor.ClearTerrain(x, y);
-				TileEditor.SetWall(x, y, palette.UnsafeWall);
+				TileEditor.SetWall(x, y, TempleWallAt(plan, palette, x, y));
 			}
 			TileEditor.SetTerrain(x, topLeft.Y + 2, palette.PrimaryBrick);
 		}
@@ -956,9 +1021,9 @@ internal static class TorchGodTempleGenerator
 	{
 		Point socket = plan.MissingTorch;
 		Point[] offsets = [
-			new(-3, -2), new(-1, -2), new(1, -2), new(3, -2),
-			new(-3, 0), new(3, 0),
-			new(-3, 2), new(-1, 2), new(1, 2), new(3, 2)
+			new(-4, -2), new(-2, -2), new(2, -2), new(4, -2),
+			new(-4, 0), new(4, 0),
+			new(-4, 2), new(-2, 2), new(2, 2), new(4, 2)
 		];
 		foreach (Point offset in offsets) {
 			yield return socket + offset;
@@ -1021,8 +1086,12 @@ internal static class TorchGodTempleGenerator
 
 	private static bool IsTempleAnchor(TorchGodTemplePlan plan, int x, int y)
 	{
+		if (!plan.BodyArea.Contains(x, y)) {
+			return false;
+		}
 		Tile tile = Main.tile[x, y];
-		return TileEditor.IsSolid(x, y) && IsTempleBrick(plan.Theme, tile.TileType);
+		return (tile.HasUnactuatedTile && tile.TileType == TileID.Platforms)
+			|| (TileEditor.IsSolid(x, y) && IsTempleBrick(plan.Theme, tile.TileType));
 	}
 
 	private static TorchTempleTheme ResolveTheme(int centerX, int centerY)
@@ -1077,34 +1146,34 @@ internal static class TorchGodTempleGenerator
 	private static TemplePalette ResolvePalette(TorchTempleTheme theme) => theme switch
 	{
 		TorchTempleTheme.ForestStone => new(
-			TileID.GrayBrick, TileID.StoneSlab, WallID.Stone, 0, TorchID.Torch,
+			TileID.GrayBrick, TileID.StoneSlab, WallID.GrayBrick, WallID.StoneSlab, WallID.CaveUnsafe, 0, TorchID.Torch,
 			TileID.Tables, 0, 0, 0, 0, 0, TileID.Containers, 1),
 		TorchTempleTheme.Ice => new(
-			TileID.IceBrick, TileID.SnowBrick, WallID.IceUnsafe, 19, TorchID.Ice,
+			TileID.IceBrick, TileID.SnowBrick, WallID.IceBrick, WallID.SnowBrick, WallID.IceUnsafe, 19, TorchID.Ice,
 			TileID.Tables, 28, 30, 23, 25, 23, TileID.Containers, 11),
 		TorchTempleTheme.Desert => new(
-			TileID.SandstoneBrick, TileID.Mudstone, WallID.Sandstone, 42, TorchID.Desert,
+			TileID.SandstoneBrick, TileID.Mudstone, WallID.SandstoneBrick, WallID.MudstoneBrick, WallID.Sandstone, 42, TorchID.Desert,
 			TileID.Tables2, 7, 43, 39, 39, 38, TileID.Containers2, 10),
 		TorchTempleTheme.Jungle => new(
-			TileID.Mudstone, TileID.RichMahogany, WallID.JungleUnsafe, 2, TorchID.Jungle,
+			TileID.Mudstone, TileID.RichMahogany, WallID.MudstoneBrick, WallID.RichMaogany, WallID.JungleUnsafe, 2, TorchID.Jungle,
 			TileID.Tables, 2, 3, 2, 12, 2, TileID.Containers, 8),
 		TorchTempleTheme.Corrupt => new(
-			TileID.EbonstoneBrick, TileID.Ebonstone, WallID.EbonstoneUnsafe, 0, TorchID.Corrupt,
+			TileID.EbonstoneBrick, TileID.Ebonstone, WallID.EbonstoneBrick, WallID.EbonstoneBrick, WallID.EbonstoneUnsafe, 0, TorchID.Corrupt,
 			TileID.Tables, 0, 0, 0, 0, 0, TileID.Containers, 1),
 		TorchTempleTheme.Crimson => new(
-			TileID.CrimstoneBrick, TileID.Crimstone, WallID.CrimstoneUnsafe, 0, TorchID.Crimson,
+			TileID.CrimstoneBrick, TileID.Crimstone, WallID.CrimstoneBrick, WallID.CrimstoneBrick, WallID.CrimstoneUnsafe, 0, TorchID.Crimson,
 			TileID.Tables, 0, 0, 0, 0, 0, TileID.Containers, 1),
 		TorchTempleTheme.Mushroom => new(
-			TileID.MushroomBlock, TileID.GrayBrick, WallID.MushroomUnsafe, 18, TorchID.Mushroom,
+			TileID.MushroomBlock, TileID.GrayBrick, WallID.Mushroom, WallID.GrayBrick, WallID.MushroomUnsafe, 18, TorchID.Mushroom,
 			TileID.Tables, 27, 9, 7, 24, 22, TileID.Containers, 32),
 		TorchTempleTheme.Granite => new(
-			TileID.GraniteBlock, TileID.GrayBrick, WallID.GraniteUnsafe, 28, TorchID.Bone,
+			TileID.GraniteBlock, TileID.GrayBrick, WallID.GraniteBlock, WallID.GrayBrick, WallID.GraniteUnsafe, 28, TorchID.Bone,
 			TileID.Tables, 33, 34, 29, 30, 28, TileID.Containers, 50),
 		TorchTempleTheme.Marble => new(
-			TileID.MarbleBlock, TileID.StoneSlab, WallID.MarbleUnsafe, 29, TorchID.Bone,
+			TileID.MarbleBlock, TileID.StoneSlab, WallID.MarbleBlock, WallID.StoneSlab, WallID.MarbleUnsafe, 29, TorchID.Bone,
 			TileID.Tables, 34, 35, 30, 31, 29, TileID.Containers, 51),
 		TorchTempleTheme.Cavern => new(
-			TileID.StoneSlab, TileID.GrayBrick, WallID.CaveUnsafe, 0, TorchID.Bone,
+			TileID.StoneSlab, TileID.GrayBrick, WallID.StoneSlab, WallID.GrayBrick, WallID.CaveUnsafe, 0, TorchID.Bone,
 			TileID.Tables, 0, 0, 0, 0, 0, TileID.Containers, 1),
 		_ => throw new ArgumentOutOfRangeException(nameof(theme), theme, null)
 	};
@@ -1268,6 +1337,8 @@ internal static class TorchGodTempleGenerator
 	private readonly record struct TemplePalette(
 		ushort PrimaryBrick,
 		ushort SecondaryBrick,
+		ushort PrimaryWall,
+		ushort SecondaryWall,
 		ushort UnsafeWall,
 		int PlatformStyle,
 		int TorchStyle,

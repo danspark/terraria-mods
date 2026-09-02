@@ -10,6 +10,8 @@ namespace VanillaWorldsOverhauled.WorldGeneration;
 
 internal static class WorldValidator
 {
+	private const int MinimumMineSectionWallSamples = 64;
+
 	public static GenerationReport Validate(
 		WorldPlan plan,
 		SurfaceMinePlan surfaceMinePlan,
@@ -1814,7 +1816,12 @@ internal static class WorldValidator
 					: 0;
 			}
 		}
-		if (sampled < section.Area.Width * 2 || themed < sampled * 9 / 10) {
+		if (sampled < MinimumMineSectionWallSamples) {
+			errors.Add(
+				$"mine section {section.Id} ({section.Theme}) exposes only {sampled} independent wall samples; "
+				+ $"expected at least {MinimumMineSectionWallSamples}");
+		}
+		else if (themed < sampled * 9 / 10) {
 			errors.Add(
 				$"mine section {section.Id} ({section.Theme}) uses its biome wall family in only "
 				+ $"{themed}/{sampled} open wall cells");
@@ -2591,6 +2598,11 @@ internal static class WorldValidator
 		if (plan.BodyArea.Top <= Main.worldSurface + 20 || plan.BodyArea.Bottom >= Main.UnderworldLayer - 80) {
 			errors.Add($"Torch God temple at {plan.BodyArea} is outside its underground depth contract");
 		}
+		foreach (TorchTempleTheme theme in Enum.GetValues<TorchTempleTheme>()) {
+			if (!TorchGodTempleGenerator.HasValidWallSemantics(theme)) {
+				errors.Add($"Torch God temple {theme} palette does not pair housing-safe masonry with an unsafe wall seam");
+			}
+		}
 
 		Rectangle activationArea = TorchGodTempleGenerator.ActivationArea(plan.ActivationPoint);
 		int litTorches = TorchGodTempleGenerator.CountLitTorches(activationArea);
@@ -2617,8 +2629,8 @@ internal static class WorldValidator
 		}
 
 		Tile socket = Main.tile[plan.MissingTorch.X, plan.MissingTorch.Y];
-		if (socket.HasTile || socket.LiquidAmount > 0 || socket.WallType == WallID.None
-			|| Main.wallHouse[socket.WallType]) {
+		if (socket.HasTile || socket.LiquidAmount > 0
+			|| !TorchGodTempleGenerator.IsTempleUnsafeWall(plan.Theme, socket.WallType)) {
 			errors.Add($"Torch God temple's empty torch socket at {plan.MissingTorch} is blocked, wet, or housing-safe");
 		}
 
@@ -2647,8 +2659,10 @@ internal static class WorldValidator
 		}
 
 		int brickTiles = 0;
+		int openWallCells = 0;
+		int openMasonryWalls = 0;
 		int openUnsafeWalls = 0;
-		int housingWalls = 0;
+		int unexpectedWalls = 0;
 		int substantialShellRows = 0;
 		int shellRows = 0;
 		for (int y = plan.BodyArea.Top; y < plan.BodyArea.Bottom; y++) {
@@ -2661,9 +2675,18 @@ internal static class WorldValidator
 					leftBrick = leftBrick < 0 ? x : leftBrick;
 					rightBrick = x;
 				}
-				if (!TileEditor.IsSolid(x, y) && tile.WallType != WallID.None) {
-					openUnsafeWalls += !Main.wallHouse[tile.WallType] ? 1 : 0;
-					housingWalls += Main.wallHouse[tile.WallType] ? 1 : 0;
+				if (!TorchGodTempleGenerator.ContainsBodyCell(plan, x, y) || TileEditor.IsSolid(x, y)) {
+					continue;
+				}
+				openWallCells++;
+				if (TorchGodTempleGenerator.IsTempleMasonryWall(plan.Theme, tile.WallType)) {
+					openMasonryWalls++;
+				}
+				else if (TorchGodTempleGenerator.IsTempleUnsafeWall(plan.Theme, tile.WallType)) {
+					openUnsafeWalls++;
+				}
+				else {
+					unexpectedWalls++;
 				}
 			}
 			if (leftBrick < 0 || rightBrick <= leftBrick) {
@@ -2691,11 +2714,61 @@ internal static class WorldValidator
 			errors.Add(
 				$"Torch God temple has substantial multi-tile side walls on only {substantialShellRows}/{shellRows} occupied rows");
 		}
-		bool validHousing = TryFindValidHousing(plan.BodyArea, out Point housingProbe);
-		if (openUnsafeWalls < 350 || housingWalls > 0 || validHousing) {
+
+		Rectangle arena = TorchGodTempleGenerator.ArenaInterior(plan);
+		int arenaCells = 0;
+		int openArenaCells = 0;
+		int platformTiles = 0;
+		int wideArenaRows = 0;
+		int requiredWideSpan = Math.Max(30, arena.Width * 3 / 4);
+		for (int x = plan.BodyArea.Left; x < plan.BodyArea.Right; x++) {
+			for (int y = plan.BodyArea.Top; y < plan.BodyArea.Bottom; y++) {
+				Tile tile = Main.tile[x, y];
+				platformTiles += tile.HasUnactuatedTile && tile.TileType == TileID.Platforms ? 1 : 0;
+			}
+		}
+		for (int y = arena.Top; y < arena.Bottom; y++) {
+			int currentSpan = 0;
+			int widestSpan = 0;
+			for (int x = arena.Left; x < arena.Right; x++) {
+				arenaCells++;
+				if (TileEditor.IsSolid(x, y)) {
+					currentSpan = 0;
+					continue;
+				}
+				openArenaCells++;
+				currentSpan++;
+				widestSpan = Math.Max(widestSpan, currentSpan);
+			}
+			wideArenaRows += widestSpan >= requiredWideSpan ? 1 : 0;
+		}
+		double openArenaRatio = arenaCells == 0 ? 0d : openArenaCells / (double)arenaCells;
+		if (openArenaRatio < TorchGodTempleGenerator.MinimumArenaOpenRatio) {
 			errors.Add(
-				$"Torch God temple wall contract failed with {openUnsafeWalls} unsafe open-wall cells, "
-				+ $"{housingWalls} housing-wall cells, and housing probe {housingProbe}");
+				$"Torch God temple arena is only {openArenaRatio:P0} open; "
+				+ $"expected at least {TorchGodTempleGenerator.MinimumArenaOpenRatio:P0} open collision space");
+		}
+		if (platformTiles < TorchGodTempleGenerator.MinimumPlatformTiles) {
+			errors.Add(
+				$"Torch God temple retained only {platformTiles} platform tiles; "
+				+ $"expected at least {TorchGodTempleGenerator.MinimumPlatformTiles}");
+		}
+		if (wideArenaRows < TorchGodTempleGenerator.MinimumWideArenaRows) {
+			errors.Add(
+				$"Torch God temple has only {wideArenaRows} rows with at least {requiredWideSpan} continuous open tiles; "
+				+ $"expected at least {TorchGodTempleGenerator.MinimumWideArenaRows}");
+		}
+		double masonryWallRatio = openWallCells == 0 ? 0d : openMasonryWalls / (double)openWallCells;
+		if (masonryWallRatio < TorchGodTempleGenerator.MinimumMasonryWallRatio
+			|| openUnsafeWalls < TorchGodTempleGenerator.MinimumUnsafeWallCells
+			|| unexpectedWalls > 0) {
+			errors.Add(
+				$"Torch God temple wall palette retained {openMasonryWalls}/{openWallCells} matching masonry cells, "
+				+ $"{openUnsafeWalls} matching unsafe cells, and {unexpectedWalls} unexpected cells");
+		}
+		bool validHousing = TryFindValidHousing(plan.BodyArea, out Point housingProbe);
+		if (validHousing) {
+			errors.Add($"Torch God temple forms valid NPC housing near {housingProbe.X},{housingProbe.Y}");
 		}
 		if (record.FurnitureCount < 6) {
 			errors.Add($"Torch God temple retained only {record.FurnitureCount} furniture and prop placements");

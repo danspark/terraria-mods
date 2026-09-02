@@ -361,6 +361,33 @@ Every row passed finished-tile validation, first reload, save, and second reload
 
 Independent persisted-world renders inspected all three matrix temples at tile resolution. The compact Crucible Vault rises into a narrow dome, the Sunken Basilica uses a wider rounded shell and nested central arch, and the Stepped Reliquary shifts its ledges and roof mass asymmetrically. Their thick Sandstone-and-Mudstone masonry blends into the Underground Desert host while the darker unsafe-wall interior, altar chest, ledges, columns, stairs, layout-specific torch motifs, and open cave portals remain legible. The medium and large examples each retain two independent cavern approaches; the small example retains one. This is structural map inspection, not a substitute for playing the event; a repeatable live-player activation and combat test remains future work.
 
+## 0.3.7 open-arena correction
+
+An in-game combat-space review exposed a limitation that flood-fill connectivity did not measure: the original central arch, columns, and thick interior ledges left a connected temple that still felt cramped to move through. The corrected grammar enlarges all four bodies, removes the central masonry arch, lowers and compacts the altar, and concentrates solid blocks in the irregular outer shell, bottom boundary, buttresses, and short edge furniture bays. Long split platforms and diagonal platform stairs now provide most of the interior circulation; their height, side, gaps, and count remain layout-specific.
+
+The final-grid validator now treats battle space as a separate contract. The central arena must remain at least 82% free of solid collision, retain at least 72 platform tiles in the complete temple, and contain at least twelve rows with an uninterrupted open span covering three quarters of the arena width. These checks run after furnishing and torch placement, so a late object cannot silently consume the promised movement space.
+
+The first twelve-world generation soak identified a layout-specific shortfall: four Crucible Vault worlds retained only 64–68 platforms after furnishing. Adding a third split tier repaired the template without weakening the open-space threshold. Replaying the identical seeds then passed 12/12 across rotating small, medium, and large Classic and Journey worlds. A full Journey-medium save, reload, save, and second reload of `VWO-Stress-001-medium-journey` preserved the repaired Crucible Vault and all 100 live torches.
+
+Persisted-world renders inspected one example of every layout from the passing soak:
+
+| Layout | Seed | Recorded protected extent | Furniture | Entrances | Themed bricks |
+| --- | --- | --- | ---: | ---: | ---: |
+| Twin Sanctum | `Majesty-Small-035` (`115321426`) | 101×90 | 8 | 1 | 1,179 |
+| Crucible Vault | `VWO-Stress-001-medium-journey` (`1508946846`) | 99×87 | 9 | 1 | 921 |
+| Stepped Reliquary | `VWO-Stress-003-small-journey` (`1723202416`) | 104×88 | 8 | 1 | 1,122 |
+| Sunken Basilica | `VWO-Stress-004-medium-classic` (`1481673093`) | 98×87 | 8 | 1 | 1,077 |
+
+All four crops show a single broad, readable chamber with the platform route and compact altar visible against the unsafe-wall field. Solid interior masses no longer divide the combat arena.
+
+### Corresponding brick-wall treatment
+
+Inspection of the installed Terraria 1.4.4.9 wall registry confirmed a housing-safe construction wall for every temple material family: Gray Brick and Stone Slab, Ice and Snow Brick, Sandstone and Mudstone Brick, Mudstone and Rich Mahogany, Ebonstone Brick, Crimstone Brick, Mushroom, Granite, and Marble. The natural Cave, Ice, Sandstone, Jungle, evil, Mushroom, Granite, and Marble walls remain unsafe.
+
+Filling the chamber with only the corresponding construction wall would make the furnished temple eligible for NPC housing. Leaving it entirely natural would miss the visual pairing. The implemented field therefore uses broad matching masonry panels, an organic unsafe border that follows the shell inset, and a multi-scale wandering unsafe seam through every elevation. The validator checks all ten palettes against Terraria's live `wallHouse` table, then requires the finished body to contain at least 65% matching masonry walls, at least 120 matching unsafe-wall cells, no foreign walls, and no valid NPC room.
+
+The closing verification repeated the full small/medium/large generation, reload, save, and second-reload matrix, followed by twelve additional generation-only worlds rotating all sizes and Classic/Journey modes. All fifteen worlds passed. The deterministic campaign selected Desert styling in every case, so it exercised all four layouts and the Sandstone/Mudstone wall field but did not provide a current visual sample for every palette. The live registry check covers every palette's housing semantics; future visual regression coverage should also pin at least one generated world for each non-Desert theme.
+
 ## Future research queue
 
 - Move the independent deterministic full-world and feature-crop renderer into the repository test harness so shape review becomes as repeatable as connectivity validation.

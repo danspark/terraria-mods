@@ -1,6 +1,6 @@
 author = Daniel Reis
 displayName = Vanilla Worlds Overhauled
-version = 0.3.6
+version = 0.3.7
 homepage = https://github.com/danspark/terraria-mods/tree/main/vanilla-worlds-overhauled
 side = Both
 includeSource = true
