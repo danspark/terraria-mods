@@ -173,6 +173,16 @@ internal static class WorldValidator
 					$"mountain region {region.Id} follows its underlying biome in only "
 					+ $"{matchingMaterial}/{sampledMaterial} sampled surface columns");
 			}
+			ValidateJungleMountainBody(plan, planned, manifest, errors);
+			if (!HasGroundedMountainCrowns(plan, planned, out int connectedCrownCells)) {
+				errors.Add(
+					$"mountain region {region.Id} has a summit with only {connectedCrownCells} naturally grounded crown cells");
+			}
+			int repeatedGroundingSlots = CountRepeatedGroundingSlotChains(plan, planned, manifest);
+			if (repeatedGroundingSlots > 0) {
+				errors.Add(
+					$"mountain region {region.Id} retained {repeatedGroundingSlots} vertically repeated rectangular cave-slot chains");
+			}
 			(int horizontalWallSeam, int verticalWallSeam, Point horizontalStart, Point verticalStart) =
 				MeasureNaturalWallSeams(interior.Area, manifest);
 			if (horizontalWallSeam > 26 || verticalWallSeam > 26) {
@@ -314,6 +324,7 @@ internal static class WorldValidator
 		MountainRangePlan mountain)
 	{
 		WorldRegion region = plan.Regions[mountain.RegionId];
+		ushort[] materialProfile = LandformGenerator.CaptureMountainMaterialProfile(plan, mountain);
 		int matching = 0;
 		int sampled = 0;
 		for (int x = region.Left + 8; x <= region.Right - 8; x += 3) {
@@ -322,12 +333,291 @@ internal static class WorldValidator
 			if (!actual.HasUnactuatedTile || Main.tileFrameImportant[actual.TileType] || !IsNaturalMountainTile(actual)) {
 				continue;
 			}
-			ushort expected = LandformGenerator.MountainTerrainAt(plan, mountain, x, 0);
+			ushort expected = LandformGenerator.MountainMaterialAt(
+				plan,
+				mountain,
+				x,
+				0,
+				materialProfile);
 			sampled++;
 			matching += SameMountainMaterialFamily(actual.TileType, expected) ? 1 : 0;
 		}
 		return (matching, sampled);
 	}
+
+	private static void ValidateJungleMountainBody(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		GenerationManifest manifest,
+		List<string> errors)
+	{
+		WorldRegion region = plan.Regions[mountain.RegionId];
+		ushort[] materialProfile = LandformGenerator.CaptureMountainMaterialProfile(plan, mountain);
+		int hostColumns = 0;
+		int bodySamples = 0;
+		int jungleTiles = 0;
+		int structuralRockTiles = 0;
+		int weakColumns = 0;
+		for (int x = region.Left + 8; x <= region.Right - 8; x += 4) {
+			int columnSamples = 0;
+			int columnJungle = 0;
+			int bottomY = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 45);
+			for (int y = plan.SurfaceAt(x); y <= bottomY; y += 2) {
+				if (IsMountainValidationExcluded(manifest, x, y)) {
+					continue;
+				}
+				ushort intendedMaterial = LandformGenerator.MountainMaterialAt(
+					plan,
+					mountain,
+					x,
+					y - plan.SurfaceAt(x),
+					materialProfile);
+				if (intendedMaterial is not (TileID.JungleGrass or TileID.CorruptJungleGrass or TileID.CrimsonJungleGrass)) {
+					continue;
+				}
+				Tile tile = Main.tile[x, y];
+				if (!IsNaturalMountainTile(tile)) {
+					continue;
+				}
+				columnSamples++;
+				columnJungle += IsMatchingJungleTerrain(tile.TileType, intendedMaterial) ? 1 : 0;
+				structuralRockTiles += tile.TileType == JungleRockFor(intendedMaterial) ? 1 : 0;
+			}
+			bodySamples += columnSamples;
+			jungleTiles += columnJungle;
+			if (columnSamples < 12) {
+				continue;
+			}
+			hostColumns++;
+			if (columnJungle * 100 < columnSamples * 45) {
+				weakColumns++;
+			}
+		}
+
+		if (hostColumns < 8) {
+			return;
+		}
+		const int minimumBodySamples = 160;
+		if (bodySamples < minimumBodySamples) {
+			errors.Add(
+				$"Jungle mountain region {region.Id} exposed only {bodySamples} measurable natural-body samples; "
+				+ $"expected at least {minimumBodySamples}");
+			return;
+		}
+		if (jungleTiles * 100 < bodySamples * 60) {
+			errors.Add(
+				$"Jungle mountain region {region.Id} is stone-dominated: "
+				+ $"{jungleTiles}/{bodySamples} body samples are Mud or matching Jungle Grass");
+		}
+		int minimumRockPercent = bodySamples < 240 ? 3 : 10;
+		if (structuralRockTiles * 100 < bodySamples * minimumRockPercent
+			|| structuralRockTiles * 100 > bodySamples * 38) {
+			errors.Add(
+				$"Jungle mountain region {region.Id} retained {structuralRockTiles}/{bodySamples} structural rock samples; "
+				+ $"expected {minimumRockPercent}-38%");
+		}
+		int foreignTiles = bodySamples - jungleTiles - structuralRockTiles;
+		if (foreignTiles * 100 > bodySamples * 10) {
+			errors.Add(
+				$"Jungle mountain region {region.Id} retained {foreignTiles}/{bodySamples} foreign natural-material samples; expected at most 10%");
+		}
+		if (weakColumns > Math.Max(2, (hostColumns + 3) / 4)) {
+			errors.Add(
+				$"Jungle mountain region {region.Id} has {weakColumns}/{hostColumns} sampled columns with a thin or absent Jungle body");
+		}
+	}
+
+	private static bool HasGroundedMountainCrowns(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		out int connectedCrownCells)
+	{
+		WorldRegion region = plan.Regions[mountain.RegionId];
+		int top = Math.Max(45, Math.Min(mountain.LeftPeakY, mountain.RightPeakY) - 12);
+		int bottom = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 70);
+		Rectangle area = new(region.Left, top, region.Width, bottom - top);
+		bool[] grounded = new bool[area.Width * area.Height];
+		Queue<Point> queue = new();
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = Math.Max(area.Top, area.Bottom - 18); y < area.Bottom; y++) {
+				if (!IsDeepMountainGroundingSeed(x, y)) {
+					continue;
+				}
+				int index = (x - area.Left) + (y - area.Top) * area.Width;
+				grounded[index] = true;
+				queue.Enqueue(new Point(x, y));
+			}
+		}
+		ReadOnlySpan<Point> directions = [new(1, 0), new(-1, 0), new(0, 1), new(0, -1)];
+		while (queue.Count > 0) {
+			Point current = queue.Dequeue();
+			foreach (Point direction in directions) {
+				int x = current.X + direction.X;
+				int y = current.Y + direction.Y;
+				if (!area.Contains(x, y) || !IsMountainGroundingCell(x, y)) {
+					continue;
+				}
+				int index = (x - area.Left) + (y - area.Top) * area.Width;
+				if (grounded[index]) {
+					continue;
+				}
+				grounded[index] = true;
+				queue.Enqueue(new Point(x, y));
+			}
+		}
+
+		connectedCrownCells = new[] { mountain.LeftPeakX, mountain.RightPeakX }
+			.Select(peakX => CountGroundedCrownCells(plan, area, grounded, peakX))
+			.Min();
+		return connectedCrownCells >= 12;
+	}
+
+	private static int CountGroundedCrownCells(
+		WorldPlan plan,
+		Rectangle area,
+		IReadOnlyList<bool> grounded,
+		int peakX)
+	{
+		int count = 0;
+		for (int x = peakX - 14; x <= peakX + 14; x++) {
+			int surfaceY = plan.SurfaceAt(x);
+			for (int y = surfaceY; y <= surfaceY + 18; y++) {
+				if (!area.Contains(x, y)) {
+					continue;
+				}
+				int index = (x - area.Left) + (y - area.Top) * area.Width;
+				count += grounded[index] && IsNaturalMountainTile(Main.tile[x, y]) ? 1 : 0;
+			}
+		}
+		return count;
+	}
+
+	private static int CountRepeatedGroundingSlotChains(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		GenerationManifest manifest)
+	{
+		WorldRegion region = plan.Regions[mountain.RegionId];
+		int top = Math.Max(45, Math.Min(mountain.LeftPeakY, mountain.RightPeakY) - 12);
+		int bottom = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 70);
+		Rectangle area = new(region.Left, top, region.Width, bottom - top);
+		bool[] visited = new bool[area.Width * area.Height];
+		List<Rectangle> slots = [];
+		ReadOnlySpan<Point> directions = [new(1, 0), new(-1, 0), new(0, 1), new(0, -1)];
+		for (int x = area.Left + 2; x < area.Right - 2; x++) {
+			for (int y = area.Top + 2; y < area.Bottom - 2; y++) {
+				int startIndex = (x - area.Left) + (y - area.Top) * area.Width;
+				if (visited[startIndex] || !IsWallBackedMountainOpening(manifest, x, y)) {
+					continue;
+				}
+				Queue<Point> queue = new();
+				queue.Enqueue(new Point(x, y));
+				visited[startIndex] = true;
+				int cells = 0;
+				int left = x;
+				int right = x;
+				int componentTop = y;
+				int componentBottom = y;
+				while (queue.Count > 0) {
+					Point current = queue.Dequeue();
+					cells++;
+					left = Math.Min(left, current.X);
+					right = Math.Max(right, current.X);
+					componentTop = Math.Min(componentTop, current.Y);
+					componentBottom = Math.Max(componentBottom, current.Y);
+					foreach (Point direction in directions) {
+						int nextX = current.X + direction.X;
+						int nextY = current.Y + direction.Y;
+						if (!area.Contains(nextX, nextY)) {
+							continue;
+						}
+						int nextIndex = (nextX - area.Left) + (nextY - area.Top) * area.Width;
+						if (visited[nextIndex] || !IsWallBackedMountainOpening(manifest, nextX, nextY)) {
+							continue;
+						}
+						visited[nextIndex] = true;
+						queue.Enqueue(new Point(nextX, nextY));
+					}
+				}
+				int width = right - left + 1;
+				int height = componentBottom - componentTop + 1;
+				if (cells <= 80 && width is >= 4 and <= 9 && height is >= 5 and <= 12
+					&& cells * 100 >= width * height * 85) {
+					slots.Add(new Rectangle(left, componentTop, width, height));
+				}
+			}
+		}
+
+		slots.Sort((left, right) => left.Center.Y.CompareTo(right.Center.Y));
+		int chains = 0;
+		for (int first = 0; first < slots.Count; first++) {
+			for (int second = first + 1; second < slots.Count; second++) {
+				int firstGap = slots[second].Center.Y - slots[first].Center.Y;
+				if (firstGap is < 22 or > 32
+					|| Math.Abs(slots[second].Center.X - slots[first].Center.X) > 2
+					|| Math.Abs(slots[first].Width - slots[second].Width) > 1
+					|| Math.Abs(slots[first].Height - slots[second].Height) > 1) {
+					continue;
+				}
+				for (int third = second + 1; third < slots.Count; third++) {
+					int secondGap = slots[third].Center.Y - slots[second].Center.Y;
+					if (secondGap is >= 22 and <= 32
+						&& Math.Abs(firstGap - secondGap) <= 2
+						&& Math.Abs(slots[third].Center.X - slots[second].Center.X) <= 2
+						&& Math.Abs(slots[second].Width - slots[third].Width) <= 1
+						&& Math.Abs(slots[second].Height - slots[third].Height) <= 1) {
+						chains++;
+						break;
+					}
+				}
+			}
+		}
+		return chains;
+	}
+
+	private static bool IsWallBackedMountainOpening(GenerationManifest manifest, int x, int y)
+	{
+		Tile tile = Main.tile[x, y];
+		return !TileEditor.IsSolid(x, y)
+			&& tile.WallType != WallID.None
+			&& !IsMountainValidationExcluded(manifest, x, y);
+	}
+
+	private static bool IsMountainValidationExcluded(GenerationManifest manifest, int x, int y) =>
+		BiomeTransitionGenerator.IsFeatureOwned(manifest, x, y)
+		|| manifest.BiomeTransitions.Any(record => record.Area.Contains(x, y));
+
+	private static bool IsMountainGroundingCell(int x, int y) =>
+		IsNaturalMountainTile(Main.tile[x, y])
+		|| WorldGen.InWorld(x, y, 3)
+			&& !TileEditor.IsSolid(x, y)
+			&& IsNaturalMountainWall(Main.tile[x, y].WallType);
+
+	private static bool IsDeepMountainGroundingSeed(int x, int y)
+	{
+		if (!WorldGen.InWorld(x, y, 3) || !IsNaturalMountainTile(Main.tile[x, y])) {
+			return false;
+		}
+		int continuation = 0;
+		for (int offset = 1; offset <= 18; offset++) {
+			continuation += WorldGen.InWorld(x, y + offset, 3)
+				&& IsNaturalMountainTile(Main.tile[x, y + offset]) ? 1 : 0;
+		}
+		return continuation >= 12;
+	}
+
+	private static bool IsNaturalMountainWall(ushort wall) => wall is
+		WallID.DirtUnsafe or WallID.Stone or WallID.SnowWallUnsafe or WallID.JungleUnsafe
+		or WallID.Sandstone or WallID.EbonstoneUnsafe or WallID.CrimstoneUnsafe;
+
+	private static bool IsMatchingJungleTerrain(ushort actual, ushort intended) =>
+		actual == TileID.Mud || actual == intended;
+
+	private static ushort JungleRockFor(ushort jungleMaterial) => jungleMaterial switch {
+		TileID.CorruptJungleGrass => TileID.Ebonstone,
+		TileID.CrimsonJungleGrass => TileID.Crimstone,
+		_ => TileID.Stone
+	};
 
 	private static bool SameMountainMaterialFamily(ushort left, ushort right) =>
 		MountainMaterialFamily(left) == MountainMaterialFamily(right);

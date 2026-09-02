@@ -147,6 +147,7 @@ internal static class MountainBiomeGenerator
 
 	public static void RefillInteriorWaters(WorldPlan plan, GenerationManifest manifest)
 	{
+		Dictionary<int, ushort[]> materialProfiles = [];
 		for (int index = 0; index < manifest.MountainWaters.Count; index++) {
 			MountainWaterRecord water = manifest.MountainWaters[index];
 			MountainRangePlan? matchingMountain = plan.Mountains
@@ -162,7 +163,11 @@ internal static class MountainBiomeGenerator
 				water.WaterlineY,
 				water.Depth,
 				water.FeatureSeed);
-			manifest.MountainWaters[index] = BuildInteriorWater(plan, mountain, replay);
+			if (!materialProfiles.TryGetValue(mountain.RegionId, out ushort[]? materialProfile)) {
+				materialProfile = LandformGenerator.CaptureMountainMaterialProfile(plan, mountain);
+				materialProfiles.Add(mountain.RegionId, materialProfile);
+			}
+			manifest.MountainWaters[index] = BuildInteriorWater(plan, mountain, replay, materialProfile);
 		}
 	}
 
@@ -186,6 +191,7 @@ internal static class MountainBiomeGenerator
 	{
 		foreach (MountainRangePlan mountain in plan.Mountains) {
 			Rectangle area = MountainArea(plan, mountain);
+			ushort[] materialProfile = LandformGenerator.CaptureMountainMaterialProfile(plan, mountain);
 			for (int x = area.Left + 3; x < area.Right - 3; x++) {
 				int surfaceY = plan.SurfaceAt(x);
 				for (int y = Math.Max(area.Top + 3, surfaceY + 4); y < area.Bottom - 3; y++) {
@@ -206,7 +212,13 @@ internal static class MountainBiomeGenerator
 					if (tile.WallType != WallID.None && !IsNaturalMountainWall(tile.WallType)) {
 						continue;
 					}
-					TileEditor.SetWall(x, y, MountainWallAt(plan, mountain, x, y, manifest));
+					ushort hostMaterial = LandformGenerator.MountainMaterialAt(
+						plan,
+						mountain,
+						x,
+						y - surfaceY,
+						materialProfile);
+					TileEditor.SetWall(x, y, MountainWallAt(plan, mountain, x, y, manifest, hostMaterial));
 				}
 			}
 			BreakLongWallSeams(area, manifest);
@@ -362,68 +374,312 @@ internal static class MountainBiomeGenerator
 		}
 	}
 
-	public static void RepairGroundingSpines(WorldPlan plan)
+	public static void RepairGroundingSpines(WorldPlan plan, GenerationManifest manifest)
 	{
 		foreach (MountainRangePlan mountain in plan.Mountains) {
-			SkyHighlandPlan? attachedHighland = plan.SkyHighlands
-				.Where(highland => highland.AttachedMountainRegionId == mountain.RegionId)
-				.Select<SkyHighlandPlan, SkyHighlandPlan?>(highland => highland)
-				.FirstOrDefault();
-			int peakX = attachedHighland is SkyHighlandPlan highland
-				&& Math.Abs(highland.CenterX - mountain.LeftPeakX) < Math.Abs(highland.CenterX - mountain.RightPeakX)
-					? mountain.RightPeakX
-					: mountain.LeftPeakX;
-			foreach (int spineX in new[] { peakX - 12, peakX + 12 }) {
-				int topY = plan.SurfaceAt(spineX);
-				int bottomY = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 55);
-				for (int y = topY; y <= bottomY; y++) {
-					int halfWidth = Math.Clamp(
-						4 + OrganicBoundary.Profile(
-							y,
-							mountain.FeatureSeed ^ spineX ^ 0x5350_494E,
-							23,
-							7,
-							2,
-							1),
-						3,
-						6);
-					for (int x = spineX - halfWidth; x <= spineX + halfWidth; x++) {
-						if (y < plan.SurfaceAt(x)) {
-							continue;
-						}
-						if (TileEditor.IsProtectedTile(Main.tile[x, y]) || IsMineRailEnvelope(x, y)) {
-							continue;
-						}
-						int depth = y - plan.SurfaceAt(x);
-						ushort terrain = LandformGenerator.MountainTerrainAt(plan, mountain, x, depth);
-						TileEditor.SetTerrain(x, y, terrain);
-						if (depth >= 4) {
-							TileEditor.SetWall(x, y, LandformGenerator.MountainWallAtDepth(mountain, x, depth));
-						}
-					}
+			Rectangle area = MountainArea(plan, mountain);
+			MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
+			ushort[]? materialProfile = null;
+			foreach (int peakX in new[] { mountain.LeftPeakX, mountain.RightPeakX }) {
+				bool[] grounded = FindGroundedMountainCells(area);
+				if (GroundedCrownCells(plan, area, grounded, peakX) >= 12) {
+					continue;
 				}
-				for (int portalY = topY + 20; portalY < bottomY - 8; portalY += 27) {
-					for (int x = spineX - 2; x <= spineX + 2; x++) {
-						for (int y = portalY - 7; y < portalY; y++) {
-							if (!TileEditor.IsProtectedTile(Main.tile[x, y]) && !IsMineRailEnvelope(x, y)) {
-								TileEditor.ClearTerrain(x, y);
-								TileEditor.SetWall(
-									x,
-									y,
-									LandformGenerator.MountainWallAtDepth(mountain, x, y - plan.SurfaceAt(x)));
-							}
-						}
+
+				List<Point>? route = FindGroundingRepairRoute(plan, mountain, manifest, layout, area, grounded, peakX);
+				if (route is null) {
+					continue;
+				}
+
+				materialProfile ??= LandformGenerator.CaptureMountainMaterialProfile(plan, mountain);
+				FillGroundingRepair(plan, mountain, manifest, layout, route, materialProfile);
+				TileEditor.Frame(area, border: 2);
+			}
+		}
+	}
+
+	private static bool[] FindGroundedMountainCells(Rectangle area)
+	{
+		bool[] grounded = new bool[area.Width * area.Height];
+		Queue<Point> queue = new();
+		int seedTop = Math.Max(area.Top, area.Bottom - 18);
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = seedTop; y < area.Bottom; y++) {
+				if (!IsDeepGroundingSeed(x, y)) {
+					continue;
+				}
+				int index = (x - area.Left) + (y - area.Top) * area.Width;
+				grounded[index] = true;
+				queue.Enqueue(new Point(x, y));
+			}
+		}
+
+		ReadOnlySpan<Point> directions = [new(1, 0), new(-1, 0), new(0, 1), new(0, -1)];
+		while (queue.Count > 0) {
+			Point current = queue.Dequeue();
+			foreach (Point direction in directions) {
+				int x = current.X + direction.X;
+				int y = current.Y + direction.Y;
+				if (!area.Contains(x, y) || !IsMountainGroundingCell(x, y)) {
+					continue;
+				}
+				int index = (x - area.Left) + (y - area.Top) * area.Width;
+				if (grounded[index]) {
+					continue;
+				}
+				grounded[index] = true;
+				queue.Enqueue(new Point(x, y));
+			}
+		}
+		return grounded;
+	}
+
+	private static int GroundedCrownCells(WorldPlan plan, Rectangle area, IReadOnlyList<bool> grounded, int peakX)
+	{
+		int count = 0;
+		for (int x = peakX - 14; x <= peakX + 14; x++) {
+			int top = plan.SurfaceAt(x);
+			for (int y = top; y <= top + 18; y++) {
+				if (!area.Contains(x, y)) {
+					continue;
+				}
+				int index = (x - area.Left) + (y - area.Top) * area.Width;
+				count += grounded[index] && IsNaturalGroundingSolid(x, y) ? 1 : 0;
+			}
+		}
+		return count;
+	}
+
+	private static List<Point>? FindGroundingRepairRoute(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		GenerationManifest manifest,
+		MountainInteriorLayout layout,
+		Rectangle area,
+		IReadOnlyList<bool> grounded,
+		int peakX)
+	{
+		int cellCount = area.Width * area.Height;
+		int[] costs = Enumerable.Repeat(int.MaxValue, cellCount).ToArray();
+		int[] previous = Enumerable.Repeat(-1, cellCount).ToArray();
+		PriorityQueue<int, int> frontier = new();
+		for (int x = peakX - 12; x <= peakX + 12; x++) {
+			int top = plan.SurfaceAt(x);
+			for (int y = top; y <= top + 16; y++) {
+				if (!area.Contains(x, y) || !IsNaturalGroundingSolid(x, y)) {
+					continue;
+				}
+				int index = (x - area.Left) + (y - area.Top) * area.Width;
+				if (grounded[index]) {
+					continue;
+				}
+				costs[index] = 0;
+				previous[index] = -2;
+				frontier.Enqueue(index, 0);
+			}
+		}
+
+		ReadOnlySpan<Point> directions = [new(1, 0), new(-1, 0), new(0, 1), new(0, -1)];
+		int destination = -1;
+		while (frontier.TryDequeue(out int currentIndex, out int queuedCost)) {
+			if (queuedCost != costs[currentIndex]) {
+				continue;
+			}
+			int currentX = area.Left + currentIndex % area.Width;
+			int currentY = area.Top + currentIndex / area.Width;
+			if (grounded[currentIndex] && IsNaturalGroundingSolid(currentX, currentY)) {
+				destination = currentIndex;
+				break;
+			}
+			foreach (Point direction in directions) {
+				int x = currentX + direction.X;
+				int y = currentY + direction.Y;
+				if (!area.Contains(x, y)
+					|| !CanRouteGroundingRepair(plan, mountain, layout, manifest, x, y)) {
+					continue;
+				}
+				int nextIndex = (x - area.Left) + (y - area.Top) * area.Width;
+				Tile tile = Main.tile[x, y];
+				int organicCost = (int)Math.Round(OrganicBoundary.Field(
+					x,
+					y,
+					mountain.FeatureSeed ^ 0x4752_5046,
+					43,
+					13) * 12d);
+				int stepCost = IsNaturalGroundingSolid(x, y)
+					? 1
+					: (tile.WallType == WallID.None ? 34 : 22) + organicCost;
+				int nextCost = queuedCost + stepCost;
+				if (nextCost >= costs[nextIndex]) {
+					continue;
+				}
+				costs[nextIndex] = nextCost;
+				previous[nextIndex] = currentIndex;
+				frontier.Enqueue(nextIndex, nextCost);
+			}
+		}
+
+		if (destination < 0) {
+			return null;
+		}
+		List<Point> route = [];
+		for (int index = destination; index >= 0; index = previous[index]) {
+			route.Add(new Point(area.Left + index % area.Width, area.Top + index / area.Width));
+			if (previous[index] == -2) {
+				break;
+			}
+		}
+		return route;
+	}
+
+	private static bool CanRouteGroundingRepair(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		MountainInteriorLayout layout,
+		GenerationManifest manifest,
+		int x,
+		int y)
+	{
+		if (IsNaturalGroundingSolid(x, y)) {
+			return true;
+		}
+		Tile tile = Main.tile[x, y];
+		return !tile.HasTile
+			&& tile.LiquidAmount == 0
+			&& !tile.RedWire && !tile.BlueWire && !tile.GreenWire && !tile.YellowWire && !tile.HasActuator
+			&& !IsInsideAuthoredMountainClearance(plan, mountain, layout, x, y)
+			&& !IsDecorationExcluded(manifest, x, y)
+			&& !IsMineRailEnvelope(x, y);
+	}
+
+	private static void FillGroundingRepair(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		GenerationManifest manifest,
+		MountainInteriorLayout layout,
+		IReadOnlyList<Point> route,
+		IReadOnlyList<ushort> materialProfile)
+	{
+		for (int index = 0; index < route.Count; index++) {
+			Point center = route[index];
+			int radiusX = Math.Clamp(
+				3 + OrganicBoundary.Profile(index, mountain.FeatureSeed ^ 0x4752_4F55, 31, 9, 2, 1),
+				2,
+				5);
+			int radiusY = Math.Max(2, radiusX - 1);
+			for (int offsetX = -radiusX; offsetX <= radiusX; offsetX++) {
+				for (int offsetY = -radiusY; offsetY <= radiusY; offsetY++) {
+					double shape = (double)(offsetX * offsetX) / (radiusX * radiusX)
+						+ (double)(offsetY * offsetY) / (radiusY * radiusY);
+					int x = center.X + offsetX;
+					int y = center.Y + offsetY;
+					double edge = OrganicBoundary.Field(x, y, mountain.FeatureSeed ^ 0x4752_4544, 17, 7);
+					if (shape > 0.86d + edge * 0.28d || !WorldGen.InWorld(x, y, 8)
+						|| y < plan.SurfaceAt(x) || IsNaturalGroundingSolid(x, y)) {
+						continue;
 					}
-					for (int length = 0; length < 4; length++) {
-						int vineY = portalY - 7 + length;
-						if (Main.tile[spineX, vineY].HasTile || IsMineRailEnvelope(spineX, vineY)) {
-							break;
-						}
-						TileEditor.SetTerrain(spineX, vineY, VineTypeAt(spineX, portalY - 8));
+					if (IsInsideAuthoredMountainClearance(plan, mountain, layout, x, y)) {
+						continue;
+					}
+					if (!CanRouteGroundingRepair(plan, mountain, layout, manifest, x, y)) {
+						continue;
+					}
+					int depth = y - plan.SurfaceAt(x);
+					ushort terrain = LandformGenerator.MountainTerrainAt(
+						plan,
+						mountain,
+						x,
+						depth,
+						materialProfile);
+					TileEditor.SetTerrain(x, y, terrain);
+					if (depth >= 4) {
+						TileEditor.SetWall(x, y, LandformGenerator.MountainWallAtDepth(mountain, x, depth));
 					}
 				}
 			}
 		}
+	}
+
+	private static bool IsInsideAuthoredMountainClearance(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		MountainInteriorLayout layout,
+		int x,
+		int y)
+	{
+		foreach (Point[] route in layout.Routes) {
+			if (RoutePassesNear(route, x, y, MinimumRouteRadius + 22)) {
+				return true;
+			}
+		}
+		foreach (MountainChamber chamber in layout.Chambers) {
+			double normalized = (double)((x - chamber.Center.X) * (x - chamber.Center.X))
+				/ Math.Max(1, (chamber.RadiusX + 4) * (chamber.RadiusX + 4))
+				+ (double)((y - chamber.Center.Y) * (y - chamber.Center.Y))
+				/ Math.Max(1, (chamber.RadiusY + 4) * (chamber.RadiusY + 4));
+			if (normalized <= 1d) {
+				return true;
+			}
+		}
+		foreach (MountainShaft shaft in layout.Shafts) {
+			if (DistanceToSegmentSquared(x, y, shaft.Top, shaft.Bottom) <= (shaft.HalfWidth + 4) * (shaft.HalfWidth + 4)) {
+				return true;
+			}
+		}
+		if (layout.WallClimb is MountainWallClimb climb && WallClimbArea(climb).Contains(x, y)) {
+			return true;
+		}
+		return y < plan.SurfaceAt(x);
+	}
+
+	private static double DistanceToSegmentSquared(int x, int y, Point start, Point end)
+	{
+		double deltaX = end.X - start.X;
+		double deltaY = end.Y - start.Y;
+		double lengthSquared = deltaX * deltaX + deltaY * deltaY;
+		double amount = lengthSquared <= 0d
+			? 0d
+			: Math.Clamp(((x - start.X) * deltaX + (y - start.Y) * deltaY) / lengthSquared, 0d, 1d);
+		double nearestX = start.X + deltaX * amount;
+		double nearestY = start.Y + deltaY * amount;
+		double offsetX = x - nearestX;
+		double offsetY = y - nearestY;
+		return offsetX * offsetX + offsetY * offsetY;
+	}
+
+	private static bool IsNaturalGroundingSolid(int x, int y)
+	{
+		if (!WorldGen.InWorld(x, y, 3)) {
+			return false;
+		}
+		Tile tile = Main.tile[x, y];
+		return tile.HasUnactuatedTile && Main.tileSolid[tile.TileType] && !Main.tileSolidTop[tile.TileType]
+			&& !Main.tileFrameImportant[tile.TileType] && tile.TileType is
+				TileID.Grass or TileID.Dirt or TileID.Stone or TileID.SnowBlock or TileID.IceBlock or TileID.BreakableIce
+				or TileID.Mud or TileID.JungleGrass or TileID.CorruptJungleGrass or TileID.CrimsonJungleGrass
+				or TileID.Sand or TileID.HardenedSand or TileID.Sandstone or TileID.DesertFossil
+				or TileID.CorruptGrass or TileID.Ebonstone or TileID.Ebonsand
+				or TileID.CorruptHardenedSand or TileID.CorruptSandstone
+				or TileID.CrimsonGrass or TileID.Crimstone or TileID.Crimsand
+				or TileID.CrimsonHardenedSand or TileID.CrimsonSandstone;
+	}
+
+	private static bool IsMountainGroundingCell(int x, int y) =>
+		IsNaturalGroundingSolid(x, y)
+		|| WorldGen.InWorld(x, y, 3)
+			&& !TileEditor.IsSolid(x, y)
+			&& IsNaturalMountainWall(Main.tile[x, y].WallType);
+
+	private static bool IsDeepGroundingSeed(int x, int y)
+	{
+		if (!IsNaturalGroundingSolid(x, y)) {
+			return false;
+		}
+		int continuation = 0;
+		for (int offset = 1; offset <= 18; offset++) {
+			continuation += IsNaturalGroundingSolid(x, y + offset) ? 1 : 0;
+		}
+		return continuation >= 12;
 	}
 
 	public static void RepairEntrances(WorldPlan plan, GenerationManifest manifest)
@@ -741,19 +997,31 @@ internal static class MountainBiomeGenerator
 		MountainRangePlan mountain,
 		int x,
 		int y,
-		GenerationManifest? manifest = null)
+		GenerationManifest? manifest = null,
+		ushort? capturedMaterial = null)
 	{
 		WorldRegion region = plan.Regions[mountain.RegionId];
-		int materialSampleX = Math.Clamp(
-			x + (int)Math.Round((ValueNoise(x, y, mountain.FeatureSeed ^ 0x4249_4F4D, 67) - 0.5d) * 64d),
-			region.Left + 4,
-			region.Right - 4);
-		int sampleY = Math.Clamp(
-			Math.Max((int)Main.worldSurface + 70, plan.SurfaceAt(materialSampleX) + 150),
-			4,
-			Main.maxTilesY - 5);
-		ushort material = FindMountainSupportMaterial(materialSampleX, sampleY);
-		BiomeKind biome = BiomeClassifier.ClassifySupport(material, materialSampleX, sampleY);
+		int materialSampleX = x;
+		int sampleY = Math.Max((int)Main.worldSurface + 76, y);
+		ushort material;
+		if (capturedMaterial is ushort captured) {
+			material = captured;
+		}
+		else {
+			materialSampleX = Math.Clamp(
+				x + (int)Math.Round((ValueNoise(x, y, mountain.FeatureSeed ^ 0x4249_4F4D, 67) - 0.5d) * 64d),
+				region.Left + 4,
+				region.Right - 4);
+			sampleY = Math.Clamp(
+				Math.Max((int)Main.worldSurface + 70, plan.SurfaceAt(materialSampleX) + 150),
+				4,
+				Main.maxTilesY - 5);
+			material = FindMountainSupportMaterial(materialSampleX, sampleY);
+		}
+		BiomeKind biome = BiomeClassifier.ClassifySupport(
+			material,
+			materialSampleX,
+			sampleY);
 		ushort accent = biome switch {
 			BiomeKind.Snow => WallID.SnowWallUnsafe,
 			BiomeKind.Desert => WallID.Sandstone,
@@ -771,6 +1039,16 @@ internal static class MountainBiomeGenerator
 		// long axis-aligned wall boundaries even when the underlying field is smooth.
 		double score = broad * 0.52d + detail * 0.25d + edgeGrain * 0.23d + depthBias;
 		double accentField = ValueNoise(x, y, mountain.FeatureSeed ^ 0x4143_4345, 11);
+		if (capturedMaterial.HasValue && biome == BiomeKind.Jungle) {
+			if (score > 0.68d) {
+				return capturedMaterial.Value switch {
+					TileID.CorruptJungleGrass => WallID.EbonstoneUnsafe,
+					TileID.CrimsonJungleGrass => WallID.CrimstoneUnsafe,
+					_ => WallID.Stone
+				};
+			}
+			return accentField > 0.24d ? WallID.JungleUnsafe : WallID.DirtUnsafe;
+		}
 		if (accent != WallID.Stone && accentField > 0.86d && score is > 0.47d and < 0.63d) {
 			return accent;
 		}
@@ -846,6 +1124,7 @@ internal static class MountainBiomeGenerator
 		UnifiedRandom random,
 		GenerationManifest manifest)
 	{
+		ushort[] materialProfile = LandformGenerator.CaptureMountainMaterialProfile(plan, mountain);
 		int target = 2 + (random.Next(100) < 38 ? 1 : 0);
 		int placed = 0;
 		for (int attempt = 0; attempt < layout.Chambers.Count * 18 && placed < target; attempt++) {
@@ -869,7 +1148,7 @@ internal static class MountainBiomeGenerator
 				_ => MountainWaterStyle.HangingPool
 			};
 			MountainWaterPlan water = new(style, area, waterlineY, depth, featureSeed);
-			MountainWaterRecord record = BuildInteriorWater(plan, mountain, water);
+			MountainWaterRecord record = BuildInteriorWater(plan, mountain, water, materialProfile);
 			if (record.WaterCells < halfWidth * 2) {
 				continue;
 			}
@@ -899,7 +1178,8 @@ internal static class MountainBiomeGenerator
 	private static MountainWaterRecord BuildInteriorWater(
 		WorldPlan plan,
 		MountainRangePlan mountain,
-		MountainWaterPlan water)
+		MountainWaterPlan water,
+		IReadOnlyList<ushort> materialProfile)
 	{
 		int innerLeft = water.Area.Left + 4;
 		int innerRight = water.Area.Right - 5;
@@ -917,7 +1197,16 @@ internal static class MountainBiomeGenerator
 					continue;
 				}
 				TileEditor.ClearTerrain(x, y);
-				TileEditor.SetWall(x, y, MountainWallAt(plan, mountain, x, y));
+				ushort hostMaterial = LandformGenerator.MountainMaterialAt(
+					plan,
+					mountain,
+					x,
+					y - plan.SurfaceAt(x),
+					materialProfile);
+				TileEditor.SetWall(
+					x,
+					y,
+					MountainWallAt(plan, mountain, x, y, capturedMaterial: hostMaterial));
 			}
 
 			int shellDepth = 3 + Math.Abs(OrganicBoundary.Profile(x, water.FeatureSeed ^ 0x4D53_484C, 23, 9, 2, 1));
@@ -927,7 +1216,10 @@ internal static class MountainBiomeGenerator
 					continue;
 				}
 				int naturalDepth = Math.Max(0, y - plan.SurfaceAt(x));
-				TileEditor.SetTerrain(x, y, LandformGenerator.MountainTerrainAt(plan, mountain, x, naturalDepth));
+				TileEditor.SetTerrain(
+					x,
+					y,
+					LandformGenerator.MountainTerrainAt(plan, mountain, x, naturalDepth, materialProfile));
 			}
 
 			for (int y = water.WaterlineY; y < floorY; y++) {
@@ -937,7 +1229,7 @@ internal static class MountainBiomeGenerator
 			}
 		}
 
-		BuildInteriorWaterBanks(plan, mountain, water, innerLeft, innerRight);
+		BuildInteriorWaterBanks(plan, mountain, water, innerLeft, innerRight, materialProfile);
 		TileEditor.Frame(water.Area, border: 2);
 		return new MountainWaterRecord(
 			mountain.RegionId,
@@ -954,7 +1246,8 @@ internal static class MountainBiomeGenerator
 		MountainRangePlan mountain,
 		MountainWaterPlan water,
 		int innerLeft,
-		int innerRight)
+		int innerRight,
+		IReadOnlyList<ushort> materialProfile)
 	{
 		foreach ((int edgeX, int direction) in new[] { (innerLeft, -1), (innerRight, 1) }) {
 			for (int step = 0; step <= 7; step++) {
@@ -968,7 +1261,10 @@ internal static class MountainBiomeGenerator
 						continue;
 					}
 					int naturalDepth = Math.Max(0, y - plan.SurfaceAt(x));
-					TileEditor.SetTerrain(x, y, LandformGenerator.MountainTerrainAt(plan, mountain, x, naturalDepth));
+					TileEditor.SetTerrain(
+						x,
+						y,
+						LandformGenerator.MountainTerrainAt(plan, mountain, x, naturalDepth, materialProfile));
 				}
 				if (step <= 5) {
 					Tile bank = Main.tile[x, bankY];

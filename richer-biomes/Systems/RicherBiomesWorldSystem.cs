@@ -434,7 +434,7 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 
 	private void RecordFinalFeatures(GenerationProgress progress, GameConfiguration _)
 	{
-		progress.Message = "Sealing final traversal spines and recording feature state";
+		progress.Message = "Checking mountain grounding and recording final feature state";
 		// Mountain crossings, landmark rebuilds, and vanilla cleanup all run after the
 		// first sky repair. Reapply the three-tile keel at the final ownership boundary
 		// so a highland remains one biome-scale body instead of isolated shelves.
@@ -444,7 +444,6 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		SkyHighlandGenerator.RefillLakes(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RepairBridgePortals(RequirePlan());
 		LandformGenerator.FinishMountainMaterials(RequirePlan(), RequireManifest());
-		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan());
 		MountainBiomeGenerator.RepairEntrances(RequirePlan(), RequireManifest());
 		RegionalCaveGenerator.RepairRequiredRoutes(
 			RequirePlan(),
@@ -461,6 +460,7 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		MountainBiomeGenerator.FinishInteriorWalls(RequirePlan(), RequireManifest());
 		BiomeTransitionGenerator.Repair(RequirePlan(), RequireManifest());
 		LandmarkGenerator.RepairTraversal(RequireManifest());
+		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan(), RequireManifest());
 		int lateOccludedTransitions = BiomeTransitionGenerator.RetainObservable(RequirePlan(), RequireManifest());
 		if (lateOccludedTransitions > 0) {
 			Mod.Logger.Info($"Richer Biomes omitted {lateOccludedTransitions} surface seams after final traversal repair.");
