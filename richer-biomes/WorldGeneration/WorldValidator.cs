@@ -747,7 +747,7 @@ internal static class WorldValidator
 				GenVars.tRight - GenVars.tLeft + 57,
 				GenVars.tBottom - GenVars.tTop + 57);
 			if (plan.Sections.Any(section => section.Area.Intersects(templeClearance))
-				|| plan.Routes.SelectMany(SurfaceMineGenerator.Rasterize).Any(templeClearance.Contains)) {
+				|| plan.Routes.SelectMany(SurfaceMineGenerator.RasterizeCenterline).Any(templeClearance.Contains)) {
 				errors.Add(
 					$"surface mine enters the Jungle Temple clearance envelope "
 					+ $"({GenVars.tLeft},{GenVars.tTop})-({GenVars.tRight},{GenVars.tBottom})");
@@ -786,11 +786,12 @@ internal static class WorldValidator
 			if (TryFindValidHousing(section.Area, out Point mineHousingProbe)) {
 				errors.Add($"mine section {section.Id} ({section.Kind}) forms valid NPC housing near {mineHousingProbe.X},{mineHousingProbe.Y}");
 			}
+			ValidateMineSectionWalls(plan, section, errors);
 		}
 
 		int actualTracks = CountTiles(mine.Area, TileID.MinecartTrack);
 		int minimumConnected = Main.maxTilesX switch { <= 4200 => 300, <= 6400 => 500, _ => 700 };
-		HashSet<Point> entranceComponent = CollectConnectedTracks(plan.Entrance, mine.Area);
+		HashSet<Point> entranceComponent = CollectConnectedTracks(plan, mine.Area);
 		int connectedTracks = entranceComponent.Count;
 		if (connectedTracks < minimumConnected) {
 			errors.Add($"surface mine entrance reaches only {connectedTracks} rail tiles; expected {minimumConnected}");
@@ -885,6 +886,12 @@ internal static class WorldValidator
 		}
 		if (cavernousTrackCells < authoredTrack.Count / 10) {
 			errors.Add($"surface mine has cavernous headroom over only {cavernousTrackCells}/{authoredTrack.Count} rail cells");
+		}
+		ValidateMineRouteWalls(plan, errors);
+		ValidateMineJumpTransfers(plan, errors);
+		int timberBents = CountMineTimberBents(plan);
+		if (timberBents < plan.Routes.Count * 2) {
+			errors.Add($"surface mine retained only {timberBents} complete timber support bents");
 		}
 
 		MineSection? flooded = manifest.MineSections
@@ -1066,6 +1073,157 @@ internal static class WorldValidator
 		return count;
 	}
 
+	private static void ValidateMineSectionWalls(SurfaceMinePlan plan, MineSection section, List<string> errors)
+	{
+		if (section.Kind == MineSectionKind.Workyard) {
+			return;
+		}
+
+		int themed = 0;
+		int sampled = 0;
+		Rectangle sampleArea = section.Area;
+		sampleArea.Inflate(-5, -5);
+		HashSet<Point> routeInfluence = [];
+		foreach (MineRoute route in plan.Routes) {
+			foreach (Point point in route.Centerline.Where(sampleArea.Contains)) {
+				for (int offsetX = -4; offsetX <= 4; offsetX++) {
+					for (int offsetY = -15; offsetY <= 3; offsetY++) {
+						routeInfluence.Add(new Point(point.X + offsetX, point.Y + offsetY));
+					}
+				}
+			}
+		}
+		for (int x = sampleArea.Left; x < sampleArea.Right; x++) {
+			for (int y = sampleArea.Top; y < sampleArea.Bottom; y++) {
+				if (TileEditor.IsSolid(x, y) || routeInfluence.Contains(new Point(x, y))) {
+					continue;
+				}
+				ushort wall = Main.tile[x, y].WallType;
+				if (wall == WallID.None) {
+					continue;
+				}
+				sampled++;
+				themed += SurfaceMineGenerator.IsBiomeWall(section.Theme, wall)
+					|| section.Kind == MineSectionKind.SealedEvil && wall == WallID.GrayBrick
+					? 1
+					: 0;
+			}
+		}
+		if (sampled < section.Area.Width * 4 || themed < sampled * 9 / 10) {
+			errors.Add(
+				$"mine section {section.Id} ({section.Theme}) uses its biome wall family in only "
+				+ $"{themed}/{sampled} open wall cells");
+		}
+	}
+
+	private static void ValidateMineRouteWalls(SurfaceMinePlan plan, List<string> errors)
+	{
+		int compatible = 0;
+		int sampled = 0;
+		int missing = 0;
+		foreach (MineRoute route in plan.Routes) {
+			foreach (Point point in route.Centerline) {
+				BiomeKind theme = plan.ThemeAt(point);
+				for (int offsetX = -2; offsetX <= 2; offsetX++) {
+					for (int offsetY = -6; offsetY <= 0; offsetY++) {
+						int x = point.X + offsetX;
+						int y = point.Y + offsetY;
+						if (TileEditor.IsSolid(x, y)) {
+							continue;
+						}
+						ushort wall = Main.tile[x, y].WallType;
+						if (wall == WallID.GrayBrick) {
+							continue;
+						}
+						sampled++;
+						missing += wall == WallID.None ? 1 : 0;
+						compatible += SurfaceMineGenerator.IsBiomeWall(theme, wall) ? 1 : 0;
+					}
+				}
+			}
+		}
+		if (sampled == 0 || compatible < sampled * 19 / 20 || missing > sampled / 50) {
+			errors.Add(
+				$"mine rail walls match their local biome in {compatible}/{sampled} sampled cells "
+				+ $"with {missing} missing walls");
+		}
+	}
+
+	private static void ValidateMineJumpTransfers(SurfaceMinePlan plan, List<string> errors)
+	{
+		int transfers = 0;
+		foreach (MineRoute route in plan.Routes) {
+			if (SurfaceMineGenerator.GetJumpTransfer(route) is not MineRailJump jump) {
+				continue;
+			}
+			transfers++;
+			if (!HasTile(jump.Launch.X, jump.Launch.Y, TileID.MinecartTrack)
+				|| !HasTile(jump.Landing.X, jump.Landing.Y, TileID.MinecartTrack)) {
+				errors.Add($"mine jump {jump.Launch}->{jump.Landing} lost a launch or landing rail");
+				continue;
+			}
+			if (jump.Gap.Width is < 4 or > 6) {
+				errors.Add($"mine jump {jump.Launch}->{jump.Landing} has a {jump.Gap.Width}-tile gap");
+			}
+			Point previous = route.Centerline[Math.Max(0, route.JumpStartIndex - 1)];
+			int landingDrop = jump.Landing.Y - jump.Launch.Y;
+			if (previous.Y <= jump.Launch.Y || landingDrop is < 1 or > 3) {
+				errors.Add(
+					$"mine jump {jump.Launch}->{jump.Landing} lacks an upward launch and 1-3 tile landing drop "
+					+ $"(previous y={previous.Y}, drop={landingDrop})");
+			}
+
+			for (int index = route.JumpStartIndex + 1;
+				index <= route.JumpStartIndex + route.JumpGapLength;
+				index++) {
+				Point gap = route.Centerline[index];
+				if (HasTile(gap.X, gap.Y, TileID.MinecartTrack)) {
+					errors.Add($"mine jump at {gap} retained track inside its launch gap");
+					break;
+				}
+				for (int offsetY = -4; offsetY <= 3; offsetY++) {
+					if (TileEditor.IsSolid(gap.X, gap.Y + offsetY)) {
+						errors.Add($"mine jump at {gap} has blocked flight clearance at y={gap.Y + offsetY}");
+						index = route.JumpStartIndex + route.JumpGapLength + 1;
+						break;
+					}
+				}
+			}
+		}
+		if (transfers == 0) {
+			errors.Add("surface mine has no launch-and-landing rail transfer");
+		}
+	}
+
+	private static int CountMineTimberBents(SurfaceMinePlan plan)
+	{
+		int count = 0;
+		foreach (MineRoute route in plan.Routes) {
+			for (int index = 5; index < route.Centerline.Count - 5; index += 3) {
+				Point point = route.Centerline[index];
+				bool found = false;
+				for (int beamY = point.Y - 10; beamY <= point.Y - 8 && !found; beamY++) {
+					int crossbeam = 0;
+					for (int x = point.X - 3; x <= point.X + 3; x++) {
+						crossbeam += HasTile(x, beamY, TileID.WoodenBeam) ? 1 : 0;
+					}
+					int leftPost = 0;
+					int rightPost = 0;
+					for (int y = beamY + 1; y <= point.Y; y++) {
+						leftPost += HasTile(point.X - 3, y, TileID.WoodenBeam) ? 1 : 0;
+						rightPost += HasTile(point.X + 3, y, TileID.WoodenBeam) ? 1 : 0;
+					}
+					found = crossbeam >= 5 && Math.Max(leftPost, rightPost) >= 2;
+				}
+				if (found) {
+					count++;
+					index += 6;
+				}
+			}
+		}
+		return count;
+	}
+
 	private static bool IsHighlandMass(int x, int y)
 	{
 		Tile tile = Main.tile[x, y];
@@ -1080,10 +1238,21 @@ internal static class WorldValidator
 			or TileID.SnowBlock or TileID.IceBlock or TileID.HardenedSand or TileID.Sandstone;
 	}
 
-	private static HashSet<Point> CollectConnectedTracks(Point entrance, Rectangle bounds)
+	private static HashSet<Point> CollectConnectedTracks(SurfaceMinePlan plan, Rectangle bounds)
 	{
+		Point entrance = plan.Entrance;
 		if (!HasTile(entrance.X, entrance.Y, TileID.MinecartTrack)) {
 			return [];
+		}
+		Dictionary<Point, Point> jumpLinks = [];
+		foreach (MineRoute route in plan.Routes) {
+			if (SurfaceMineGenerator.GetJumpTransfer(route) is not MineRailJump jump
+				|| !HasTile(jump.Launch.X, jump.Launch.Y, TileID.MinecartTrack)
+				|| !HasTile(jump.Landing.X, jump.Landing.Y, TileID.MinecartTrack)) {
+				continue;
+			}
+			jumpLinks[jump.Launch] = jump.Landing;
+			jumpLinks[jump.Landing] = jump.Launch;
 		}
 
 		HashSet<Point> visited = [entrance];
@@ -1091,6 +1260,11 @@ internal static class WorldValidator
 		queue.Enqueue(entrance);
 		while (queue.Count > 0) {
 			Point current = queue.Dequeue();
+			if (jumpLinks.TryGetValue(current, out Point transfer)
+				&& bounds.Contains(transfer)
+				&& visited.Add(transfer)) {
+				queue.Enqueue(transfer);
+			}
 			for (int offsetX = -1; offsetX <= 1; offsetX++) {
 				for (int offsetY = -1; offsetY <= 1; offsetY++) {
 					if (offsetX == 0 && offsetY == 0) {
@@ -1114,6 +1288,7 @@ internal static class WorldValidator
 		HashSet<Point> vertices = [];
 		int authoredEdges = 0;
 		int horizontalEdges = 0;
+		int bidirectionalEdges = 0;
 		foreach (MineRoute route in plan.Routes.Where(route => route.HasTrack)) {
 			authoredEdges++;
 			vertices.Add(route.Start);
@@ -1127,9 +1302,13 @@ internal static class WorldValidator
 			Point? previous = null;
 			int previousGrade = 0;
 			int gradeChanges = 0;
-			foreach (Point point in SurfaceMineGenerator.Rasterize(route)) {
+			bool rises = false;
+			bool descends = false;
+			foreach (Point point in SurfaceMineGenerator.RasterizeCenterline(route)) {
 				if (previous is Point prior) {
 					int grade = Math.Sign(point.Y - prior.Y);
+					rises |= grade < 0;
+					descends |= grade > 0;
 					if (grade != previousGrade) {
 						gradeChanges++;
 						previousGrade = grade;
@@ -1137,8 +1316,12 @@ internal static class WorldValidator
 				}
 				previous = point;
 			}
-			if (gradeChanges > 2) {
-				errors.Add($"mine rail edge {route.Start}->{route.End} has {gradeChanges} grade changes and would render as a wobble");
+			bidirectionalEdges += rises && descends ? 1 : 0;
+			if (route.Centerline.Count >= 90 && gradeChanges < 3) {
+				errors.Add($"mine rail edge {route.Start}->{route.End} has only {gradeChanges} grade changes");
+			}
+			if (gradeChanges > 18) {
+				errors.Add($"mine rail edge {route.Start}->{route.End} has {gradeChanges} grade changes and would render as chatter");
 			}
 		}
 
@@ -1148,6 +1331,12 @@ internal static class WorldValidator
 			errors.Add(
 				$"surface mine graph is too simple: edges={authoredEdges}, junctions={junctions}, "
 				+ $"independentLoops={cycleRank}, horizontalEdges={horizontalEdges}");
+		}
+		if (bidirectionalEdges < 4) {
+			errors.Add($"only {bidirectionalEdges} mine rail edges contain both a climb and a descent");
+		}
+		if (plan.Routes.Select(route => route.Profile).Distinct().Count() < 3) {
+			errors.Add("surface mine rail routes use fewer than three grade profiles");
 		}
 	}
 

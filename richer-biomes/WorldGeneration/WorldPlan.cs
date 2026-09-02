@@ -75,6 +75,14 @@ internal enum MineSectionKind
 	MountainRail
 }
 
+internal enum MineRailProfile
+{
+	RollingGrades,
+	TerracedGrades,
+	DipAndRise,
+	LaunchTransfer
+}
+
 internal readonly record struct WorldRegion(
 	int Id,
 	int Left,
@@ -122,7 +130,21 @@ internal readonly record struct SkyHighlandPlan(
 	SkyHighlandStyle Style,
 	bool HasLake);
 
-internal readonly record struct MineRoute(Point Start, Point End, bool HasTrack, bool Required);
+internal readonly record struct MineRoute(
+	Point Start,
+	Point End,
+	bool HasTrack,
+	bool Required,
+	MineRailProfile Profile,
+	int VariationSeed,
+	IReadOnlyList<Point> Centerline,
+	int JumpStartIndex,
+	int JumpGapLength)
+{
+	public bool HasJumpTransfer => JumpStartIndex >= 0 && JumpGapLength > 0;
+}
+
+internal readonly record struct MineRailJump(Point Launch, Point Landing, Rectangle Gap);
 
 internal readonly record struct MineSection(
 	int Id,

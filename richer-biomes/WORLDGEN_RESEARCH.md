@@ -1,6 +1,6 @@
 # World-generation research record
 
-This record separates observations, design conclusions, implementation targets, and external references. It began with the 0.3.0 majestic-world rewrite on 2026-08-31 and includes the 0.3.1 styling and block-state audit.
+This record separates observations, design conclusions, implementation targets, and external references. It began with the 0.3.0 majestic-world rewrite on 2026-08-31 and includes the 0.3.2 biome-owned mine audit.
 
 ## Reference-world audit
 
@@ -133,7 +133,9 @@ Build the macro shape first, then add bounded jitter. Jitter should disturb a co
 - Make the entrance visible and immediately rideable. A deep rail network without surface access does not satisfy the fantasy.
 - Model rails as one authored graph before terrain mutation. Preparing one edge after placing another can erase junction approaches.
 - Use a large cyclic switchback graph for reliable traversal and shorter branches for story districts. Require several degree-three junctions, multiple independent loops, and horizontal work lines.
-- Rasterize each rail edge as flat–45-degree–flat. Rounded interpolation produces a visibly wobbly rail even when all cells remain connected.
+- Shape long rail edges from a few macro-grade controls. Level runs, climbs, and descents should form readable motifs; independent per-cell grade changes create chatter, while a single endpoint interpolation creates a monotonous diagonal.
+- Treat an intentional minecart jump as two rideable endpoints plus a validated transfer envelope. The approach must rise, the landing must sit slightly lower, the missing-track span must remain bounded, and the whole flight path must stay clear after late ownership passes.
+- Give the mine one continuous local-biome background field. Structural timber belongs in bents, foundations, and work areas; it should not replace Snow, Jungle, Desert, evil, or Cavern walls with a generic checkerboard.
 - Include Workyard, Working, Mountain Rail, Flooded, Collapsed, and Sealed Evil districts. The sealed evil branch needs at least a three-tile non-corruptible shell or air gap because infection can jump nearby thin barriers.
 - Keep rewards ordinary and let geometry, traversal, and atmosphere carry the discovery.
 
@@ -244,6 +246,22 @@ The final uninterrupted release matrix used the repository's fixed seeds and the
 | Classic large | `Majesty-Matrix-Large-001` | Sky-piercing; Highland | 2,946 tiles |
 
 All three rows generated, validated, reloaded, saved, and reloaded again. The installed package and canonical build artifact compared byte-for-byte after the final build; the release handoff reports the digest outside this packaged file.
+
+## 0.3.2 biome-owned mine verification record
+
+The mine-wall and route-profile audit was tested on 2026-09-01 against Terraria 1.4.4.9 and tModLoader 2026.07.3.0. A reference screenshot showed a Snow mine built from alternating rectangular wall patches around one long diagonal rail. Tile-grid inspection made the cause measurable: wall selection occurred at too small a scale, and endpoint interpolation determined almost the entire route silhouette.
+
+The implemented contract assigns every centerline sample a smoothed biome theme. A corridor uses that theme's primary unsafe wall continuously, while chamber accents may use only its paired wall from the same biome family. Structural timber is placed as readable overhead bents, hanging posts outside cart clearance, and track foundations. Route centerlines use rolling, terraced, dip-and-rise, and launch-transfer profiles. The transfer retains a four-to-six-tile missing-track gap after final repairs, with a rising launch, a lower landing, and clear flight space.
+
+| Mode and size | Seed | Mine entrance component |
+| --- | --- | ---: |
+| Classic small | `1399794971` | 2,584 tiles |
+| Journey medium | `204860939` | 3,073 tiles |
+| Classic large | `Majesty-Matrix-Large-001` | 4,010 tiles |
+
+Every row completed generation, strict final-tile validation, first reload, save, and second reload with manifest version 5 intact. The validator independently required local-biome walls across at least 95% of sampled rail-envelope cells, at most 2% missing walls, complete timber bents, multiple rail-profile families, several routes containing both a climb and a descent, bounded grade changes, and the intact launch transfer. The large seed also proved that route planning preserves the Jungle Temple exclusion envelope.
+
+An independent renderer inspected the small seed's 2,584-tile surface-connected component. Its Snow crop contained 78,233 Ice-wall samples, with only small counts from legitimate biome-transition and feature-overlap areas, and showed the rail network alternating level work lines, climbs, descents, and the jump transfer. The rendered crop is a structural tile-state view rather than a lit in-game screenshot; it is intended to expose wall ownership, track continuity, support placement, and clearance.
 
 ## Future research queue
 

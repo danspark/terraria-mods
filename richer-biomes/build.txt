@@ -1,6 +1,6 @@
 author = Daniel Reis
 displayName = Richer Biomes
-version = 0.3.1
+version = 0.3.2
 side = Both
 includeSource = true
 hideCode = false
