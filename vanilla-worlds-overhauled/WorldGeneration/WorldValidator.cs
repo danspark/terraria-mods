@@ -1565,6 +1565,8 @@ internal static class WorldValidator
 		}
 		ValidateMineRouteWalls(plan, errors);
 		ValidateMineJumpTransfers(plan, errors);
+		ValidateMineGravityTransfers(plan, errors);
+		ValidateMineTerminalBumpers(plan, errors);
 		int timberBents = CountMineTimberBents(plan);
 		if (timberBents < plan.Routes.Count * 2) {
 			errors.Add($"surface mine retained only {timberBents} complete timber support bents");
@@ -1859,6 +1861,16 @@ internal static class WorldValidator
 			if (jump.Gap.Width is < 4 or > 6) {
 				errors.Add($"mine jump {jump.Launch}->{jump.Landing} has a {jump.Gap.Width}-tile gap");
 			}
+			if (!SurfaceMineGenerator.IsLaunchRampFrame(Main.tile[jump.Launch.X, jump.Launch.Y].TileFrameX)) {
+				errors.Add(
+					$"mine jump at {jump.Launch} uses rail frame "
+					+ $"{Main.tile[jump.Launch.X, jump.Launch.Y].TileFrameX} instead of a launch ramp");
+			}
+			if (!SurfaceMineGenerator.IsFlatOpenEndFrame(Main.tile[jump.Landing.X, jump.Landing.Y].TileFrameX)) {
+				errors.Add(
+					$"mine jump landing at {jump.Landing} uses rail frame "
+					+ $"{Main.tile[jump.Landing.X, jump.Landing.Y].TileFrameX} instead of an open end");
+			}
 			Point previous = route.Centerline[Math.Max(0, route.JumpStartIndex - 1)];
 			int landingDrop = jump.Landing.Y - jump.Launch.Y;
 			if (previous.Y <= jump.Launch.Y || landingDrop is < 1 or > 3) {
@@ -1886,6 +1898,90 @@ internal static class WorldValidator
 		}
 		if (transfers == 0) {
 			errors.Add("surface mine has no launch-and-landing rail transfer");
+		}
+	}
+
+	private static void ValidateMineGravityTransfers(SurfaceMinePlan plan, List<string> errors)
+	{
+		int expected = plan.Routes.Count(route => route.HasTrack && route.HasGravityTransfer);
+		int transfers = 0;
+		foreach (MineRoute route in plan.Routes) {
+			if (SurfaceMineGenerator.GetGravityTransfer(route) is not MineRailDrop drop) {
+				continue;
+			}
+			transfers++;
+			if (!HasTile(drop.UpperLip.X, drop.UpperLip.Y, TileID.MinecartTrack)
+				|| !HasTile(drop.LowerLanding.X, drop.LowerLanding.Y, TileID.MinecartTrack)) {
+				errors.Add($"mine gravity transfer {drop.UpperLip}->{drop.LowerLanding} lost an endpoint rail");
+				continue;
+			}
+			if (drop.Gap.Width is < 2 or > 3) {
+				errors.Add(
+					$"mine gravity transfer {drop.UpperLip}->{drop.LowerLanding} has a {drop.Gap.Width}-tile gap");
+			}
+			int fall = drop.LowerLanding.Y - drop.UpperLip.Y;
+			if (fall is < 3 or > 4 || fall != route.DropDepth) {
+				errors.Add(
+					$"mine gravity transfer {drop.UpperLip}->{drop.LowerLanding} falls {fall} tiles "
+					+ $"(planned {route.DropDepth})");
+			}
+			if (!SurfaceMineGenerator.IsFlatOpenEndFrame(Main.tile[drop.UpperLip.X, drop.UpperLip.Y].TileFrameX)
+				|| !SurfaceMineGenerator.IsFlatOpenEndFrame(Main.tile[drop.LowerLanding.X, drop.LowerLanding.Y].TileFrameX)) {
+				errors.Add(
+					$"mine gravity transfer {drop.UpperLip}->{drop.LowerLanding} does not use two open rail ends "
+					+ $"(frames {Main.tile[drop.UpperLip.X, drop.UpperLip.Y].TileFrameX},"
+					+ $"{Main.tile[drop.LowerLanding.X, drop.LowerLanding.Y].TileFrameX})");
+			}
+
+			Point approach = route.Centerline[route.DropStartIndex - 1];
+			int landingIndex = route.DropStartIndex + route.DropGapLength + 1;
+			Point departure = route.Centerline[landingIndex + 1];
+			if (approach.Y != drop.UpperLip.Y || departure.Y != drop.LowerLanding.Y) {
+				errors.Add(
+					$"mine gravity transfer {drop.UpperLip}->{drop.LowerLanding} lacks flat run-in shelves");
+			}
+
+			for (int index = route.DropStartIndex + 1; index < landingIndex; index++) {
+				Point gap = route.Centerline[index];
+				if (HasTile(gap.X, gap.Y, TileID.MinecartTrack)) {
+					errors.Add($"mine gravity transfer at {gap} retained track inside its drop gap");
+					break;
+				}
+				for (int y = drop.Gap.Top; y < drop.Gap.Bottom; y++) {
+					if (TileEditor.IsSolid(gap.X, y)) {
+						errors.Add($"mine gravity transfer at {gap} has blocked fall clearance at {gap.X},{y}");
+						index = landingIndex;
+						break;
+					}
+				}
+			}
+		}
+		if (transfers != expected || transfers < 3) {
+			errors.Add($"surface mine retained {transfers}/{expected} planned downhill gravity transfers");
+		}
+	}
+
+	private static void ValidateMineTerminalBumpers(SurfaceMinePlan plan, List<string> errors)
+	{
+		Dictionary<Point, int> degree = [];
+		foreach (MineRoute route in plan.Routes.Where(route => route.HasTrack)) {
+			degree[route.Start] = degree.GetValueOrDefault(route.Start) + 1;
+			degree[route.End] = degree.GetValueOrDefault(route.End) + 1;
+		}
+		Point[] terminals = degree
+			.Where(pair => pair.Value == 1)
+			.Select(pair => pair.Key)
+			.ToArray();
+		foreach (Point terminal in terminals) {
+			if (!HasTile(terminal.X, terminal.Y, TileID.MinecartTrack)
+				|| !Minecart.DrawBouncyBumper(Main.tile[terminal.X, terminal.Y].TileFrameX)) {
+				errors.Add(
+					$"mine terminal at {terminal} is not a hammered bouncy bumper "
+					+ $"(frame {Main.tile[terminal.X, terminal.Y].TileFrameX})");
+			}
+		}
+		if (terminals.Length < 4) {
+			errors.Add($"surface mine exposes only {terminals.Length} terminal bumper turnarounds");
 		}
 	}
 
@@ -1947,6 +2043,15 @@ internal static class WorldValidator
 			}
 			jumpLinks[jump.Launch] = jump.Landing;
 			jumpLinks[jump.Landing] = jump.Launch;
+		}
+		foreach (MineRoute route in plan.Routes) {
+			if (SurfaceMineGenerator.GetGravityTransfer(route) is not MineRailDrop drop
+				|| !HasTile(drop.UpperLip.X, drop.UpperLip.Y, TileID.MinecartTrack)
+				|| !HasTile(drop.LowerLanding.X, drop.LowerLanding.Y, TileID.MinecartTrack)) {
+				continue;
+			}
+			jumpLinks[drop.UpperLip] = drop.LowerLanding;
+			jumpLinks[drop.LowerLanding] = drop.UpperLip;
 		}
 
 		HashSet<Point> visited = [entrance];
@@ -2014,8 +2119,11 @@ internal static class WorldValidator
 			if (route.Centerline.Count >= 90 && gradeChanges < 3) {
 				errors.Add($"mine rail edge {route.Start}->{route.End} has only {gradeChanges} grade changes");
 			}
-			if (gradeChanges > 18) {
-				errors.Add($"mine rail edge {route.Start}->{route.End} has {gradeChanges} grade changes and would render as chatter");
+			int maximumGradeChanges = route.HasGravityTransfer ? 22 : 18;
+			if (gradeChanges > maximumGradeChanges) {
+				errors.Add(
+					$"mine rail edge {route.Start}->{route.End} has {gradeChanges} grade changes "
+					+ $"(maximum {maximumGradeChanges}) and would render as chatter");
 			}
 		}
 

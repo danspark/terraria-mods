@@ -473,13 +473,14 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 		MountainBiomeGenerator.RefillValleyLiquids(RequireManifest());
 		// Liquids, transition blending, and traversal repair can all touch the
 		// mountain slopes after the first bridge repair. Rebuild the galleries,
-		// reconnect natural summit mass below them, then give the mine the final
-		// structural write so its rail envelope and quarantine shell cannot be cut.
+		// reconnect natural summit mass below them, finish the landmarks and
+		// graveyard crossings, then give the mine the final structural write so
+		// its rail frames, transfer space, and quarantine shell cannot be cut.
 		MountainBiomeGenerator.RepairBridgePortals(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan(), RequireManifest());
-		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
 		LandmarkGenerator.RepairFinalGeometry(RequireManifest());
 		MountainBiomeGenerator.RepairGraveyardBridges(RequirePlan(), RequireManifest());
+		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
 		MountainBiomeGenerator.RecordFinalState(RequirePlan(), RequireManifest());
 		progress.Set(1d);
 	}

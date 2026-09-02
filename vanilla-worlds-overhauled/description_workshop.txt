@@ -11,7 +11,7 @@ Vanilla Worlds Overhauled changes only new-world generation. It adds no custom i
 [*]Biome-specific multi-room landmarks, including buried ice igloos, deliberately unsuitable for NPC housing
 [*]Occasional forest lakes crossed by terrain-integrated bridges, including rare graveyard stone crossings
 [*]Organic, multi-scale transitions between terrain, walls, structures, and neighboring biomes
-[*]One guaranteed surface mine feeding an interconnected rail district into the Cavern layer
+[*]One guaranteed surface mine with automatic downhill cart drops, launch ramps, bouncy turnarounds, and an interconnected rail district reaching the Cavern layer
 [/list]
 
 [h2]Before playing[/h2]

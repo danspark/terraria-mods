@@ -192,7 +192,7 @@ Regional rules do not fill every tile. Some ordinary stone caves remain between 
 
 **Large-scale shape.** The mine occupies a broad quarry district with several cuts, work areas, and entrances. Multiple shafts descend in stages and reconnect through side tunnels. The deepest worked passages transition into natural regional caves.
 
-**Natural routes.** Ramps, wooden platforms, ropes, and minecart track make the main descent readable. Collapsed sections create short detours instead of dead ends. A secondary exit can emerge from a hillside or nearby gully.
+**Natural routes.** Ramps, wooden platforms, ropes, and minecart track make the main descent readable. Downhill rail connectors can omit a short run so a moving cart automatically falls onto a clearly visible lower shelf, while the small reverse offset remains climbable with a cart jump. Real ramp-framed gaps preserve momentum, and hammered bouncy bumpers turn carts around at genuine terminal workings. Collapsed sections create short detours instead of dead ends. A secondary exit can emerge from a hillside or nearby gully.
 
 **Underground connection.** The worked tunnels stop before they dominate the cave system. Beyond the last supports, the mine follows an ore seam or fault into the local cave grammar.
 

@@ -14,6 +14,10 @@ internal static class SurfaceMineGenerator
 	private const int MineSeedSalt = 0x4D49_4E45;
 	private const int CorridorHeadroom = 6;
 	private const int CoastalLandmarkClearance = 380;
+	private const short FlatOpenLeftFrame = 14;
+	private const short FlatOpenRightFrame = 15;
+	private const short FirstLaunchRampFrame = 16;
+	private const short LastLaunchRampFrame = 19;
 
 	public static SurfaceMinePlan PlanAndReserve(WorldPlan worldPlan, GenerationManifest manifest)
 	{
@@ -177,7 +181,8 @@ internal static class SurfaceMineGenerator
 		OwnTrackGraph(plan, plannedTrack);
 		BuildQuarantineGates(plan);
 		RepairTrackClearance(plannedTrack);
-		RestoreTrackCells(plannedTrack);
+		RestoreGravityTransferClearance(plan);
+		RestoreTrackCells(plan, plannedTrack);
 
 		int trackTiles = plannedTrack.Count(point => HasTile(point.X, point.Y, TileID.MinecartTrack));
 		int supportTiles = CountTiles(plan.Area, TileID.WoodenBeam);
@@ -211,7 +216,8 @@ internal static class SurfaceMineGenerator
 		}
 		BuildQuarantineGates(plan);
 		RepairTrackClearance(plannedTrack);
-		RestoreTrackCells(plannedTrack);
+		RestoreGravityTransferClearance(plan);
+		RestoreTrackCells(plan, plannedTrack);
 
 		SurfaceMineRecord existing = manifest.SurfaceMine
 			?? throw new InvalidOperationException("The surface mine cannot be repaired before it is furnished.");
@@ -228,6 +234,9 @@ internal static class SurfaceMineGenerator
 		foreach (MineRoute route in plan.Routes.Where(route => route.HasJumpTransfer)) {
 			CarveJumpTransfer(plan, route);
 		}
+		foreach (MineRoute route in plan.Routes.Where(route => route.HasGravityTransfer)) {
+			CarveGravityTransfer(plan, route);
+		}
 		foreach (Point point in plannedTrack) {
 			PrepareTrackCell(plan, point, plannedTrack);
 		}
@@ -239,10 +248,11 @@ internal static class SurfaceMineGenerator
 				Minecart.FrameTrack(point.X, point.Y, pound: false, mute: true);
 			}
 		}
+		ConfigureRailEndpoints(plan);
 		BuildRouteSupports(plan, plannedTrack);
 	}
 
-	private static void RestoreTrackCells(HashSet<Point> plannedTrack)
+	private static void RestoreTrackCells(SurfaceMinePlan plan, HashSet<Point> plannedTrack)
 	{
 		foreach (Point point in plannedTrack) {
 			if (!HasTile(point.X, point.Y, TileID.MinecartTrack)) {
@@ -255,6 +265,7 @@ internal static class SurfaceMineGenerator
 				Minecart.FrameTrack(point.X, point.Y, pound: false, mute: true);
 			}
 		}
+		ConfigureRailEndpoints(plan);
 	}
 
 	private static void RepairTrackClearance(HashSet<Point> plannedTrack)
@@ -333,7 +344,13 @@ internal static class SurfaceMineGenerator
 		// The collapsed spur always contains one short launch-and-landing transfer.
 		// It is optional to the progression graph, but is guaranteed as a mine motif.
 		routes.Add(CreateRoute(random, collapsedOrigin, collapsedCenter, required: false, forcedProfile: MineRailProfile.LaunchTransfer));
-		routes.Add(CreateRoute(random, evilOrigin, evilCenter, required: false, forcedProfile: MineRailProfile.TerracedGrades));
+		routes.Add(CreateRoute(
+			random,
+			evilOrigin,
+			evilCenter,
+			required: false,
+			forcedProfile: MineRailProfile.TerracedGrades,
+			allowGravityTransfer: false));
 
 		int left = Math.Max(30, Math.Min(sections.Min(section => section.Area.Left), routes.Min(route => route.Centerline.Min(point => point.X))) - 20);
 		int right = Math.Min(Main.maxTilesX - 31, Math.Max(sections.Max(section => section.Area.Right), routes.Max(route => route.Centerline.Max(point => point.X) + 1)) + 20);
@@ -351,7 +368,8 @@ internal static class SurfaceMineGenerator
 		Point start,
 		Point end,
 		bool required,
-		MineRailProfile? forcedProfile = null)
+		MineRailProfile? forcedProfile = null,
+		bool allowGravityTransfer = true)
 	{
 		MineRailProfile profile = forcedProfile ?? (MineRailProfile)random.Next(3);
 		int variationSeed = random.Next();
@@ -360,13 +378,25 @@ internal static class SurfaceMineGenerator
 		int jumpStartIndex = profile == MineRailProfile.LaunchTransfer
 			? Math.Clamp(steps * random.Next(43, 63) / 100, 24, steps - jumpGapLength - 24)
 			: -1;
+		bool descendsToAnotherLevel = allowGravityTransfer
+			&& profile != MineRailProfile.LaunchTransfer
+			&& end.Y - start.Y >= 24
+			&& steps >= 64;
+		int dropGapLength = descendsToAnotherLevel ? random.Next(2, 4) : 0;
+		int dropDepth = descendsToAnotherLevel ? random.Next(3, 5) : 0;
+		int dropStartIndex = descendsToAnotherLevel
+			? Math.Clamp(steps * random.Next(42, 69) / 100, 18, steps - dropGapLength - 20)
+			: -1;
 		IReadOnlyList<Point> centerline = BuildRouteCenterline(
 			start,
 			end,
 			profile,
 			variationSeed,
 			jumpStartIndex,
-			jumpGapLength);
+			jumpGapLength,
+			dropStartIndex,
+			dropGapLength,
+			dropDepth);
 		return new MineRoute(
 			start,
 			end,
@@ -376,7 +406,10 @@ internal static class SurfaceMineGenerator
 			variationSeed,
 			centerline,
 			jumpStartIndex,
-			jumpGapLength);
+			jumpGapLength,
+			dropStartIndex,
+			dropGapLength,
+			dropDepth);
 	}
 
 	private static IReadOnlyList<Point> BuildRouteCenterline(
@@ -385,7 +418,10 @@ internal static class SurfaceMineGenerator
 		MineRailProfile profile,
 		int variationSeed,
 		int jumpStartIndex,
-		int jumpGapLength)
+		int jumpGapLength,
+		int dropStartIndex,
+		int dropGapLength,
+		int dropDepth)
 	{
 		int deltaX = end.X - start.X;
 		int steps = Math.Abs(deltaX);
@@ -478,15 +514,20 @@ internal static class SurfaceMineGenerator
 		if (profile == MineRailProfile.LaunchTransfer) {
 			ApplyLaunchTransfer(path, jumpStartIndex, jumpGapLength);
 		}
+		else if (dropStartIndex >= 0) {
+			ApplyGravityTransfer(path, dropStartIndex, dropGapLength, dropDepth);
+		}
 		return path;
 	}
 
 	private static void ApplyLaunchTransfer(List<Point> path, int jumpStartIndex, int jumpGapLength)
 	{
 		const int approachLength = 5;
+		const int landingRun = 4;
 		int approachStart = jumpStartIndex - approachLength;
 		int landingIndex = jumpStartIndex + jumpGapLength + 1;
-		if (approachStart < 1 || landingIndex + 8 >= path.Count) {
+		int landingEnd = landingIndex + landingRun;
+		if (approachStart < 1 || landingEnd + 4 >= path.Count) {
 			throw new InvalidOperationException("Mine launch transfer does not have enough route on both sides.");
 		}
 
@@ -501,19 +542,60 @@ internal static class SurfaceMineGenerator
 			int drop = (int)Math.Round(2d * offset / (jumpGapLength + 1));
 			path[index] = new Point(path[index].X, launchY + drop);
 		}
+		for (int index = landingIndex; index <= landingEnd; index++) {
+			path[index] = new Point(path[index].X, launchY + 2);
+		}
 
 		for (int pass = 0; pass < 3; pass++) {
-			for (int index = landingIndex + 1; index < path.Count - 1; index++) {
+			for (int index = landingEnd + 1; index < path.Count - 1; index++) {
 				int previousY = path[index - 1].Y;
 				path[index] = new Point(
 					path[index].X,
 					Math.Clamp(path[index].Y, previousY - 1, previousY + 1));
 			}
-			for (int index = path.Count - 2; index > landingIndex; index--) {
+			for (int index = path.Count - 2; index > landingEnd; index--) {
 				int nextY = path[index + 1].Y;
 				path[index] = new Point(
 					path[index].X,
 					Math.Clamp(path[index].Y, nextY - 1, nextY + 1));
+			}
+		}
+	}
+
+	private static void ApplyGravityTransfer(List<Point> path, int dropStartIndex, int dropGapLength, int dropDepth)
+	{
+		const int flatRun = 4;
+		int approachStart = dropStartIndex - flatRun;
+		int landingIndex = dropStartIndex + dropGapLength + 1;
+		int landingEnd = landingIndex + flatRun;
+		if (approachStart < 1 || landingEnd >= path.Count - 1) {
+			throw new InvalidOperationException("Mine gravity transfer does not have enough route on both sides.");
+		}
+
+		int upperY = path[approachStart].Y;
+		for (int index = approachStart; index <= dropStartIndex; index++) {
+			path[index] = new Point(path[index].X, upperY);
+		}
+		for (int offset = 1; offset <= dropGapLength; offset++) {
+			int index = dropStartIndex + offset;
+			int fall = (int)Math.Round(dropDepth * offset / (double)(dropGapLength + 1));
+			path[index] = new Point(path[index].X, upperY + fall);
+		}
+		int lowerY = upperY + dropDepth;
+		for (int index = landingIndex; index <= landingEnd; index++) {
+			path[index] = new Point(path[index].X, lowerY);
+		}
+
+		// Reconcile the lower shelf with the remaining route while preserving the
+		// one-tile rail grade and the exact authored endpoint.
+		for (int pass = 0; pass < 4; pass++) {
+			for (int index = landingEnd + 1; index < path.Count - 1; index++) {
+				int previousY = path[index - 1].Y;
+				path[index] = new Point(path[index].X, Math.Clamp(path[index].Y, previousY - 1, previousY + 1));
+			}
+			for (int index = path.Count - 2; index > landingEnd; index--) {
+				int nextY = path[index + 1].Y;
+				path[index] = new Point(path[index].X, Math.Clamp(path[index].Y, nextY - 1, nextY + 1));
 			}
 		}
 	}
@@ -904,14 +986,41 @@ internal static class SurfaceMineGenerator
 		}
 	}
 
+	private static void CarveGravityTransfer(SurfaceMinePlan plan, MineRoute route)
+	{
+		if (GetGravityTransfer(route) is not MineRailDrop drop) {
+			return;
+		}
+
+		int landingIndex = route.DropStartIndex + route.DropGapLength + 1;
+		for (int index = route.DropStartIndex + 1; index < landingIndex; index++) {
+			Point point = route.Centerline[index];
+			for (int y = drop.Gap.Top; y < drop.Gap.Bottom; y++) {
+				MinePalette palette = ResolveRoutePalette(plan, route, index, point.X, y);
+				TileEditor.ClearTerrain(point.X, y);
+				TileEditor.SetWall(point.X, y, palette.PrimaryWall);
+			}
+		}
+	}
+
+	private static void RestoreGravityTransferClearance(SurfaceMinePlan plan)
+	{
+		foreach (MineRoute route in plan.Routes.Where(route => route.HasGravityTransfer)) {
+			CarveGravityTransfer(plan, route);
+		}
+	}
+
 	private static void BuildRouteSupports(SurfaceMinePlan plan, HashSet<Point> plannedTrack)
 	{
 		foreach (MineRoute route in plan.Routes.Where(route => route.HasTrack)) {
 			int spacing = 8 + Noise(route.VariationSeed, route.Centerline.Count, 0x4245_414D) % 6;
 			int index = 8 + Noise(route.VariationSeed, spacing, 0x5354_4152) % spacing;
 			for (; index < route.Centerline.Count - 8; index += spacing) {
-				if (route.HasJumpTransfer
-					&& Math.Abs(index - route.JumpStartIndex) < route.JumpGapLength + 10) {
+				bool nearJump = route.HasJumpTransfer
+					&& Math.Abs(index - route.JumpStartIndex) < route.JumpGapLength + 10;
+				bool nearDrop = route.HasGravityTransfer
+					&& Math.Abs(index - route.DropStartIndex) < route.DropGapLength + 10;
+				if (nearJump || nearDrop) {
 					continue;
 				}
 				Point point = route.Centerline[index];
@@ -1117,6 +1226,96 @@ internal static class SurfaceMineGenerator
 			TileEditor.SetTerrain(point.X, point.Y + 1, ResolvePalette(plan.ThemeAt(point)).Timber);
 		}
 	}
+
+	private static void ConfigureRailEndpoints(SurfaceMinePlan plan)
+	{
+		Dictionary<Point, int> routeDegree = [];
+		foreach (MineRoute route in plan.Routes.Where(route => route.HasTrack)) {
+			routeDegree[route.Start] = routeDegree.GetValueOrDefault(route.Start) + 1;
+			routeDegree[route.End] = routeDegree.GetValueOrDefault(route.End) + 1;
+		}
+
+		foreach (Point terminal in routeDegree
+			.Where(pair => pair.Value == 1)
+			.Select(pair => pair.Key)) {
+			MineRoute incident = plan.Routes.First(route => route.HasTrack
+				&& (route.Start == terminal || route.End == terminal));
+			Point inwardNeighbor = incident.Start == terminal
+				? incident.Centerline[1]
+				: incident.Centerline[^2];
+			RemoveStrayTerminalTracks(terminal, inwardNeighbor);
+			HammerTrackUntil(terminal, Minecart.DrawBouncyBumper);
+			if (!Minecart.DrawBouncyBumper(Main.tile[terminal.X, terminal.Y].TileFrameX)) {
+				SetBouncyTerminalFrame(terminal, inwardNeighbor);
+			}
+		}
+
+		foreach (MineRoute route in plan.Routes.Where(route => route.HasJumpTransfer)) {
+			if (GetJumpTransfer(route) is MineRailJump jump) {
+				HammerTrackUntil(jump.Launch, IsLaunchRampFrame);
+				HammerTrackUntil(jump.Landing, IsFlatOpenEndFrame);
+			}
+		}
+		foreach (MineRoute route in plan.Routes.Where(route => route.HasGravityTransfer)) {
+			if (GetGravityTransfer(route) is MineRailDrop drop) {
+				HammerTrackUntil(drop.UpperLip, IsFlatOpenEndFrame);
+				HammerTrackUntil(drop.LowerLanding, IsFlatOpenEndFrame);
+			}
+		}
+	}
+
+	private static void RemoveStrayTerminalTracks(Point terminal, Point inwardNeighbor)
+	{
+		for (int offsetX = -1; offsetX <= 1; offsetX += 2) {
+			for (int offsetY = -1; offsetY <= 1; offsetY++) {
+				Point neighbor = new(terminal.X + offsetX, terminal.Y + offsetY);
+				if (neighbor != inwardNeighbor && HasTile(neighbor.X, neighbor.Y, TileID.MinecartTrack)) {
+					TileEditor.ClearTerrain(neighbor.X, neighbor.Y);
+				}
+			}
+		}
+	}
+
+	private static void SetBouncyTerminalFrame(Point terminal, Point inwardNeighbor)
+	{
+		int horizontalDirection = Math.Sign(inwardNeighbor.X - terminal.X);
+		int verticalOffset = inwardNeighbor.Y - terminal.Y;
+		short frame = (horizontalDirection, verticalOffset) switch {
+			(1, 0) => 24,
+			(-1, 0) => 25,
+			(-1, 1) => 26,
+			(1, 1) => 27,
+			(-1, -1) => 28,
+			(1, -1) => 29,
+			_ => throw new InvalidOperationException(
+				$"Mine terminal {terminal} has invalid inward rail neighbor {inwardNeighbor}.")
+		};
+		Tile track = Main.tile[terminal.X, terminal.Y];
+		track.TileFrameX = frame;
+		track.TileFrameY = -1;
+	}
+
+	private static void HammerTrackUntil(Point point, Func<int, bool> acceptsFrame)
+	{
+		if (!HasTile(point.X, point.Y, TileID.MinecartTrack)) {
+			return;
+		}
+		Minecart.FrameTrack(point.X, point.Y, pound: false, mute: true);
+		for (int attempt = 0; attempt < 8; attempt++) {
+			if (acceptsFrame(Main.tile[point.X, point.Y].TileFrameX)) {
+				return;
+			}
+			if (!Minecart.FrameTrack(point.X, point.Y, pound: true, mute: true)) {
+				return;
+			}
+		}
+	}
+
+	internal static bool IsLaunchRampFrame(int frame) =>
+		frame is >= FirstLaunchRampFrame and <= LastLaunchRampFrame;
+
+	internal static bool IsFlatOpenEndFrame(int frame) =>
+		frame is FlatOpenLeftFrame or FlatOpenRightFrame;
 
 	private static bool IsReservedTrackHeadroom(Point cell, HashSet<Point> plannedTrack)
 	{
@@ -1344,9 +1543,13 @@ internal static class SurfaceMineGenerator
 	internal static IEnumerable<Point> Rasterize(MineRoute route)
 	{
 		for (int index = 0; index < route.Centerline.Count; index++) {
-			if (route.HasJumpTransfer
+			bool insideJump = route.HasJumpTransfer
 				&& index > route.JumpStartIndex
-				&& index <= route.JumpStartIndex + route.JumpGapLength) {
+				&& index <= route.JumpStartIndex + route.JumpGapLength;
+			bool insideDrop = route.HasGravityTransfer
+				&& index > route.DropStartIndex
+				&& index <= route.DropStartIndex + route.DropGapLength;
+			if (insideJump || insideDrop) {
 				continue;
 			}
 			yield return route.Centerline[index];
@@ -1379,6 +1582,33 @@ internal static class SurfaceMineGenerator
 		return new MineRailJump(
 			launch,
 			landing,
+			new Rectangle(left, top, right - left + 1, bottom - top + 1));
+	}
+
+	internal static MineRailDrop? GetGravityTransfer(MineRoute route)
+	{
+		if (!route.HasGravityTransfer) {
+			return null;
+		}
+
+		int landingIndex = route.DropStartIndex + route.DropGapLength + 1;
+		if (route.DropStartIndex < 0 || landingIndex >= route.Centerline.Count) {
+			return null;
+		}
+
+		Point upperLip = route.Centerline[route.DropStartIndex];
+		Point lowerLanding = route.Centerline[landingIndex];
+		IReadOnlyList<Point> missing = route.Centerline
+			.Skip(route.DropStartIndex + 1)
+			.Take(route.DropGapLength)
+			.ToArray();
+		int left = missing.Min(point => point.X);
+		int right = missing.Max(point => point.X);
+		int top = upperLip.Y - CorridorHeadroom;
+		int bottom = lowerLanding.Y + 4;
+		return new MineRailDrop(
+			upperLip,
+			lowerLanding,
 			new Rectangle(left, top, right - left + 1, bottom - top + 1));
 	}
 

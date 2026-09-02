@@ -319,6 +319,26 @@ The final manifest-version-7 matrix ran on 2026-09-02 against Terraria 1.4.4.9 a
 
 All three rows passed finished-tile validation, first reload, save, and second reload. The small row proves that graveyards remain optional; medium and large exercise their successful occurrence. A persisted large-world tile render then showed the new turning cave chains, flat natural shelves, bright natural-vine curtains, and nine complete tombstones on the selected stone bridge. The renderer found no player-placeable Vine Rope in either mountain.
 
+## Minecart endpoint and transfer research
+
+The minecart traversal audit used the installed Terraria 1.4.4.9 and tModLoader 2026.07.3.0 assemblies as the primary source. `Terraria.Minecart.Initialize` defines four endpoint collision sentinels: `-1` is a regular stopping bumper, `-2` is a bouncy bumper, `-3` is a launch ramp, and `-4` is an open end. `TrackCollision` handles them differently. A bouncy bumper reverses horizontal velocity; a ramp detaches the cart with a 45-degree launch vector while retaining its horizontal speed; an open end releases the cart under gravity. `FrameTrack(..., pound: true)` cycles among the endpoint forms that fit the neighboring rail connection, matching a player hammering the rail.
+
+This explains why a visually rising jump could still kill momentum: ordinary non-pound framing selected a regular bumper at the exposed launch tile. The durable implementation frames by behavior after the full rail union exists. The collapsed jump now requires frame 16–19 at its launch, corresponding to the four ramp orientations in this Terraria build, and a flat open frame 14 or 15 at its lower landing. Every graph vertex with degree one is hammered until `DrawBouncyBumper` confirms its terminal frame.
+
+Automatic descent uses a different motif. Every sufficiently long route whose endpoint is at least 24 tiles deeper receives four flat upper rails, a two-or-three-column missing-track fall, and four flat lower rails three or four tiles below. Both exposed rails use flat open frames, so the upper edge releases a moving cart instead of braking it. The short drop and visible lower shelf allow reverse traversal by jumping the cart toward the upper rail. The sealed evil spur is deliberately exempt because a fall opening cannot also maintain the required actuated quarantine shell. The final ownership pass recuts the exact fall columns after supports and displays, preventing a late beam or foundation from occupying the transfer.
+
+Finished-world validation checks the behavior-bearing tile state rather than trusting the planner. It requires the ramp, open-end, and bouncy frame families; bounded gaps and vertical offsets; flat run-in shelves; empty fall and flight columns; every planned downhill transfer; and surface connectivity across both transfer types. Geometric tile checks cannot fully replace riding the route, so a repeatable live-cart trajectory harness remains future work.
+
+The 0.3.5 verification matrix ran on 2026-09-02 against Terraria 1.4.4.9 and tModLoader 2026.07.3.0:
+
+| Mode and size | Seed | Mine entrance component | Gravity transfers | Generation time |
+| --- | --- | ---: | ---: | ---: |
+| Classic small | `Majesty-Matrix-Small-001` (`1399794971`) | 2,528 tiles | 6 | 22.8 s |
+| Journey medium | `Majesty-Matrix-Medium-001` (`204860939`) | 3,091 tiles | 6 | 29.5 s |
+| Classic large | `Majesty-Matrix-Large-001` (`1180213525`) | 3,608 tiles | 6 | 65.9 s |
+
+All three rows passed finished-tile validation, first reload, save, and second reload with manifest version 7 intact. Each mine retained the six automatic downhill transfers, one ramp-framed launch, its open landing, at least four bouncy terminal turnarounds, all eleven required edges, and the sealed evil quarantine. An independent persisted-world scan of the large seed found the expected frame families and rendered the complete mine plus focused gravity-drop, launch-ramp, and bouncy-terminal crops.
+
 ## Future research queue
 
 - Move the independent deterministic full-world and feature-crop renderer into the repository test harness so shape review becomes as repeatable as connectivity validation.

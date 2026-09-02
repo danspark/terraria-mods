@@ -187,12 +187,18 @@ internal readonly record struct MineRoute(
 	int VariationSeed,
 	IReadOnlyList<Point> Centerline,
 	int JumpStartIndex,
-	int JumpGapLength)
+	int JumpGapLength,
+	int DropStartIndex,
+	int DropGapLength,
+	int DropDepth)
 {
 	public bool HasJumpTransfer => JumpStartIndex >= 0 && JumpGapLength > 0;
+	public bool HasGravityTransfer => DropStartIndex >= 0 && DropGapLength > 0 && DropDepth > 0;
 }
 
 internal readonly record struct MineRailJump(Point Launch, Point Landing, Rectangle Gap);
+
+internal readonly record struct MineRailDrop(Point UpperLip, Point LowerLanding, Rectangle Gap);
 
 internal readonly record struct MineSection(
 	int Id,
