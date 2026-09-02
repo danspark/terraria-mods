@@ -164,13 +164,33 @@ internal static class WorldValidator
 			}
 			(int horizontalWallSeam, int verticalWallSeam, Point horizontalStart, Point verticalStart) =
 				MeasureNaturalWallSeams(interior.Area, manifest);
-			if (horizontalWallSeam > 48 || verticalWallSeam > 48) {
+			if (horizontalWallSeam > 26 || verticalWallSeam > 26) {
 				ushort verticalLeftWall = Main.tile[verticalStart.X, verticalStart.Y].WallType;
 				ushort verticalRightWall = Main.tile[verticalStart.X + 1, verticalStart.Y].WallType;
 				errors.Add(
 					$"mountain region {region.Id} retained axis-aligned natural-wall seams "
 					+ $"({horizontalWallSeam} horizontal near {horizontalStart}, "
-					+ $"{verticalWallSeam} vertical near {verticalStart}, walls {verticalLeftWall}/{verticalRightWall})");
+					+ $"{verticalWallSeam} vertical near {verticalStart}, walls {verticalLeftWall}/{verticalRightWall}); "
+					+ $"nearby transitions {DescribeNearbyTransitions(manifest, horizontalStart, verticalStart)}");
+			}
+			(int horizontalMaterialSeam, int verticalMaterialSeam, Point materialHorizontalStart, Point materialVerticalStart) =
+				MeasureSolidMaterialSeams(interior.Area, (x, y) => MountainLayerMaterialAt(manifest, x, y));
+			if (horizontalMaterialSeam > 26 || verticalMaterialSeam > 26) {
+				ushort horizontalUpper = Main.tile[materialHorizontalStart.X, materialHorizontalStart.Y].TileType;
+				ushort horizontalLower = Main.tile[materialHorizontalStart.X, materialHorizontalStart.Y + 1].TileType;
+				ushort verticalLeft = Main.tile[materialVerticalStart.X, materialVerticalStart.Y].TileType;
+				ushort verticalRight = Main.tile[materialVerticalStart.X + 1, materialVerticalStart.Y].TileType;
+				errors.Add(
+					$"mountain region {region.Id} retained axis-aligned natural-material seams "
+					+ $"({horizontalMaterialSeam} horizontal near {materialHorizontalStart}, "
+					+ $"tiles {horizontalUpper}/{horizontalLower}, depth "
+					+ $"{materialHorizontalStart.Y - plan.SurfaceAt(materialHorizontalStart.X)}; "
+					+ $"{verticalMaterialSeam} vertical near {materialVerticalStart}, "
+					+ $"tiles {verticalLeft}/{verticalRight}, depths "
+					+ $"{materialVerticalStart.Y - plan.SurfaceAt(materialVerticalStart.X)}/"
+					+ $"{materialVerticalStart.Y - plan.SurfaceAt(materialVerticalStart.X + 1)}; "
+					+ $"area {interior.Area}; nearby transitions "
+					+ $"{DescribeNearbyTransitions(manifest, materialHorizontalStart, materialVerticalStart)})");
 			}
 		}
 
@@ -252,7 +272,7 @@ internal static class WorldValidator
 			if (!actual.HasUnactuatedTile || Main.tileFrameImportant[actual.TileType] || !IsNaturalMountainTile(actual)) {
 				continue;
 			}
-			ushort expected = LandformGenerator.MountainTerrainAt(x, surfaceY, 0);
+			ushort expected = LandformGenerator.MountainTerrainAt(plan, mountain, x, 0);
 			sampled++;
 			matching += SameMountainMaterialFamily(actual.TileType, expected) ? 1 : 0;
 		}
@@ -503,6 +523,17 @@ internal static class WorldValidator
 			if (wallTypes.Count < 2 || CountWalls(landmark.Area, WallID.Glass) < 12) {
 				errors.Add($"{landmark.Biome} landmark has a flat interior palette ({wallTypes.Count} wall types, {CountWalls(landmark.Area, WallID.Glass)} glass wall cells)");
 			}
+			(int horizontalWallSeam, int verticalWallSeam, Point horizontalWallStart, Point verticalWallStart) =
+				MeasureWallMaterialSeams(landmark.Area, (x, y) => {
+					ushort wall = Main.tile[x, y].WallType;
+					return !TileEditor.IsSolid(x, y) && wall is not (WallID.None or WallID.Glass);
+				});
+			if (horizontalWallSeam > 18 || verticalWallSeam > 18) {
+				errors.Add(
+					$"{landmark.Biome} landmark retained axis-aligned interior-wall seams "
+					+ $"({horizontalWallSeam} horizontal near {horizontalWallStart}, "
+					+ $"{verticalWallSeam} vertical near {verticalWallStart})");
+			}
 			int furnitureFamilies = CountFurnitureFamilies(landmark.Area);
 			if (furnitureFamilies < 3) {
 				errors.Add($"{landmark.Biome} landmark retained only {furnitureFamilies} furniture families");
@@ -573,11 +604,26 @@ internal static class WorldValidator
 				transition,
 				out int observedCrossings,
 				out int crossingSpan,
+				out int directionChanges,
 				out string samples)) {
 				errors.Add(
 					$"{transition.LeftBiome}-{transition.RightBiome} transition at x={transition.Area.Center.X} "
 					+ $"still follows a near-straight or unobservable material boundary; "
-					+ $"observed={observedCrossings}, span={crossingSpan}, sampled crossings=[{samples}]");
+					+ $"observed={observedCrossings}, span={crossingSpan}, direction changes={directionChanges}, "
+					+ $"sampled crossings=[{samples}]");
+			}
+			(int horizontalWallSeam, int verticalWallSeam, Point horizontalWallStart, Point verticalWallStart) =
+				MeasureWallMaterialSeams(transition.Area, (x, y) => {
+					ushort wall = Main.tile[x, y].WallType;
+					return !BiomeTransitionGenerator.IsFeatureOwned(manifest, x, y)
+						&& wall is WallID.DirtUnsafe or WallID.Stone or WallID.SnowWallUnsafe
+							or WallID.JungleUnsafe or WallID.Sandstone or WallID.EbonstoneUnsafe or WallID.CrimstoneUnsafe;
+				});
+			if (horizontalWallSeam > 26 || verticalWallSeam > 26) {
+				errors.Add(
+					$"{transition.LeftBiome}-{transition.RightBiome} transition retained axis-aligned wall seams "
+					+ $"({horizontalWallSeam} horizontal near {horizontalWallStart}, "
+					+ $"{verticalWallSeam} vertical near {verticalWallStart})");
 			}
 		}
 	}
@@ -724,6 +770,22 @@ internal static class WorldValidator
 			int thinSupports = CountThinWalkableSupports(highland.Area);
 			if (thinSupports > minimumWidth / 5) {
 				errors.Add($"floating highland {index} retained {thinSupports} unsupported one-tile walking cells");
+			}
+			if (index < plan.SkyHighlands.Count) {
+				SkyHighlandPlan planned = plan.SkyHighlands[index];
+				Rectangle materialBand = new(
+					highland.Area.Left,
+					Math.Max(highland.Area.Top, planned.SurfaceY - 8),
+					highland.Area.Width,
+					Math.Min(38, highland.Area.Bottom - Math.Max(highland.Area.Top, planned.SurfaceY - 8)));
+				(int horizontalMaterialSeam, int verticalMaterialSeam, Point horizontalStart, Point verticalStart) =
+					MeasureSolidMaterialSeams(materialBand, (x, y) => SkyLayerMaterialAt(manifest, x, y));
+				if (horizontalMaterialSeam > 26 || verticalMaterialSeam > 26) {
+					errors.Add(
+						$"floating highland {index} retained axis-aligned terrain-layer seams "
+						+ $"({horizontalMaterialSeam} horizontal near {horizontalStart}, "
+						+ $"{verticalMaterialSeam} vertical near {verticalStart})");
+				}
 			}
 		}
 		if (manifest.SkyHighlands.Count > 1 && manifest.SkyHighlands.All(highland => highland.MountainAttached)) {
@@ -1085,17 +1147,21 @@ internal static class WorldValidator
 		sampleArea.Inflate(-5, -5);
 		HashSet<Point> routeInfluence = [];
 		foreach (MineRoute route in plan.Routes) {
-			foreach (Point point in route.Centerline.Where(sampleArea.Contains)) {
+			foreach (Point point in route.Centerline) {
 				for (int offsetX = -4; offsetX <= 4; offsetX++) {
 					for (int offsetY = -15; offsetY <= 3; offsetY++) {
-						routeInfluence.Add(new Point(point.X + offsetX, point.Y + offsetY));
+						Point influenced = new(point.X + offsetX, point.Y + offsetY);
+						if (sampleArea.Contains(influenced)) {
+							routeInfluence.Add(influenced);
+						}
 					}
 				}
 			}
 		}
 		for (int x = sampleArea.Left; x < sampleArea.Right; x++) {
 			for (int y = sampleArea.Top; y < sampleArea.Bottom; y++) {
-				if (TileEditor.IsSolid(x, y) || routeInfluence.Contains(new Point(x, y))) {
+				if (!SurfaceMineGenerator.IsInsideSectionInterior(section, x, y)
+					|| TileEditor.IsSolid(x, y) || routeInfluence.Contains(new Point(x, y))) {
 					continue;
 				}
 				ushort wall = Main.tile[x, y].WallType;
@@ -1113,6 +1179,20 @@ internal static class WorldValidator
 			errors.Add(
 				$"mine section {section.Id} ({section.Theme}) uses its biome wall family in only "
 				+ $"{themed}/{sampled} open wall cells");
+		}
+		(int horizontalWallSeam, int verticalWallSeam, Point horizontalStart, Point verticalStart) =
+			MeasureWallMaterialSeams(sampleArea, (x, y) => {
+				ushort wall = Main.tile[x, y].WallType;
+				return SurfaceMineGenerator.IsInsideSectionInterior(section, x, y)
+					&& !TileEditor.IsSolid(x, y)
+					&& !routeInfluence.Contains(new Point(x, y))
+					&& wall is not (WallID.None or WallID.GrayBrick);
+			});
+		if (horizontalWallSeam > 22 || verticalWallSeam > 22) {
+			errors.Add(
+				$"mine section {section.Id} ({section.Kind}) retained axis-aligned wall-material seams "
+				+ $"({horizontalWallSeam} horizontal near {horizontalStart}, "
+				+ $"{verticalWallSeam} vertical near {verticalStart})");
 		}
 	}
 
@@ -1434,6 +1514,151 @@ internal static class WorldValidator
 			}
 		}
 		return count;
+	}
+
+	private static int MountainLayerMaterialAt(GenerationManifest manifest, int x, int y)
+	{
+		if (BiomeTransitionGenerator.IsFeatureOwned(manifest, x, y)) {
+			return 0;
+		}
+		Tile tile = Main.tile[x, y];
+		if (!IsNaturalMountainTile(tile)) {
+			return 0;
+		}
+		return tile.TileType switch {
+			TileID.Grass or TileID.Dirt => 1,
+			TileID.Stone => 2,
+			TileID.SnowBlock => 3,
+			TileID.IceBlock or TileID.BreakableIce => 4,
+			TileID.Sand => 5,
+			TileID.HardenedSand => 6,
+			TileID.Sandstone or TileID.DesertFossil => 7,
+			TileID.Mud or TileID.JungleGrass or TileID.CorruptJungleGrass or TileID.CrimsonJungleGrass => 8,
+			TileID.CorruptGrass or TileID.Ebonstone or TileID.Ebonsand
+				or TileID.CorruptHardenedSand or TileID.CorruptSandstone => 9,
+			TileID.CrimsonGrass or TileID.Crimstone or TileID.Crimsand
+				or TileID.CrimsonHardenedSand or TileID.CrimsonSandstone => 10,
+			_ => 0
+		};
+	}
+
+	private static string DescribeNearbyTransitions(GenerationManifest manifest, Point first, Point second)
+	{
+		List<string> nearby = [];
+		foreach (BiomeTransitionRecord transition in manifest.BiomeTransitions) {
+			Rectangle expanded = transition.Area;
+			expanded.Inflate(4, 4);
+			if (expanded.Contains(first) || expanded.Contains(second)
+				|| Math.Abs(transition.Area.Center.X - first.X) < 90
+				|| Math.Abs(transition.Area.Center.X - second.X) < 90) {
+				nearby.Add($"{transition.LeftBiome}-{transition.RightBiome}:{transition.Area}");
+			}
+		}
+		return nearby.Count == 0 ? "none" : string.Join(", ", nearby);
+	}
+
+	private static int SkyLayerMaterialAt(GenerationManifest manifest, int x, int y)
+	{
+		Point point = new(x, y);
+		if (manifest.Landmarks.Any(record => record.Area.Contains(point))
+			|| manifest.Bridges.Any(record => record.Area.Contains(point))
+			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.MineSections.Any(record => record.Area.Contains(point))) {
+			return 0;
+		}
+		Tile tile = Main.tile[x, y];
+		if (!tile.HasUnactuatedTile || !Main.tileSolid[tile.TileType] || Main.tileSolidTop[tile.TileType]) {
+			return 0;
+		}
+		return tile.TileType switch {
+			TileID.Grass or TileID.Dirt => 1,
+			TileID.Sunplate => 2,
+			TileID.Cloud => 3,
+			TileID.RainCloud or TileID.SnowCloud => 4,
+			_ => 0
+		};
+	}
+
+	private static (int Horizontal, int Vertical, Point HorizontalStart, Point VerticalStart) MeasureSolidMaterialSeams(
+		Rectangle area,
+		Func<int, int, int> classify)
+	{
+		int left = Math.Max(2, area.Left);
+		int top = Math.Max(2, area.Top);
+		int right = Math.Min(Main.maxTilesX - 2, area.Right);
+		int bottom = Math.Min(Main.maxTilesY - 2, area.Bottom);
+		int longestHorizontal = 0;
+		Point horizontalStart = Point.Zero;
+		for (int y = top; y < bottom - 1; y++) {
+			int run = 0;
+			for (int x = left; x < right; x++) {
+				int upper = classify(x, y);
+				int lower = classify(x, y + 1);
+				bool boundary = upper != 0 && lower != 0 && upper != lower;
+				run = boundary ? run + 1 : 0;
+				if (run > longestHorizontal) {
+					longestHorizontal = run;
+					horizontalStart = new Point(x - run + 1, y);
+				}
+			}
+		}
+
+		int longestVertical = 0;
+		Point verticalStart = Point.Zero;
+		for (int x = left; x < right - 1; x++) {
+			int run = 0;
+			for (int y = top; y < bottom; y++) {
+				int leftMaterial = classify(x, y);
+				int rightMaterial = classify(x + 1, y);
+				bool boundary = leftMaterial != 0 && rightMaterial != 0 && leftMaterial != rightMaterial;
+				run = boundary ? run + 1 : 0;
+				if (run > longestVertical) {
+					longestVertical = run;
+					verticalStart = new Point(x, y - run + 1);
+				}
+			}
+		}
+		return (longestHorizontal, longestVertical, horizontalStart, verticalStart);
+	}
+
+	private static (int Horizontal, int Vertical, Point HorizontalStart, Point VerticalStart) MeasureWallMaterialSeams(
+		Rectangle area,
+		Func<int, int, bool> include)
+	{
+		int left = Math.Max(2, area.Left);
+		int top = Math.Max(2, area.Top);
+		int right = Math.Min(Main.maxTilesX - 2, area.Right);
+		int bottom = Math.Min(Main.maxTilesY - 2, area.Bottom);
+		int longestHorizontal = 0;
+		Point horizontalStart = Point.Zero;
+		for (int y = top; y < bottom - 1; y++) {
+			int run = 0;
+			for (int x = left; x < right; x++) {
+				bool boundary = include(x, y) && include(x, y + 1)
+					&& Main.tile[x, y].WallType != Main.tile[x, y + 1].WallType;
+				run = boundary ? run + 1 : 0;
+				if (run > longestHorizontal) {
+					longestHorizontal = run;
+					horizontalStart = new Point(x - run + 1, y);
+				}
+			}
+		}
+
+		int longestVertical = 0;
+		Point verticalStart = Point.Zero;
+		for (int x = left; x < right - 1; x++) {
+			int run = 0;
+			for (int y = top; y < bottom; y++) {
+				bool boundary = include(x, y) && include(x + 1, y)
+					&& Main.tile[x, y].WallType != Main.tile[x + 1, y].WallType;
+				run = boundary ? run + 1 : 0;
+				if (run > longestVertical) {
+					longestVertical = run;
+					verticalStart = new Point(x, y - run + 1);
+				}
+			}
+		}
+		return (longestHorizontal, longestVertical, horizontalStart, verticalStart);
 	}
 
 	private static (int Horizontal, int Vertical, Point HorizontalStart, Point VerticalStart) MeasureNaturalWallSeams(

@@ -1,6 +1,6 @@
 # Richer Biomes
 
-Richer Biomes 0.3.2 turns ordinary Terraria worlds into connected exploration regions while retaining vanilla materials, biomes, loot, and progression. It creates height-varied mountain ranges, floating highland biomes, furnished regional landmarks, protected building terraces, cave routes, and one guaranteed surface-to-Cavern mine district.
+Richer Biomes 0.3.3 turns ordinary Terraria worlds into connected exploration regions while retaining vanilla materials, biomes, loot, and progression. It creates height-varied mountain ranges, floating highland biomes, furnished regional landmarks, protected building terraces, cave routes, and one guaranteed surface-to-Cavern mine district.
 
 The mod targets Terraria 1.4.4.9 on tModLoader 2026.07.3.0. Secret seeds stop before terrain mutation because their layer and progression rules need separate plans.
 
@@ -8,7 +8,7 @@ The mod targets Terraria 1.4.4.9 on tModLoader 2026.07.3.0. Secret seeds stop be
 
 Every supported world receives the following features:
 
-- Correlated full-world terrain with quiet lowlands, hills, plateaus, basins, valleys, and size-aware mountain ranges.
+- Correlated full-world terrain with quiet lowlands, hills, plateaus, basins, valleys, and size-aware mountain ranges. A shared multi-scale boundary field breaks up terrain layers, walls, structure foundations, and biome joins without adding per-tile static.
 - Ground-connected mountain ranges selected from Highland, Alpine, and Sky-piercing altitude families. Only Sky-piercing ranges enter Space and grow cloud belts. Every range inherits the material family beneath each part of its body, including Snow, Jungle, Desert, Corruption, or Crimson; has two foothill entrances and one of four cave grammars; and contains wall-backed chambers, open-background pockets, suspended natural ledges, vine curtains, climbing aids, furnished vignettes, pots, rubble, a themed valley, and a bridge between its peaks.
 - One floating highland on small worlds and up to two on medium and large worlds. A highland is approximately 280×90, 360×110, or 440×140 tiles before its satellites and uses a Terraced Meadow, Cloud Basin, or Broken Archipelago grammar. At most one highland may touch an Alpine or Sky-piercing mountain; attachment is attempted in one fifth of plans, so detached highlands are normal.
 - A guaranteed visible surface mine with a headframe and eleven required rail edges from the Surface into the deep Cavern layer. The graph includes multiple junctions, cycles, horizontal work lines, rolling and terraced grades, climbs followed by descents, and a collapsed spur with a clear minecart jump. Corridors inherit a continuous unsafe wall family from the biome they cross—Ice and Snow in Snow, Jungle walls in Jungle, matching evil walls in Corruption or Crimson, and equivalent regional palettes elsewhere. Timber bents, masonry foundations, lighting, work furniture, platform drop bays, and flooded, collapsed, mountain-rail, and sealed world-evil districts give the network an industrial identity without flattening its biome identity.
@@ -27,7 +27,8 @@ Generation fails instead of accepting a partial world when the finished tile gri
 - a three-tile structural bridge with background panels, platform drop bays, clear headroom, actuated mountain portals, and no solid endpoint-corridor blockers, plus a valley payload for every mountain range;
 - a connected floating-highland component spanning at least three quarters of its target width and two thirds of its target depth, with varied styles and no more than one mountain attachment;
 - all eleven landmarks with connected room plans, mixed interior walls, thick foundations, sloped solid roofs, diagonal sloped-platform stairs, retained multitile furniture, open approaches, no exterior wall leakage, no doors, and failed real NPC-housing queries;
-- at least two or three visible organic biome seams by world size, each measured across many depth samples with at least eight tiles of lateral boundary movement;
+- at least two or three visible organic biome seams by world size, each measured across many depth samples with broad lateral movement and repeated direction changes;
+- no long exact-axis material seams in natural mountain blocks or walls, highland layers, biome-transition walls, landmark wall panels, or mine-section wall fields;
 - a minecart-track component reachable from the surface entrance with at least 300, 500, or 700 tiles on small, medium, or large worlds;
 - every authored mine route tile and all eleven required mine edges in that entrance component, with at least six tiles of clear headroom, a measured mix of tighter and cavernous ceilings, local-biome walls along the rail envelope, timber support bents, several route profiles, repeated climb-and-descent edges, and a four-to-six-tile launch transfer with a clear flight path;
 - preserved vanilla progression structures, world evil, and Shimmer.

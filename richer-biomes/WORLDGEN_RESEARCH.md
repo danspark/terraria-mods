@@ -1,6 +1,6 @@
 # World-generation research record
 
-This record separates observations, design conclusions, implementation targets, and external references. It began with the 0.3.0 majestic-world rewrite on 2026-08-31 and includes the 0.3.2 biome-owned mine audit.
+This record separates observations, design conclusions, implementation targets, and external references. It began with the 0.3.0 majestic-world rewrite on 2026-08-31 and includes the 0.3.3 organic-boundary audit.
 
 ## Reference-world audit
 
@@ -262,6 +262,24 @@ The implemented contract assigns every centerline sample a smoothed biome theme.
 Every row completed generation, strict final-tile validation, first reload, save, and second reload with manifest version 5 intact. The validator independently required local-biome walls across at least 95% of sampled rail-envelope cells, at most 2% missing walls, complete timber bents, multiple rail-profile families, several routes containing both a climb and a descent, bounded grade changes, and the intact launch transfer. The large seed also proved that route planning preserves the Jungle Temple exclusion envelope.
 
 An independent renderer inspected the small seed's 2,584-tile surface-connected component. Its Snow crop contained 78,233 Ice-wall samples, with only small counts from legitimate biome-transition and feature-overlap areas, and showed the rail network alternating level work lines, climbs, descents, and the jump transfer. The rendered crop is a structural tile-state view rather than a lit in-game screenshot; it is intended to expose wall ownership, track continuity, support placement, and clearance.
+
+## 0.3.3 organic-boundary verification record
+
+The organic-boundary audit found that noisy planning alone does not prevent straight finished seams. Four late-stage patterns could still expose generator geometry: a shared world-surface cutoff under a mountain, the perimeter of a reserved transition band, a later owner repainting an earlier irregular boundary, and a repair pass that examined only cells inside its own rectangle. Independent per-tile randomness hid neither the rectangle nor the pass boundary; it only added speckle around it.
+
+The durable rule is to give every natural material field a deterministic, correlated boundary function. Richer Biomes now uses a shared domain-warped field with macro, detail, and grain scales, independent channels for blocks and walls, and stable seeds that late owners can reuse. A repair pass samples through its perimeter so it can compare the first owned cell with the neighboring finished world. Intentionally constructed traversal geometry remains readable: rails, decks, floors, doors, and reserved movement lanes may be straight, but their foundations, background fields, shells, and joins into terrain must not inherit those straight edges.
+
+Finished-grid validation now measures the failure mode directly. Mountain natural blocks and walls, transition walls, and floating-highland layers reject exact horizontal or vertical material runs longer than 26 tiles. Landmark interior wall panels use an 18-tile limit, and mine-section wall fields use a 22-tile limit. A retained lowland transition must also expose at least six depth crossings, span at least one fifth of its band or 18 tiles, and reverse direction at least three times. These checks run after all final owners rather than trusting the input profiles.
+
+The exact final-code matrix ran on 2026-09-01 against Terraria 1.4.4.9 and tModLoader 2026.07.3.0:
+
+| Mode and size | Seed | Evil | Mountain families | Mine entrance component | Generation time |
+| --- | --- | --- | --- | ---: | ---: |
+| Classic small | `1399794971` | Crimson | Alpine / Split-Level Caves | 2,328 tiles | 20.5 s |
+| Journey medium | `204860939` | Corruption | Sky-piercing / Open Fault; Alpine / Split-Level Caves | 3,073 tiles | 27.0 s |
+| Classic large | `Majesty-Matrix-Large-001` (`1180213525`) | Crimson | Sky-piercing / Branching Grottoes; Highland / Split-Level Caves | 4,010 tiles | 60.2 s |
+
+Every row completed generation, strict final-tile validation, first reload, save, and second reload with manifest version 5 intact. An independent tile-state renderer then inspected each full world and its complete surface-connected mine crop. The maps retained deliberate rail grades and work lines while showing irregular mountain skins, highland layers, wall fields, mine district ownership, and broad biome folds without visible reservation-box outlines.
 
 ## Future research queue
 

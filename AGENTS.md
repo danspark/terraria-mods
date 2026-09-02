@@ -13,3 +13,10 @@
 - Use `richer-biomes/scripts/build-mod.sh` as the canonical build command. The script installs the completed package and fails if the installed bytes do not match the build artifact.
 - Before reporting world-generation work as complete, compare the build artifact and the installed package with `cmp` or `sha256sum`. Do not leave a previously loaded or intermediate package in the local `Mods` directory.
 - Updating the file does not reload a running tModLoader client. State that a mod reload or game restart is required, and do not claim that the running client loaded the new version until `tModLoader-Logs/client.log` records the expected Richer Biomes version.
+
+## Richer Biomes organic boundaries
+
+- Do not generate a custom biome, mountain, natural wall field, terrain layer, structure-to-ground join, or material transition from a constant row, constant column, rectangular fill edge, or independent per-tile randomness. Use deterministic correlated variation at more than one scale, with enough amplitude to remain visible on the map.
+- Keep functional construction geometry readable. Rails, room floors, doors, bridge decks, and reserved traversal lanes may be straight when their role requires it, but their decorative material fields and joins into natural terrain must use the organic boundary field.
+- A late repair pass must reapply the same seeded boundary function as the original owner. It must not restore a feature with a simpler axis-aligned approximation.
+- Validate the finished tile and wall grid for long exact-axis material seams. Planned jitter or a noisy placement mask does not count if later passes leave a straight boundary in the saved world.

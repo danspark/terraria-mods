@@ -389,6 +389,8 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		// so a highland remains one biome-scale body instead of isolated shelves.
 		SkyHighlandGenerator.RepairKeels(RequirePlan());
 		SkyHighlandGenerator.RepairVerticalRoutes(RequirePlan(), RequireManifest());
+		SkyHighlandGenerator.RepairOrganicMaterialSeams(RequirePlan(), RequireManifest());
+		SkyHighlandGenerator.RefillLakes(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RepairBridgePortals(RequirePlan());
 		LandformGenerator.FinishMountainMaterials(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan());
@@ -406,6 +408,7 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 			Mod.Logger.Info($"Richer Biomes omitted {occludedTransitions} surface seams occluded by final feature ownership.");
 		}
 		MountainBiomeGenerator.FinishInteriorWalls(RequirePlan(), RequireManifest());
+		BiomeTransitionGenerator.Repair(RequirePlan(), RequireManifest());
 		LandmarkGenerator.RepairTraversal(RequireManifest());
 		int lateOccludedTransitions = BiomeTransitionGenerator.RetainObservable(RequirePlan(), RequireManifest());
 		if (lateOccludedTransitions > 0) {

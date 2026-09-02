@@ -171,16 +171,17 @@ internal static class MountainBiomeGenerator
 				}
 			}
 			BreakLongWallSeams(area, manifest);
+			BreakLongWallSeams(area, manifest);
 			TileEditor.Frame(area, border: 2);
 		}
 	}
 
 	private static void BreakLongWallSeams(Rectangle area, GenerationManifest manifest)
 	{
-		for (int x = area.Left + 2; x < area.Right - 3; x++) {
+		for (int x = area.Left + 1; x < area.Right - 1; x++) {
 			int runStart = -1;
-			for (int y = area.Top + 2; y <= area.Bottom - 2; y++) {
-				bool boundary = y < area.Bottom - 2
+			for (int y = area.Top + 1; y <= area.Bottom - 1; y++) {
+				bool boundary = y < area.Bottom - 1
 					&& IsOpenNaturalWallCell(manifest, x, y)
 					&& IsOpenNaturalWallCell(manifest, x + 1, y)
 					&& Main.tile[x, y].WallType != Main.tile[x + 1, y].WallType;
@@ -190,15 +191,33 @@ internal static class MountainBiomeGenerator
 				if (boundary) {
 					continue;
 				}
-				if (runStart >= 0 && y - runStart > 28) {
+				if (runStart >= 0 && y - runStart > 18) {
 					for (int seamY = runStart; seamY < y; seamY++) {
 						ushort leftWall = Main.tile[x, seamY].WallType;
 						ushort rightWall = Main.tile[x + 1, seamY].WallType;
-						if (((seamY - runStart) / 7) % 2 == 0) {
-							TileEditor.SetWall(x + 1, seamY, leftWall);
+						int push = OrganicBoundary.Profile(
+							seamY,
+							area.Center.X ^ area.Center.Y ^ x ^ 0x5653_454D,
+							17,
+							5,
+							4,
+							2);
+						int reach = 1 + Math.Min(5, Math.Abs(push));
+						if (push >= 0) {
+							for (int offset = 1; offset <= reach; offset++) {
+								if (x + offset < area.Right - 1
+									&& IsOpenNaturalWallCell(manifest, x + offset, seamY)) {
+									TileEditor.SetWall(x + offset, seamY, leftWall);
+								}
+							}
 						}
 						else {
-							TileEditor.SetWall(x, seamY, rightWall);
+							for (int offset = 0; offset < reach; offset++) {
+								if (x - offset > area.Left
+									&& IsOpenNaturalWallCell(manifest, x - offset, seamY)) {
+									TileEditor.SetWall(x - offset, seamY, rightWall);
+								}
+							}
 						}
 					}
 				}
@@ -206,10 +225,10 @@ internal static class MountainBiomeGenerator
 			}
 		}
 
-		for (int y = area.Top + 2; y < area.Bottom - 3; y++) {
+		for (int y = area.Top + 1; y < area.Bottom - 1; y++) {
 			int runStart = -1;
-			for (int x = area.Left + 2; x <= area.Right - 2; x++) {
-				bool boundary = x < area.Right - 2
+			for (int x = area.Left + 1; x <= area.Right - 1; x++) {
+				bool boundary = x < area.Right - 1
 					&& IsOpenNaturalWallCell(manifest, x, y)
 					&& IsOpenNaturalWallCell(manifest, x, y + 1)
 					&& Main.tile[x, y].WallType != Main.tile[x, y + 1].WallType;
@@ -219,15 +238,33 @@ internal static class MountainBiomeGenerator
 				if (boundary) {
 					continue;
 				}
-				if (runStart >= 0 && x - runStart > 28) {
+				if (runStart >= 0 && x - runStart > 18) {
 					for (int seamX = runStart; seamX < x; seamX++) {
 						ushort upperWall = Main.tile[seamX, y].WallType;
 						ushort lowerWall = Main.tile[seamX, y + 1].WallType;
-						if (((seamX - runStart) / 7) % 2 == 0) {
-							TileEditor.SetWall(seamX, y + 1, upperWall);
+						int push = OrganicBoundary.Profile(
+							seamX,
+							area.Center.X ^ area.Center.Y ^ y ^ 0x4853_454D,
+							19,
+							5,
+							4,
+							2);
+						int reach = 1 + Math.Min(5, Math.Abs(push));
+						if (push >= 0) {
+							for (int offset = 1; offset <= reach; offset++) {
+								if (y + offset < area.Bottom - 1
+									&& IsOpenNaturalWallCell(manifest, seamX, y + offset)) {
+									TileEditor.SetWall(seamX, y + offset, upperWall);
+								}
+							}
 						}
 						else {
-							TileEditor.SetWall(seamX, y, lowerWall);
+							for (int offset = 0; offset < reach; offset++) {
+								if (y - offset > area.Top
+									&& IsOpenNaturalWallCell(manifest, seamX, y - offset)) {
+									TileEditor.SetWall(seamX, y - offset, lowerWall);
+								}
+							}
 						}
 					}
 				}
@@ -300,16 +337,29 @@ internal static class MountainBiomeGenerator
 			foreach (int spineX in new[] { peakX - 12, peakX + 12 }) {
 				int topY = plan.SurfaceAt(spineX);
 				int bottomY = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 55);
-				for (int x = spineX - 4; x <= spineX + 4; x++) {
-					for (int y = plan.SurfaceAt(x); y <= bottomY; y++) {
+				for (int y = topY; y <= bottomY; y++) {
+					int halfWidth = Math.Clamp(
+						4 + OrganicBoundary.Profile(
+							y,
+							mountain.FeatureSeed ^ spineX ^ 0x5350_494E,
+							23,
+							7,
+							2,
+							1),
+						3,
+						6);
+					for (int x = spineX - halfWidth; x <= spineX + halfWidth; x++) {
+						if (y < plan.SurfaceAt(x)) {
+							continue;
+						}
 						if (TileEditor.IsProtectedTile(Main.tile[x, y]) || IsMineRailEnvelope(x, y)) {
 							continue;
 						}
 						int depth = y - plan.SurfaceAt(x);
-						ushort terrain = LandformGenerator.MountainTerrainAt(x, plan.SurfaceAt(x), depth);
+						ushort terrain = LandformGenerator.MountainTerrainAt(plan, mountain, x, depth);
 						TileEditor.SetTerrain(x, y, terrain);
 						if (depth >= 4) {
-							TileEditor.SetWall(x, y, depth < 18 ? WallID.DirtUnsafe : WallID.Stone);
+							TileEditor.SetWall(x, y, LandformGenerator.MountainWallAtDepth(mountain, x, depth));
 						}
 					}
 				}
@@ -318,7 +368,10 @@ internal static class MountainBiomeGenerator
 						for (int y = portalY - 7; y < portalY; y++) {
 							if (!TileEditor.IsProtectedTile(Main.tile[x, y]) && !IsMineRailEnvelope(x, y)) {
 								TileEditor.ClearTerrain(x, y);
-								TileEditor.SetWall(x, y, WallID.Stone);
+								TileEditor.SetWall(
+									x,
+									y,
+									LandformGenerator.MountainWallAtDepth(mountain, x, y - plan.SurfaceAt(x)));
 							}
 						}
 					}
@@ -567,7 +620,7 @@ internal static class MountainBiomeGenerator
 				}
 				ushort material = step % 5 == 0
 					? TileID.StoneSlab
-					: LandformGenerator.MountainTerrainAt(x, plan.SurfaceAt(x), y - plan.SurfaceAt(x));
+					: LandformGenerator.MountainTerrainAt(plan, mountain, x, y - plan.SurfaceAt(x));
 				TileEditor.SetTerrain(x, y, material);
 				if (step < 4 && CanMutate(x, y + 1, protectSensitiveTiles)) {
 					TileEditor.SetTerrain(x, y + 1, material);
@@ -855,7 +908,7 @@ internal static class MountainBiomeGenerator
 						continue;
 					}
 					int depth = y - topY;
-					TileEditor.SetTerrain(x, y, LandformGenerator.MountainTerrainAt(x, plan.SurfaceAt(x), depth));
+					TileEditor.SetTerrain(x, y, LandformGenerator.MountainTerrainAt(plan, mountain, x, depth));
 					authoredTiles++;
 				}
 
@@ -1056,6 +1109,7 @@ internal static class MountainBiomeGenerator
 			|| manifest.Bridges.Any(record => record.Area.Contains(point))
 			|| manifest.Valleys.Any(record => record.Area.Contains(point))
 			|| manifest.SkyHighlands.Any(record => record.Area.Contains(point))
+			|| manifest.BiomeTransitions.Any(record => record.Area.Contains(point))
 			|| manifest.MineSections.Any(record => record.Area.Contains(point));
 	}
 
@@ -1201,11 +1255,14 @@ internal static class MountainBiomeGenerator
 		for (int x = centerX - radiusX; x <= centerX + radiusX; x++) {
 			double normalizedX = (double)(x - centerX) / radiusX;
 			int halfHeight = Math.Max(3, (int)Math.Round(radiusY * Math.Sqrt(Math.Max(0d, 1d - normalizedX * normalizedX))));
-			int topJitter = HashNoise(x, centerY) % 3 - 1;
-			int bottomJitter = HashNoise(x, centerY + 113) % 5 - 2;
+			int topJitter = OrganicBoundary.Profile(x, centerY ^ 0x4752_4F54, 17, 5, 3, 2);
+			int bottomJitter = OrganicBoundary.Profile(x, centerY ^ 0x4752_4F42, 23, 7, 4, 2);
 			int outerTop = centerY - halfHeight + topJitter;
 			int outerBottom = centerY + halfHeight + bottomJitter;
-			int shellThickness = 4 + HashNoise(x, centerY + 227) % 3;
+			int shellThickness = Math.Clamp(
+				5 + OrganicBoundary.Profile(x, centerY ^ 0x5348_454C, 19, 5, 2, 1),
+				4,
+				8);
 			for (int y = outerTop; y <= outerBottom; y++) {
 				TileEditor.SetTerrain(x, y, TileID.GrayBrick);
 			}

@@ -33,7 +33,7 @@ internal static class BiomeTransitionGenerator
 				continue;
 			}
 
-			int width = 52 + HashNoise(centerX, plan.GenerationSeed) % 43;
+			int width = 68 + HashNoise(centerX, plan.GenerationSeed) % 49;
 			int left = Math.Max(plan.LeftBoundary + 8, centerX - width / 2);
 			int right = Math.Min(plan.RightBoundary - 8, centerX + width / 2);
 			int minimumSurface = int.MaxValue;
@@ -53,6 +53,7 @@ internal static class BiomeTransitionGenerator
 			if (modified < area.Width * 3) {
 				continue;
 			}
+			BreakLongWallSeams(area, manifest, plan.GenerationSeed ^ centerX);
 
 			manifest.BiomeTransitions.Add(new BiomeTransitionRecord(leftRun.Biome, rightRun.Biome, area, modified));
 			acceptedCenters.Add(centerX);
@@ -75,6 +76,14 @@ internal static class BiomeTransitionGenerator
 				transition.RightBiome,
 				transition.Area.Center.X);
 			manifest.BiomeTransitions[index] = transition with { ModifiedCells = Math.Max(transition.ModifiedCells, modified) };
+			BreakLongWallSeams(
+				transition.Area,
+				manifest,
+				plan.GenerationSeed ^ transition.Area.Center.X);
+			BreakLongWallSeams(
+				transition.Area,
+				manifest,
+				plan.GenerationSeed ^ transition.Area.Center.X);
 			TileEditor.Frame(transition.Area, border: 2);
 		}
 	}
@@ -83,7 +92,7 @@ internal static class BiomeTransitionGenerator
 	{
 		int removed = 0;
 		for (int index = manifest.BiomeTransitions.Count - 1; index >= 0; index--) {
-			if (TryMeasureBoundary(plan, manifest, manifest.BiomeTransitions[index], out _, out _, out _)) {
+			if (TryMeasureBoundary(plan, manifest, manifest.BiomeTransitions[index], out _, out _, out _, out _)) {
 				continue;
 			}
 
@@ -99,11 +108,14 @@ internal static class BiomeTransitionGenerator
 		BiomeTransitionRecord transition,
 		out int observedCrossings,
 		out int crossingSpan,
+		out int directionChanges,
 		out string samples)
 	{
 		HashSet<int> crossingColumns = [];
+		List<int> orderedCrossings = [];
 		List<string> sampledCrossings = [];
 		observedCrossings = 0;
+		directionChanges = 0;
 		int centerX = transition.Area.Center.X;
 		int maximumDepth = Math.Min(
 			MaximumBlendDepth(plan, centerX) - 2,
@@ -141,16 +153,30 @@ internal static class BiomeTransitionGenerator
 					bestX = x;
 				}
 			}
-			if (bestX != int.MinValue && bestDistance <= 8) {
+			if (bestX != int.MinValue && bestDistance <= Math.Max(12, transition.Area.Width / 6)) {
 				crossingColumns.Add(bestX);
+				orderedCrossings.Add(bestX);
 				observedCrossings++;
 				sampledCrossings.Add($"{depth}:{bestX}");
 			}
 		}
 
+		int priorDirection = 0;
+		for (int index = 1; index < orderedCrossings.Count; index++) {
+			int direction = Math.Sign(orderedCrossings[index] - orderedCrossings[index - 1]);
+			if (direction == 0) {
+				continue;
+			}
+			if (priorDirection != 0 && direction != priorDirection) {
+				directionChanges++;
+			}
+			priorDirection = direction;
+		}
 		crossingSpan = crossingColumns.Count == 0 ? 0 : crossingColumns.Max() - crossingColumns.Min();
 		samples = string.Join(",", sampledCrossings);
-		return observedCrossings >= 6 && crossingSpan >= 8;
+		return observedCrossings >= 6
+			&& crossingSpan >= Math.Max(18, transition.Area.Width / 5)
+			&& directionChanges >= 3;
 	}
 
 	private static List<BiomeRun> FindRuns(WorldPlan plan)
@@ -237,6 +263,19 @@ internal static class BiomeTransitionGenerator
 			int maximumDepth = MaximumBlendDepth(plan, x);
 			for (int depth = 0; depth <= maximumDepth; depth++) {
 				int y = surfaceY + depth;
+				int bottomFeather = Math.Clamp(
+					8 + OrganicBoundary.Profile(
+						x,
+						plan.GenerationSeed ^ centerX ^ 0x424F_5454,
+						31,
+						7,
+						5,
+						2),
+					4,
+					15);
+				if (depth > maximumDepth - bottomFeather) {
+					continue;
+				}
 				if (IsFeatureOwned(manifest, x, y)) {
 					continue;
 				}
@@ -246,15 +285,66 @@ internal static class BiomeTransitionGenerator
 				}
 
 				int boundaryX = BoundaryColumn(area, centerX, depth, plan.GenerationSeed);
-				double raggedOffset = (SampleNoise(x, y, plan.GenerationSeed + centerX) - 0.5d) * 7d;
+				double raggedOffset = (OrganicBoundary.Field(
+					x,
+					y,
+					plan.GenerationSeed ^ centerX ^ 0x5449_4C45,
+					17,
+					5) - 0.5d) * area.Width * 0.22d;
+				int leftFeather = Math.Clamp(
+					9 + OrganicBoundary.Profile(
+						y,
+						plan.GenerationSeed ^ centerX ^ 0x4C45_4654,
+						23,
+						6,
+						5,
+						2),
+					4,
+					16);
+				int rightFeather = Math.Clamp(
+					9 + OrganicBoundary.Profile(
+						y,
+						plan.GenerationSeed ^ centerX ^ 0x5249_4748,
+						29,
+						7,
+						5,
+						2),
+					4,
+					16);
+				if (x < area.Left + leftFeather || x >= area.Right - rightFeather) {
+					int sampleX = x < area.Left + leftFeather ? area.Left - 1 : area.Right;
+					int sampleY = Math.Clamp(plan.SurfaceAt(sampleX) + depth, 2, Main.maxTilesY - 3);
+					Tile sample = Main.tile[sampleX, sampleY];
+					if (sample.HasTile && IsBlendableTile(sample.TileType) && tile.TileType != sample.TileType) {
+						TileEditor.SetTerrain(x, y, sample.TileType);
+						modified++;
+					}
+					if (depth >= 3 && Main.tile[x, y].WallType != WallID.None
+						&& IsTransitionWallType(sample.WallType)) {
+						TileEditor.SetWall(x, y, sample.WallType);
+					}
+					continue;
+				}
 				BiomeKind selected = x + raggedOffset >= boundaryX ? rightBiome : leftBiome;
-				ushort target = MaterialFor(selected, depth);
+				ushort target = MaterialFor(selected, x, y, depth, plan.GenerationSeed ^ centerX);
 				if (tile.TileType != target) {
 					TileEditor.SetTerrain(x, y, target);
 					modified++;
 				}
 				if (depth >= 3 && Main.tile[x, y].WallType != WallID.None) {
-					TileEditor.SetWall(x, y, WallFor(selected));
+					int wallBoundaryX = BoundaryColumn(
+						area,
+						centerX,
+						depth + 11,
+						plan.GenerationSeed ^ 0x5741_4C4C);
+					double wallRaggedOffset = (OrganicBoundary.Field(
+						x,
+						y,
+						plan.GenerationSeed ^ centerX ^ 0x5741_4C52,
+						23,
+						7) - 0.5d) * area.Width * 0.26d;
+					BiomeKind wallBiome = x + wallRaggedOffset >= wallBoundaryX ? rightBiome : leftBiome;
+					TileEditor.SetWall(x, y, WallFor(wallBiome));
 				}
 			}
 		}
@@ -278,24 +368,21 @@ internal static class BiomeTransitionGenerator
 
 	internal static int BoundaryColumn(Rectangle area, int centerX, int depth, int seed)
 	{
-		int depthBand = depth / 4;
-		int profile = depthBand % 10 switch {
-			0 => -100,
-			1 => -35,
-			2 => 70,
-			3 => -80,
-			4 => 100,
-			5 => 15,
-			6 => -60,
-			7 => 65,
-			8 => 90,
-			_ => -20
-		};
-		int amplitude = Math.Clamp(area.Width / 7, 8, 14);
-		int steppedOffset = profile * amplitude / 100;
-		int waveOffset = (int)Math.Round(Math.Sin((depth + centerX % 19) * 0.37d) * area.Width * 0.035d);
-		int seedOffset = HashNoise(centerX + depthBand * 977, seed) % 5 - 2;
-		return Math.Clamp(centerX + steppedOffset + waveOffset + seedOffset, area.Left + 7, area.Right - 8);
+		int amplitude = Math.Clamp(area.Width / 4, 17, 30);
+		int profile = OrganicBoundary.Profile(
+			depth + centerX % 23,
+			seed ^ centerX,
+			29,
+			7,
+			amplitude,
+			Math.Max(5, amplitude / 3));
+		int warp = (int)Math.Round((OrganicBoundary.Field(
+			centerX,
+			depth,
+			seed ^ 0x424F_554E,
+			31,
+			9) - 0.5d) * area.Width * 0.18d);
+		return Math.Clamp(centerX + profile + warp, area.Left + 8, area.Right - 9);
 	}
 
 	internal static bool IsFeatureOwned(GenerationManifest manifest, int x, int y)
@@ -322,14 +409,23 @@ internal static class BiomeTransitionGenerator
 		or TileID.Mud or TileID.JungleGrass or TileID.CorruptJungleGrass or TileID.CrimsonJungleGrass
 		or TileID.Ebonstone or TileID.Crimstone or TileID.Ebonsand or TileID.Crimsand;
 
-	private static ushort MaterialFor(BiomeKind biome, int depth) => biome switch {
-		BiomeKind.Snow => depth < 8 ? TileID.SnowBlock : depth < 24 ? TileID.IceBlock : TileID.Stone,
-		BiomeKind.Desert => depth < 7 ? TileID.Sand : depth < 22 ? TileID.HardenedSand : TileID.Sandstone,
-		BiomeKind.Jungle => depth == 0 ? TileID.JungleGrass : depth < 24 ? TileID.Mud : TileID.Stone,
+	private static ushort MaterialFor(BiomeKind biome, int x, int y, int depth, int seed)
+	{
+		int shallowJitter = OrganicBoundary.Profile(x, seed ^ (int)biome * 193, 37, 9, 5, 3);
+		int deepJitter = OrganicBoundary.Profile(x, seed ^ (int)biome * 389 ^ 0x4445_4550, 53, 13, 8, 3);
+		if (OrganicBoundary.Field(x, y, seed ^ (int)biome * 769, 19, 6) is < 0.24d or > 0.78d) {
+			shallowJitter += depth % 2 == 0 ? 1 : -1;
+		}
+
+		return biome switch {
+		BiomeKind.Snow => depth < 8 + shallowJitter ? TileID.SnowBlock : depth < 24 + deepJitter ? TileID.IceBlock : TileID.Stone,
+		BiomeKind.Desert => depth < 7 + shallowJitter ? TileID.Sand : depth < 22 + deepJitter ? TileID.HardenedSand : TileID.Sandstone,
+		BiomeKind.Jungle => depth == 0 ? TileID.JungleGrass : depth < 24 + deepJitter ? TileID.Mud : TileID.Stone,
 		BiomeKind.Evil when WorldGen.crimson => depth == 0 ? TileID.CrimsonGrass : TileID.Crimstone,
 		BiomeKind.Evil => depth == 0 ? TileID.CorruptGrass : TileID.Ebonstone,
-		_ => depth == 0 ? TileID.Grass : depth < 14 ? TileID.Dirt : TileID.Stone
-	};
+		_ => depth == 0 ? TileID.Grass : depth < 14 + deepJitter ? TileID.Dirt : TileID.Stone
+		};
+	}
 
 	private static ushort WallFor(BiomeKind biome) => biome switch {
 		BiomeKind.Snow => WallID.SnowWallUnsafe,
@@ -338,6 +434,97 @@ internal static class BiomeTransitionGenerator
 		BiomeKind.Evil => WorldGen.crimson ? WallID.CrimstoneUnsafe : WallID.EbonstoneUnsafe,
 		_ => WallID.DirtUnsafe
 	};
+
+	private static void BreakLongWallSeams(Rectangle area, GenerationManifest manifest, int seed)
+	{
+		for (int x = area.Left - 1; x < area.Right; x++) {
+			int runStart = -1;
+			for (int y = area.Top; y <= area.Bottom; y++) {
+				bool boundary = y < area.Bottom
+					&& IsTransitionWallCell(manifest, x, y)
+					&& IsTransitionWallCell(manifest, x + 1, y)
+					&& Main.tile[x, y].WallType != Main.tile[x + 1, y].WallType;
+				if (boundary && runStart < 0) {
+					runStart = y;
+				}
+				if (boundary) {
+					continue;
+				}
+				if (runStart >= 0 && y - runStart > 18) {
+					for (int seamY = runStart; seamY < y; seamY++) {
+						ushort leftWall = Main.tile[x, seamY].WallType;
+						ushort rightWall = Main.tile[x + 1, seamY].WallType;
+						int push = OrganicBoundary.Profile(seamY, seed ^ x ^ 0x5653_454D, 17, 5, 4, 2);
+						if (x < area.Left) {
+							push = 1 + Math.Abs(push);
+						}
+						else if (x >= area.Right - 1) {
+							push = -1 - Math.Abs(push);
+						}
+						int reach = 1 + Math.Min(5, Math.Abs(push));
+						for (int offset = 0; offset < reach; offset++) {
+							int targetX = push >= 0 ? x + 1 + offset : x - offset;
+							if (targetX >= area.Left && targetX < area.Right
+								&& IsTransitionWallCell(manifest, targetX, seamY)) {
+								TileEditor.SetWall(targetX, seamY, push >= 0 ? leftWall : rightWall);
+							}
+						}
+					}
+				}
+				runStart = -1;
+			}
+		}
+
+		for (int y = area.Top - 1; y < area.Bottom; y++) {
+			int runStart = -1;
+			for (int x = area.Left; x <= area.Right; x++) {
+				bool boundary = x < area.Right
+					&& IsTransitionWallCell(manifest, x, y)
+					&& IsTransitionWallCell(manifest, x, y + 1)
+					&& Main.tile[x, y].WallType != Main.tile[x, y + 1].WallType;
+				if (boundary && runStart < 0) {
+					runStart = x;
+				}
+				if (boundary) {
+					continue;
+				}
+				if (runStart >= 0 && x - runStart > 18) {
+					for (int seamX = runStart; seamX < x; seamX++) {
+						ushort upperWall = Main.tile[seamX, y].WallType;
+						ushort lowerWall = Main.tile[seamX, y + 1].WallType;
+						int push = OrganicBoundary.Profile(seamX, seed ^ y ^ 0x4853_454D, 19, 5, 4, 2);
+						if (y < area.Top) {
+							push = 1 + Math.Abs(push);
+						}
+						else if (y >= area.Bottom - 1) {
+							push = -1 - Math.Abs(push);
+						}
+						int reach = 1 + Math.Min(5, Math.Abs(push));
+						for (int offset = 0; offset < reach; offset++) {
+							int targetY = push >= 0 ? y + 1 + offset : y - offset;
+							if (targetY >= area.Top && targetY < area.Bottom
+								&& IsTransitionWallCell(manifest, seamX, targetY)) {
+								TileEditor.SetWall(seamX, targetY, push >= 0 ? upperWall : lowerWall);
+							}
+						}
+					}
+				}
+				runStart = -1;
+			}
+		}
+	}
+
+	private static bool IsTransitionWallCell(GenerationManifest manifest, int x, int y)
+	{
+		if (IsFeatureOwned(manifest, x, y)) {
+			return false;
+		}
+		return IsTransitionWallType(Main.tile[x, y].WallType);
+	}
+
+	private static bool IsTransitionWallType(ushort wallType) => wallType is
+		WallID.DirtUnsafe or WallID.Stone or WallID.SnowWallUnsafe or WallID.JungleUnsafe
+		or WallID.Sandstone or WallID.EbonstoneUnsafe or WallID.CrimstoneUnsafe;
 
 	private static BiomeKind ClassifyMaterial(Tile tile)
 	{
@@ -358,21 +545,6 @@ internal static class BiomeTransitionGenerator
 		return BiomeKind.Forest;
 	}
 
-	private static double SampleNoise(int x, int y, int salt)
-	{
-		const int cellWidth = 11;
-		const int cellHeight = 8;
-		int cellX = x / cellWidth;
-		int cellY = y / cellHeight;
-		double localX = Smooth((double)(x % cellWidth) / cellWidth);
-		double localY = Smooth((double)(y % cellHeight) / cellHeight);
-		double top = Lerp(Noise01(cellX, cellY, salt), Noise01(cellX + 1, cellY, salt), localX);
-		double bottom = Lerp(Noise01(cellX, cellY + 1, salt), Noise01(cellX + 1, cellY + 1, salt), localX);
-		return Lerp(top, bottom, localY);
-	}
-
-	private static double Noise01(int x, int y, int salt) => HashNoise(x * 193 + y * 389, salt) / (double)int.MaxValue;
-
 	private static int HashNoise(int value, int salt)
 	{
 		unchecked {
@@ -383,10 +555,6 @@ internal static class BiomeTransitionGenerator
 			return (int)(hash & 0x7FFFFFFF);
 		}
 	}
-
-	private static double Smooth(double value) => value * value * (3d - 2d * value);
-
-	private static double Lerp(double left, double right, double amount) => left + (right - left) * amount;
 
 	private readonly record struct BiomeRun(BiomeKind Biome, int Left, int Right)
 	{

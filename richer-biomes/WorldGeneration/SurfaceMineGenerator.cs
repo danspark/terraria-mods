@@ -629,16 +629,15 @@ internal static class SurfaceMineGenerator
 
 		Rectangle area = section.Area;
 		int shell = section.Kind == MineSectionKind.SealedEvil ? 5 : 2;
-		int radiusX = area.Width / 2 - 2;
-		int radiusY = area.Height / 2 - 2;
 		for (int x = area.Left + 1; x < area.Right - 1; x++) {
-			int offsetX = x - area.Center.X;
-			double normalizedX = (double)offsetX / Math.Max(1, radiusX);
-			int halfHeight = Math.Max(3, (int)Math.Round(radiusY * Math.Sqrt(Math.Max(0d, 1d - normalizedX * normalizedX))));
-			int topJitter = Noise(section.Id, x, 17) % 5 - 2;
-			int bottomJitter = Noise(section.Id, x, 43) % 5 - 2;
-			int outerTop = area.Center.Y - halfHeight + topJitter;
-			int outerBottom = area.Center.Y + halfHeight + bottomJitter;
+			SectionVerticalBounds(
+				section,
+				x,
+				shell,
+				out int outerTop,
+				out int outerBottom,
+				out int innerTop,
+				out int innerBottom);
 			for (int y = outerTop; y <= outerBottom; y++) {
 				TileEditor.SetTerrain(x, y, section.Kind == MineSectionKind.SealedEvil ? TileID.GrayBrick : palette.Masonry);
 				if (section.Kind == MineSectionKind.SealedEvil) {
@@ -646,9 +645,6 @@ internal static class SurfaceMineGenerator
 				}
 			}
 
-			int localShell = shell + Noise(section.Id, x, 71) % 2;
-			int innerTop = outerTop + localShell;
-			int innerBottom = outerBottom - localShell;
 			for (int y = innerTop; y <= innerBottom; y++) {
 				TileEditor.ClearTerrain(x, y);
 				TileEditor.SetWall(x, y, SelectSectionWall(section, palette, x, y));
@@ -715,7 +711,7 @@ internal static class SurfaceMineGenerator
 		for (int x = area.Left; x < area.Right; x++) {
 			for (int y = area.Top; y < floorY; y++) {
 				TileEditor.ClearTerrain(x, y);
-				if (x > area.Center.X + 5 && x < area.Right - 3 && y > floorY - 10) {
+				if (IsInsideWorkyardWall(section, x, y)) {
 					TileEditor.SetWall(x, y, palette.PrimaryWall);
 				}
 			}
@@ -749,18 +745,23 @@ internal static class SurfaceMineGenerator
 	{
 		int index = 0;
 		foreach (Point point in RasterizeCenterline(route)) {
-			MinePalette palette = ResolvePalette(plan.ThemeAt(point));
 			int ceilingExtra = SampleCeilingExtra(route, index);
 			int horizontalRadius = ceilingExtra >= 3 ? 3 : 2;
 			for (int offsetX = -horizontalRadius; offsetX <= horizontalRadius; offsetX++) {
 				int archLift = Math.Max(0, horizontalRadius - Math.Abs(offsetX)) / 2;
 				int ceilingHeight = CorridorHeadroom + 1 + ceilingExtra + archLift;
 				for (int offsetY = -ceilingHeight; offsetY <= 0; offsetY++) {
-					TileEditor.ClearTerrain(point.X + offsetX, point.Y + offsetY);
-					TileEditor.SetWall(point.X + offsetX, point.Y + offsetY, palette.PrimaryWall);
+					int x = point.X + offsetX;
+					int y = point.Y + offsetY;
+					MinePalette palette = ResolveRoutePalette(plan, route, index, x, y);
+					TileEditor.ClearTerrain(x, y);
+					TileEditor.SetWall(x, y, palette.PrimaryWall);
 				}
 				for (int depth = 1; depth <= 3; depth++) {
-					TileEditor.SetTerrain(point.X + offsetX, point.Y + depth, palette.Masonry);
+					int x = point.X + offsetX;
+					int y = point.Y + depth;
+					MinePalette palette = ResolveRoutePalette(plan, route, index, x, y);
+					TileEditor.SetTerrain(x, y, palette.Masonry);
 				}
 			}
 
@@ -779,11 +780,11 @@ internal static class SurfaceMineGenerator
 			index <= route.JumpStartIndex + route.JumpGapLength;
 			index++) {
 			Point point = route.Centerline[index];
-			MinePalette palette = ResolvePalette(plan.ThemeAt(point));
 			for (int offsetX = -2; offsetX <= 2; offsetX++) {
 				for (int offsetY = -5; offsetY <= 4; offsetY++) {
 					int x = point.X + offsetX;
 					int y = point.Y + offsetY;
+					MinePalette palette = ResolveRoutePalette(plan, route, index, x, y);
 					TileEditor.ClearTerrain(x, y);
 					TileEditor.SetWall(x, y, palette.PrimaryWall);
 				}
@@ -887,9 +888,9 @@ internal static class SurfaceMineGenerator
 			MinePalette palette = ResolvePalette(section.Theme);
 			if (section.Kind == MineSectionKind.Workyard) {
 				int floorY = section.Center.Y + 1;
-				for (int x = section.Center.X + 6; x < section.Area.Right - 3; x++) {
-					for (int y = Math.Max(section.Area.Top, floorY - 10); y < floorY; y++) {
-						if (!TileEditor.IsSolid(x, y)) {
+				for (int x = section.Area.Left; x < section.Area.Right; x++) {
+					for (int y = Math.Max(section.Area.Top, floorY - 14); y < floorY; y++) {
+						if (IsInsideWorkyardWall(section, x, y) && !TileEditor.IsSolid(x, y)) {
 							TileEditor.SetWall(x, y, palette.PrimaryWall);
 						}
 					}
@@ -897,15 +898,16 @@ internal static class SurfaceMineGenerator
 				continue;
 			}
 
-			int radiusX = section.Area.Width / 2 - 2;
-			int radiusY = section.Area.Height / 2 - 2;
 			int shell = 2;
 			for (int x = section.Area.Left + 1; x < section.Area.Right - 1; x++) {
-				int offsetX = x - section.Area.Center.X;
-				double normalizedX = offsetX / (double)Math.Max(1, radiusX);
-				int halfHeight = Math.Max(3, (int)Math.Round(radiusY * Math.Sqrt(Math.Max(0d, 1d - normalizedX * normalizedX))));
-				int innerTop = section.Area.Center.Y - halfHeight + Noise(section.Id, x, 17) % 5 - 2 + shell;
-				int innerBottom = section.Area.Center.Y + halfHeight + Noise(section.Id, x, 43) % 5 - 2 - shell;
+				SectionVerticalBounds(
+					section,
+					x,
+					shell,
+					out _,
+					out _,
+					out int innerTop,
+					out int innerBottom);
 				for (int y = innerTop; y <= innerBottom; y++) {
 					if (!TileEditor.IsSolid(x, y) && Main.tile[x, y].WallType != WallID.GrayBrick) {
 						TileEditor.SetWall(x, y, SelectSectionWall(section, palette, x, y));
@@ -917,7 +919,6 @@ internal static class SurfaceMineGenerator
 		foreach (MineRoute route in plan.Routes) {
 			for (int index = 0; index < route.Centerline.Count; index++) {
 				Point point = route.Centerline[index];
-				MinePalette palette = ResolvePalette(plan.ThemeAt(point));
 				int ceilingExtra = SampleCeilingExtra(route, index);
 				int horizontalRadius = ceilingExtra >= 3 ? 3 : 2;
 				for (int offsetX = -horizontalRadius; offsetX <= horizontalRadius; offsetX++) {
@@ -927,6 +928,7 @@ internal static class SurfaceMineGenerator
 						int x = point.X + offsetX;
 						int y = point.Y + offsetY;
 						if (!TileEditor.IsSolid(x, y) && Main.tile[x, y].WallType != WallID.GrayBrick) {
+							MinePalette palette = ResolveRoutePalette(plan, route, index, x, y);
 							TileEditor.SetWall(x, y, palette.PrimaryWall);
 						}
 					}
@@ -1456,19 +1458,114 @@ internal static class SurfaceMineGenerator
 	private static ushort SelectSectionWall(MineSection section, MinePalette palette, int x, int y)
 	{
 		int motif = Noise(section.Id, section.Center.X, 0x5741_4C4C) % 4;
-		int horizontal = x - section.Center.X;
-		int vertical = y - section.Center.Y;
+		int seed = section.Id * 193 ^ section.Center.X ^ section.Center.Y * 31;
+		int horizontal = x - section.Center.X + OrganicBoundary.Profile(
+			y,
+			seed ^ 0x4857_4152,
+			17,
+			5,
+			5,
+			2);
+		int vertical = y - section.Center.Y + OrganicBoundary.Profile(
+			x,
+			seed ^ 0x5657_4152,
+			23,
+			7,
+			4,
+			2);
+		double field = OrganicBoundary.Field(x, y, seed ^ 0x5041_5443, 17, 5);
 		bool accent = motif switch {
-			0 => vertical > section.Area.Height / 8
-				&& Noise(section.Id, x / 6, 0x4C4F_5742) % 5 != 0,
+			0 => vertical > section.Area.Height / 8 && field > 0.33d,
 			1 => horizontal < -section.Area.Width / 6
-				&& Math.Abs(vertical) < section.Area.Height / 3,
+				&& Math.Abs(vertical) < section.Area.Height / 3 && field > 0.38d,
 			2 => Math.Abs(horizontal) < section.Area.Width / 5
-				&& Math.Abs(vertical) < section.Area.Height / 4,
+				&& Math.Abs(vertical) < section.Area.Height / 4 && field > 0.36d,
 			_ => (long)horizontal * horizontal * 9 + (long)vertical * vertical * 16
-				< (long)section.Area.Width * section.Area.Width
+				< (long)section.Area.Width * section.Area.Width * (field > 0.42d ? 1 : 0)
 		};
 		return accent ? palette.SecondaryWall : palette.PrimaryWall;
+	}
+
+	private static void SectionVerticalBounds(
+		MineSection section,
+		int x,
+		int shell,
+		out int outerTop,
+		out int outerBottom,
+		out int innerTop,
+		out int innerBottom)
+	{
+		int radiusX = section.Area.Width / 2 - 2;
+		int radiusY = section.Area.Height / 2 - 2;
+		int offsetX = x - section.Area.Center.X;
+		double normalizedX = offsetX / (double)Math.Max(1, radiusX);
+		int halfHeight = Math.Max(3, (int)Math.Round(radiusY * Math.Sqrt(Math.Max(0d, 1d - normalizedX * normalizedX))));
+		int seed = section.Id * 193 ^ section.Center.X ^ section.Center.Y * 31;
+		int topJitter = OrganicBoundary.Profile(x, seed ^ 0x544F_5059, 31, 7, 4, 2);
+		int bottomJitter = OrganicBoundary.Profile(x, seed ^ 0x424F_5459, 37, 9, 4, 2);
+		outerTop = section.Area.Center.Y - halfHeight + topJitter;
+		outerBottom = section.Area.Center.Y + halfHeight + bottomJitter;
+		int shellJitter = OrganicBoundary.Profile(x, seed ^ 0x5348_454C, 19, 7, 1, 1);
+		int localShell = Math.Clamp(shell + shellJitter, Math.Max(1, shell - 1), shell + 2);
+		innerTop = outerTop + localShell;
+		innerBottom = outerBottom - localShell;
+	}
+
+	internal static bool IsInsideSectionInterior(MineSection section, int x, int y)
+	{
+		if (section.Kind == MineSectionKind.Workyard
+			|| x <= section.Area.Left || x >= section.Area.Right - 1) {
+			return false;
+		}
+		int shell = section.Kind == MineSectionKind.SealedEvil ? 5 : 2;
+		SectionVerticalBounds(section, x, shell, out _, out _, out int innerTop, out int innerBottom);
+		return y >= innerTop && y <= innerBottom;
+	}
+
+	private static bool IsInsideWorkyardWall(MineSection section, int x, int y)
+	{
+		int floorY = section.Center.Y + 1;
+		int seed = section.Id * 193 ^ section.Center.X ^ section.Center.Y * 31;
+		int leftBoundary = section.Center.X + 5 + OrganicBoundary.Profile(
+			y,
+			seed ^ 0x574C_4546,
+			13,
+			4,
+			4,
+			1);
+		int topBoundary = floorY - 10 + OrganicBoundary.Profile(
+			x,
+			seed ^ 0x5754_4F50,
+			19,
+			5,
+			3,
+			1);
+		return x > leftBoundary && x < section.Area.Right - 3 && y > topBoundary && y < floorY;
+	}
+
+	private static MinePalette ResolveRoutePalette(
+		SurfaceMinePlan plan,
+		MineRoute route,
+		int centerlineIndex,
+		int x,
+		int y)
+	{
+		int shift = OrganicBoundary.Profile(
+			y,
+			route.VariationSeed ^ 0x5254_4859,
+			19,
+			5,
+			5,
+			2);
+		shift += OrganicBoundary.Profile(
+			x,
+			route.VariationSeed ^ 0x5254_4858,
+			31,
+			7,
+			2,
+			1);
+		int probeIndex = Math.Clamp(centerlineIndex + shift, 0, route.Centerline.Count - 1);
+		return ResolvePalette(plan.ThemeAt(route.Centerline[probeIndex]));
 	}
 
 	internal static bool IsBiomeWall(BiomeKind biome, ushort wallType)

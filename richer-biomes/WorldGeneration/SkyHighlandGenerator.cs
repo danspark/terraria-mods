@@ -45,8 +45,7 @@ internal static class SkyHighlandGenerator
 			int rimY = highland.SurfaceY + 4;
 			int liquidCells = 0;
 			for (int x = centerX - halfWidth; x <= centerX + halfWidth; x++) {
-				double t = (double)(x - centerX + halfWidth) / (halfWidth * 2);
-				int floorY = rimY + 7 + (int)Math.Round(Math.Sin(Math.PI * t) * 11d);
+				int floorY = SkyLakeFloorY(x, centerX, halfWidth, rimY, highland.CenterX);
 				for (int y = rimY; y < floorY; y++) {
 					TileEditor.ClearTerrain(x, y);
 					if (y >= rimY + 3) {
@@ -145,6 +144,112 @@ internal static class SkyHighlandGenerator
 		}
 	}
 
+	public static void RepairOrganicMaterialSeams(WorldPlan worldPlan, GenerationManifest manifest)
+	{
+		foreach (SkyHighlandPlan plan in worldPlan.SkyHighlands) {
+			int left = Math.Clamp(plan.CenterX - plan.Width / 2, 55, Main.maxTilesX - plan.Width - 55);
+			Rectangle materialBand = new(
+				left - 20,
+				Math.Max(45, plan.SurfaceY - 8),
+				plan.Width + 40,
+				42);
+			BreakLongMaterialSeams(materialBand, manifest, plan.CenterX);
+			TileEditor.Frame(materialBand, border: 2);
+		}
+	}
+
+	private static void BreakLongMaterialSeams(Rectangle area, GenerationManifest manifest, int seed)
+	{
+		for (int x = area.Left + 2; x < area.Right - 3; x++) {
+			int runStart = -1;
+			for (int y = area.Top + 2; y <= area.Bottom - 2; y++) {
+				bool boundary = y < area.Bottom - 2
+					&& IsHighlandMaterialCell(manifest, x, y)
+					&& IsHighlandMaterialCell(manifest, x + 1, y)
+					&& HighlandMaterialFamily(Main.tile[x, y].TileType) != HighlandMaterialFamily(Main.tile[x + 1, y].TileType);
+				if (boundary && runStart < 0) {
+					runStart = y;
+				}
+				if (boundary) {
+					continue;
+				}
+				if (runStart >= 0 && y - runStart > 18) {
+					for (int seamY = runStart; seamY < y; seamY++) {
+						ushort leftTile = Main.tile[x, seamY].TileType;
+						ushort rightTile = Main.tile[x + 1, seamY].TileType;
+						int push = OrganicBoundary.Profile(seamY, seed ^ x ^ 0x5356_4552, 17, 5, 4, 2);
+						int reach = 1 + Math.Min(5, Math.Abs(push));
+						for (int offset = 0; offset < reach; offset++) {
+							int targetX = push >= 0 ? x + 1 + offset : x - offset;
+							if (targetX > area.Left && targetX < area.Right - 1
+								&& IsHighlandMaterialCell(manifest, targetX, seamY)) {
+								SetHighlandMaterial(targetX, seamY, push >= 0 ? leftTile : rightTile);
+							}
+						}
+					}
+				}
+				runStart = -1;
+			}
+		}
+
+		for (int y = area.Top + 2; y < area.Bottom - 3; y++) {
+			int runStart = -1;
+			for (int x = area.Left + 2; x <= area.Right - 2; x++) {
+				bool boundary = x < area.Right - 2
+					&& IsHighlandMaterialCell(manifest, x, y)
+					&& IsHighlandMaterialCell(manifest, x, y + 1)
+					&& HighlandMaterialFamily(Main.tile[x, y].TileType) != HighlandMaterialFamily(Main.tile[x, y + 1].TileType);
+				if (boundary && runStart < 0) {
+					runStart = x;
+				}
+				if (boundary) {
+					continue;
+				}
+				if (runStart >= 0 && x - runStart > 18) {
+					for (int seamX = runStart; seamX < x; seamX++) {
+						ushort upperTile = Main.tile[seamX, y].TileType;
+						ushort lowerTile = Main.tile[seamX, y + 1].TileType;
+						int push = OrganicBoundary.Profile(seamX, seed ^ y ^ 0x5348_4F52, 19, 5, 4, 2);
+						int reach = 1 + Math.Min(5, Math.Abs(push));
+						for (int offset = 0; offset < reach; offset++) {
+							int targetY = push >= 0 ? y + 1 + offset : y - offset;
+							if (targetY > area.Top && targetY < area.Bottom - 1
+								&& IsHighlandMaterialCell(manifest, seamX, targetY)) {
+								SetHighlandMaterial(seamX, targetY, push >= 0 ? upperTile : lowerTile);
+							}
+						}
+					}
+				}
+				runStart = -1;
+			}
+		}
+	}
+
+	private static bool IsHighlandMaterialCell(GenerationManifest manifest, int x, int y) =>
+		WorldGen.InWorld(x, y, 4)
+		&& !IsVerticalRouteExcluded(manifest, x, y)
+		&& !TileEditor.IsProtectedTile(Main.tile[x, y])
+		&& HighlandMaterialFamily(Main.tile[x, y].TileType) != 0;
+
+	private static int HighlandMaterialFamily(ushort tileType) => tileType switch {
+		TileID.Grass or TileID.Dirt => 1,
+		TileID.Sunplate => 2,
+		TileID.Cloud => 3,
+		TileID.RainCloud or TileID.SnowCloud => 4,
+		_ => 0
+	};
+
+	private static void SetHighlandMaterial(int x, int y, ushort tileType)
+	{
+		Tile tile = Main.tile[x, y];
+		SlopeType slope = tile.Slope;
+		bool halfBlock = tile.IsHalfBlock;
+		TileEditor.SetTerrain(x, y, tileType);
+		Tile replacement = Main.tile[x, y];
+		replacement.Slope = slope;
+		replacement.IsHalfBlock = halfBlock;
+	}
+
 	private static bool IsVerticalRouteExcluded(GenerationManifest manifest, int x, int y)
 	{
 		Point point = new(x, y);
@@ -184,9 +289,28 @@ internal static class SkyHighlandGenerator
 		int bottom = Math.Min((int)Main.worldSurface - 12, plan.SurfaceY + plan.Depth);
 
 		for (int x = left; x <= right; x++) {
-			double t = (double)(x - left) / Math.Max(1, plan.Width - 1);
-			double taper = Math.Sin(Math.PI * t);
-			int columnBottom = surface[x - left] + Math.Max(8, (int)Math.Round((bottom - surface[x - left]) * taper));
+			int columnBottom = SkyBodyBottom(plan, left, x, surface[x - left], bottom);
+			int soilDepth = Math.Max(3, 6 + OrganicBoundary.Profile(
+				x,
+				plan.CenterX ^ 0x534B_5953,
+				37,
+				9,
+				4,
+				2));
+			int cloudDepth = Math.Max(soilDepth + 2, 11 + OrganicBoundary.Profile(
+				x,
+				plan.CenterX ^ 0x534B_5943,
+				53,
+				13,
+				7,
+				3));
+			int keelThickness = Math.Clamp(7 + OrganicBoundary.Profile(
+				x,
+				plan.CenterX ^ 0x4B45_454C,
+				31,
+				7,
+				3,
+				1), 4, 11);
 			for (int y = surface[x - left]; y <= columnBottom; y++) {
 				if (!CanReplace(x, y)) {
 					continue;
@@ -198,13 +322,15 @@ internal static class SkyHighlandGenerator
 					material = TileID.Grass;
 					walkableSurfaceTiles++;
 				}
-				else if (depth < 6) {
+				else if (depth < soilDepth) {
 					material = TileID.Dirt;
 				}
-				else if (depth < 11) {
-					material = depth == 10 && SampleSkyNoise(x, y, plan.CenterX) > 0.62d ? TileID.Sunplate : TileID.Dirt;
+				else if (depth < cloudDepth) {
+					material = OrganicBoundary.Field(x, y, plan.CenterX ^ 0x5355_4E50, 17, 5) > 0.64d
+						? TileID.Sunplate
+						: TileID.Dirt;
 				}
-				else if (y >= columnBottom - 7) {
+				else if (y >= columnBottom - keelThickness) {
 					material = SampleSkyNoise(x, y, plan.CenterX + 193) < 0.28d ? TileID.RainCloud : TileID.Cloud;
 					cloudTiles++;
 				}
@@ -475,8 +601,7 @@ internal static class SkyHighlandGenerator
 		int rimY = surface[centerX - left] + 1;
 		int liquidCells = 0;
 		for (int x = centerX - halfWidth; x <= centerX + halfWidth; x++) {
-			double t = (double)(x - centerX + halfWidth) / (halfWidth * 2);
-			int floorY = rimY + 4 + (int)Math.Round(Math.Sin(Math.PI * t) * 10d);
+			int floorY = SkyLakeFloorY(x, centerX, halfWidth, rimY, plan.CenterX);
 			for (int y = rimY; y < floorY; y++) {
 				TileEditor.ClearTerrain(x, y);
 				if (y >= rimY + 3) {
@@ -488,6 +613,19 @@ internal static class SkyHighlandGenerator
 			TileEditor.SetTerrain(x, floorY + 1, TileID.Cloud);
 		}
 		return liquidCells;
+	}
+
+	private static int SkyLakeFloorY(int x, int centerX, int halfWidth, int rimY, int seed)
+	{
+		double t = (double)(x - centerX + halfWidth) / Math.Max(1, halfWidth * 2);
+		int irregularFloor = OrganicBoundary.Profile(
+			x,
+			seed ^ centerX ^ 0x4C41_4B45,
+			17,
+			5,
+			3,
+			1);
+		return rimY + 6 + (int)Math.Round(Math.Sin(Math.PI * t) * 10d) + irregularFloor;
 	}
 
 	private static int BuildSatellites(SkyHighlandPlan plan, int left, int right, UnifiedRandom random)
@@ -511,13 +649,33 @@ internal static class SkyHighlandGenerator
 					double normalized =
 						(double)(offsetX * offsetX) / (horizontalRadius * horizontalRadius)
 						+ (double)(offsetY * offsetY) / (verticalRadius * verticalRadius);
-					if (normalized > 1d || !CanReplace(centerX + offsetX, centerY + offsetY)) {
+					double edgeJitter = (OrganicBoundary.Field(
+						centerX + offsetX,
+						centerY + offsetY,
+						plan.CenterX ^ index * 0x45D9_F3B,
+						17,
+						5) - 0.5d) * 0.32d;
+					if (normalized > 1d + edgeJitter || !CanReplace(centerX + offsetX, centerY + offsetY)) {
 						continue;
 					}
-					int capY = -verticalRadius + 4 + Math.Abs(offsetX) / Math.Max(6, horizontalRadius / 5);
+					int capY = -verticalRadius + 4 + Math.Abs(offsetX) / Math.Max(6, horizontalRadius / 5)
+						+ OrganicBoundary.Profile(
+							offsetX,
+							plan.CenterX ^ centerX ^ 0x4341_5059,
+							19,
+							5,
+							3,
+							1);
+					int cloudBoundary = -verticalRadius / 4 + OrganicBoundary.Profile(
+						offsetX,
+						plan.CenterX ^ centerY ^ 0x434C_4F55,
+						23,
+						7,
+						4,
+						2);
 					ushort tile = offsetY <= capY
 						? (offsetY == capY ? TileID.Grass : TileID.Dirt)
-						: offsetY < -verticalRadius / 4 ? TileID.Sunplate : TileID.Cloud;
+						: offsetY < cloudBoundary ? TileID.Sunplate : TileID.Cloud;
 					TileEditor.SetTerrain(centerX + offsetX, centerY + offsetY, tile);
 					if (tile == TileID.Cloud) {
 						cloudTiles++;
@@ -537,8 +695,15 @@ internal static class SkyHighlandGenerator
 				for (int y = topY - 5; y < topY; y++) {
 					TileEditor.ClearTerrain(x, y);
 				}
+				int dirtDepth = Math.Clamp(3 + OrganicBoundary.Profile(
+					step,
+					plan.CenterX ^ index * unchecked((int)0x9E37_79B9u) ^ 0x4341_5553,
+					31,
+					7,
+					2,
+					1), 2, 5);
 				for (int depth = 0; depth < 6; depth++) {
-					TileEditor.SetTerrain(x, topY + depth, depth == 0 ? TileID.Grass : depth < 3 ? TileID.Dirt : TileID.Cloud);
+					TileEditor.SetTerrain(x, topY + depth, depth == 0 ? TileID.Grass : depth < dirtDepth ? TileID.Dirt : TileID.Cloud);
 				}
 			}
 		}
@@ -558,11 +723,24 @@ internal static class SkyHighlandGenerator
 				if (surfaceY > skyLine + 28) {
 					continue;
 				}
-				int edgeWave = Math.Abs((x * 17 + mountain.RegionId * 31) % 7 - 3);
-				int depth = 5 + edgeWave;
+				int depth = Math.Clamp(
+					7 + OrganicBoundary.Profile(
+						x,
+						mountain.FeatureSeed ^ 0x434C_4F55,
+						37,
+						9,
+						5,
+						2),
+					3,
+					13);
 				for (int y = surfaceY + 1; y <= surfaceY + depth; y++) {
 					if (CanReplace(x, y)) {
-						TileEditor.SetTerrain(x, y, (x + y) % 7 == 0 ? TileID.RainCloud : TileID.Cloud);
+						TileEditor.SetTerrain(
+							x,
+							y,
+							OrganicBoundary.Field(x, y, mountain.FeatureSeed ^ 0x5241_494E, 17, 5) > 0.73d
+								? TileID.RainCloud
+								: TileID.Cloud);
 					}
 				}
 			}
@@ -582,8 +760,7 @@ internal static class SkyHighlandGenerator
 		int bottom = Math.Min((int)Main.worldSurface - 12, plan.SurfaceY + plan.Depth);
 		int stone = 0;
 		for (int x = left; x <= right; x++) {
-			double t = (double)(x - left) / Math.Max(1, plan.Width - 1);
-			int columnBottom = surface[x - left] + Math.Max(8, (int)Math.Round((bottom - surface[x - left]) * Math.Sin(Math.PI * t)));
+			int columnBottom = SkyBodyBottom(plan, left, x, surface[x - left], bottom);
 			for (int y = surface[x - left]; y <= columnBottom; y++) {
 				if (Main.tile[x, y].HasTile && Main.tile[x, y].TileType == TileID.Stone) {
 					stone++;
@@ -591,6 +768,20 @@ internal static class SkyHighlandGenerator
 			}
 		}
 		return stone;
+	}
+
+	private static int SkyBodyBottom(SkyHighlandPlan plan, int left, int x, int surfaceY, int bottom)
+	{
+		double t = (double)(x - left) / Math.Max(1, plan.Width - 1);
+		double taper = Math.Sin(Math.PI * t);
+		int bottomJitter = OrganicBoundary.Profile(
+			x,
+			plan.CenterX ^ 0x534B_5942,
+			43,
+			11,
+			8,
+			3);
+		return surfaceY + Math.Max(8, (int)Math.Round((bottom - surfaceY) * taper) + bottomJitter);
 	}
 
 	private static double SampleSkyNoise(int x, int y, int salt)

@@ -31,21 +31,35 @@ internal static class LandformGenerator
 				int currentY = BiomeClassifier.TryFindGroundSupport(x, out int supportY)
 					? supportY
 					: WorldPlanner.FindSurfaceY(x);
-				ushort surfaceMaterial = FindStableMountainMaterial(x, currentY);
 				for (int y = Math.Max(40, targetY - 10); y < targetY; y++) {
 					if (!TileEditor.IsProgressionTile(Main.tile[x, y])) {
 						TileEditor.ClearTerrain(x, y, clearWall: true);
 					}
 				}
-				int fillBottom = Math.Max(currentY + 8, (int)Main.worldSurface + 45);
+				int originalJoin = currentY + 8 + OrganicBoundary.Profile(
+					x,
+					mountain.FeatureSeed ^ 0x4F52_4947,
+					41,
+					9,
+					10,
+					4);
+				int fillBottom = Math.Max(
+					originalJoin,
+					(int)Main.worldSurface + 45 + OrganicBoundary.Profile(
+						x,
+						mountain.FeatureSeed ^ 0x424F_5454,
+						47,
+						11,
+						12,
+						4));
 				for (int y = targetY; y <= Math.Min(Main.maxTilesY - 220, fillBottom); y++) {
 					if (TileEditor.IsProgressionTile(Main.tile[x, y])) {
 						continue;
 					}
 					int depth = y - targetY;
-					TileEditor.SetTerrain(x, y, SelectMountainTerrain(surfaceMaterial, targetY, depth));
+					TileEditor.SetTerrain(x, y, MountainTerrainAt(plan, mountain, x, depth));
 					if (depth >= 5) {
-						TileEditor.SetWall(x, y, depth < 20 ? WallID.DirtUnsafe : WallID.Stone);
+						TileEditor.SetWall(x, y, MountainWallAtDepth(mountain, x, depth));
 					}
 				}
 				completed++;
@@ -76,22 +90,28 @@ internal static class LandformGenerator
 			foreach (int x in summitColumns.Order()) {
 				int targetY = plan.SurfaceAt(x);
 				int sampleY = Math.Min(Main.maxTilesY - 220, (int)Main.worldSurface + 38);
-				ushort surfaceMaterial = FindStableMountainMaterial(x, sampleY);
 				for (int y = Math.Max(40, targetY - 4); y < targetY; y++) {
 					if (!IsInsideHighlandOwnedCell(attachedHighland, x, y)
 						&& !TileEditor.IsProtectedTile(Main.tile[x, y]) && !IsSkyBodyTile(Main.tile[x, y])) {
 						TileEditor.ClearTerrain(x, y, clearWall: true);
 					}
 				}
-				for (int y = targetY; y <= sampleY + 22; y++) {
+				int stabilizeBottom = sampleY + 22 + OrganicBoundary.Profile(
+					x,
+					mountain.FeatureSeed ^ 0x5354_424F,
+					37,
+					9,
+					9,
+					3);
+				for (int y = targetY; y <= stabilizeBottom; y++) {
 					if (IsInsideHighlandOwnedCell(attachedHighland, x, y)
 						|| TileEditor.IsProtectedTile(Main.tile[x, y]) || IsSkyBodyTile(Main.tile[x, y])) {
 						continue;
 					}
 					int depth = y - targetY;
-					TileEditor.SetTerrain(x, y, SelectMountainTerrain(surfaceMaterial, targetY, depth));
+					TileEditor.SetTerrain(x, y, MountainTerrainAt(plan, mountain, x, depth));
 					if (depth >= 5) {
-						TileEditor.SetWall(x, y, depth < 20 ? WallID.DirtUnsafe : WallID.Stone);
+						TileEditor.SetWall(x, y, MountainWallAtDepth(mountain, x, depth));
 					}
 				}
 				completed++;
@@ -109,7 +129,22 @@ internal static class LandformGenerator
 			WorldRegion region = plan.Regions[mountain.RegionId];
 			for (int x = region.Left; x <= region.Right; x++) {
 				int surfaceY = plan.SurfaceAt(x);
-				for (int depth = 0; depth <= 36; depth++) {
+				int shallowFinishDepth = Math.Max(24, 36 + OrganicBoundary.Profile(
+					x,
+					mountain.FeatureSeed ^ 0x4649_4E44,
+					47,
+					11,
+					12,
+					4));
+				int deepBodyBottom = (int)Main.worldSurface + 45 + OrganicBoundary.Profile(
+					x,
+					mountain.FeatureSeed ^ 0x4445_4558,
+					53,
+					13,
+					14,
+					5);
+				int finishDepth = Math.Max(shallowFinishDepth, deepBodyBottom - surfaceY);
+				for (int depth = 0; depth <= finishDepth; depth++) {
 					int y = surfaceY + depth;
 					Tile tile = Main.tile[x, y];
 					if (IsFinalFeatureOwned(manifest, x, y) || TileEditor.IsProtectedTile(tile)
@@ -118,7 +153,7 @@ internal static class LandformGenerator
 					}
 					SlopeType slope = tile.Slope;
 					bool halfBlock = tile.IsHalfBlock;
-					TileEditor.SetTerrain(x, y, MountainTerrainAt(x, surfaceY, depth));
+					TileEditor.SetTerrain(x, y, MountainTerrainAt(plan, mountain, x, depth));
 					Tile replacement = Main.tile[x, y];
 					replacement.Slope = slope;
 					replacement.IsHalfBlock = halfBlock;
@@ -162,16 +197,16 @@ internal static class LandformGenerator
 		WorldRegion region = plan.RegionAt(x);
 		for (int y = desiredSurfaceY; y <= fillBottom; y++) {
 			int depth = y - desiredSurfaceY;
-			TileEditor.SetTerrain(x, y, SelectTerrain(region.Landform, depth));
+			TileEditor.SetTerrain(x, y, SelectTerrain(plan, region, x, depth));
 			if (depth >= 4) {
-				TileEditor.SetWall(x, y, depth < 18 ? WallID.DirtUnsafe : WallID.Stone);
+				TileEditor.SetWall(x, y, TerrainWallAtDepth(plan, region, x, depth));
 			}
 		}
 	}
 
-	private static ushort SelectTerrain(LandformKind landform, int depth)
+	private static ushort SelectTerrain(WorldPlan plan, WorldRegion region, int x, int depth)
 	{
-		int soilDepth = landform switch {
+		int soilDepth = region.Landform switch {
 			LandformKind.QuietLowland => 18,
 			LandformKind.RollingHills => 14,
 			LandformKind.Valley => 20,
@@ -180,8 +215,39 @@ internal static class LandformGenerator
 			LandformKind.Basin => 17,
 			_ => 12
 		};
+		soilDepth += OrganicBoundary.Profile(
+			x,
+			plan.GenerationSeed ^ region.Id * 0x2C92_77B5,
+			43,
+			11,
+			6,
+			3);
 
-		return depth < soilDepth ? TileID.Dirt : TileID.Stone;
+		return depth < Math.Max(3, soilDepth) ? TileID.Dirt : TileID.Stone;
+	}
+
+	private static ushort TerrainWallAtDepth(WorldPlan plan, WorldRegion region, int x, int depth)
+	{
+		int boundary = 18 + OrganicBoundary.Profile(
+			x,
+			plan.GenerationSeed ^ region.Id * 0x1656_67B1 ^ 0x5741_4C4C,
+			47,
+			13,
+			7,
+			3);
+		return depth < Math.Max(7, boundary) ? WallID.DirtUnsafe : WallID.Stone;
+	}
+
+	internal static ushort MountainWallAtDepth(MountainRangePlan mountain, int x, int depth)
+	{
+		int boundary = 19 + OrganicBoundary.Profile(
+			x,
+			mountain.FeatureSeed ^ 0x4D57_414C,
+			53,
+			13,
+			8,
+			4);
+		return depth < Math.Max(8, boundary) ? WallID.DirtUnsafe : WallID.Stone;
 	}
 
 	internal static ushort FindStableMountainMaterial(int x, int startY)
@@ -217,42 +283,72 @@ internal static class LandformGenerator
 			|| tile.WallType is WallID.DiscWall or WallID.Cloud;
 	}
 
-	internal static ushort MountainTerrainAt(int x, int surfaceY, int depth)
+	internal static ushort MountainTerrainAt(WorldPlan plan, MountainRangePlan mountain, int x, int depth)
 	{
-		int deepSampleY = Math.Max((int)Main.worldSurface + 70, surfaceY + 150);
-		return SelectMountainTerrain(FindStableMountainMaterial(x, deepSampleY), surfaceY, depth);
+		int surfaceY = plan.SurfaceAt(x);
+		int lateralShift = OrganicBoundary.Profile(
+			depth + surfaceY / 3,
+			mountain.FeatureSeed ^ 0x4D41_5442,
+			31,
+			7,
+			22,
+			8);
+		lateralShift += (int)Math.Round((OrganicBoundary.Field(
+			x,
+			surfaceY + depth,
+			mountain.FeatureSeed ^ 0x4D41_5446,
+			23,
+			6) - 0.5d) * 20d);
+		WorldRegion region = plan.Regions[mountain.RegionId];
+		int sourceX = Math.Clamp(x + lateralShift, region.Left, region.Right);
+		int deepSampleY = Math.Max((int)Main.worldSurface + 70, plan.SurfaceAt(sourceX) + 150);
+		return SelectMountainTerrain(
+			FindStableMountainMaterial(sourceX, deepSampleY),
+			x,
+			surfaceY,
+			depth,
+			plan.GenerationSeed);
 	}
 
-	private static ushort SelectMountainTerrain(ushort surfaceMaterial, int surfaceY, int depth)
+	private static ushort SelectMountainTerrain(
+		ushort surfaceMaterial,
+		int x,
+		int surfaceY,
+		int depth,
+		int seed)
 	{
+		int shallow = OrganicBoundary.Profile(x, seed ^ surfaceY ^ 0x5348_414C, 41, 9, 4, 2);
+		int deep = OrganicBoundary.Profile(x, seed ^ surfaceY ^ 0x4445_4550, 59, 13, 7, 3);
 		if (surfaceMaterial is TileID.SnowBlock or TileID.IceBlock or TileID.BreakableIce) {
-			return depth < 5 ? TileID.SnowBlock : depth < 24 ? TileID.IceBlock : TileID.Stone;
+			return depth < Math.Max(2, 5 + shallow)
+				? TileID.SnowBlock
+				: depth < Math.Max(11, 24 + deep) ? TileID.IceBlock : TileID.Stone;
 		}
 		if (surfaceMaterial is TileID.CorruptHardenedSand or TileID.CorruptSandstone or TileID.Ebonsand) {
-			return depth < 7 ? TileID.CorruptHardenedSand : TileID.CorruptSandstone;
+			return depth < Math.Max(3, 7 + shallow) ? TileID.CorruptHardenedSand : TileID.CorruptSandstone;
 		}
 		if (surfaceMaterial is TileID.CrimsonHardenedSand or TileID.CrimsonSandstone or TileID.Crimsand) {
-			return depth < 7 ? TileID.CrimsonHardenedSand : TileID.CrimsonSandstone;
+			return depth < Math.Max(3, 7 + shallow) ? TileID.CrimsonHardenedSand : TileID.CrimsonSandstone;
 		}
 		if (surfaceMaterial is TileID.Sand or TileID.HardenedSand or TileID.Sandstone
 			or TileID.DesertFossil) {
-			return depth < 7 ? TileID.HardenedSand : TileID.Sandstone;
+			return depth < Math.Max(3, 7 + shallow) ? TileID.HardenedSand : TileID.Sandstone;
 		}
 		if (surfaceMaterial is TileID.CorruptJungleGrass) {
-			return depth == 0 ? TileID.CorruptJungleGrass : depth < 18 ? TileID.Mud : TileID.Ebonstone;
+			return depth == 0 ? TileID.CorruptJungleGrass : depth < Math.Max(7, 18 + deep) ? TileID.Mud : TileID.Ebonstone;
 		}
 		if (surfaceMaterial is TileID.CrimsonJungleGrass) {
-			return depth == 0 ? TileID.CrimsonJungleGrass : depth < 18 ? TileID.Mud : TileID.Crimstone;
+			return depth == 0 ? TileID.CrimsonJungleGrass : depth < Math.Max(7, 18 + deep) ? TileID.Mud : TileID.Crimstone;
 		}
 		if (surfaceMaterial is TileID.Mud or TileID.JungleGrass) {
-			return depth == 0 ? TileID.JungleGrass : depth < 18 ? TileID.Mud : TileID.Stone;
+			return depth == 0 ? TileID.JungleGrass : depth < Math.Max(7, 18 + deep) ? TileID.Mud : TileID.Stone;
 		}
 		if (surfaceMaterial is TileID.CorruptGrass or TileID.Ebonstone) {
-			return depth == 0 ? TileID.CorruptGrass : depth < 7 ? TileID.Dirt : TileID.Ebonstone;
+			return depth == 0 ? TileID.CorruptGrass : depth < Math.Max(3, 7 + shallow) ? TileID.Dirt : TileID.Ebonstone;
 		}
 		if (surfaceMaterial is TileID.CrimsonGrass or TileID.Crimstone) {
-			return depth == 0 ? TileID.CrimsonGrass : depth < 7 ? TileID.Dirt : TileID.Crimstone;
+			return depth == 0 ? TileID.CrimsonGrass : depth < Math.Max(3, 7 + shallow) ? TileID.Dirt : TileID.Crimstone;
 		}
-		return depth == 0 ? TileID.Grass : depth < 8 ? TileID.Dirt : TileID.Stone;
+		return depth == 0 ? TileID.Grass : depth < Math.Max(3, 8 + shallow) ? TileID.Dirt : TileID.Stone;
 	}
 }

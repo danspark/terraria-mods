@@ -747,7 +747,14 @@ internal static class LandmarkGenerator
 			for (int depth = 0; depth < foundationDepth; depth++) {
 				TileEditor.SetTerrain(x, groundY + depth, foundation);
 			}
-			int irregularBottom = groundY + 3 + Math.Abs(HashNoise(x, groundY, area.Center.X)) % 5;
+			int irregularBottom = groundY + 5 + OrganicBoundary.Profile(
+				x,
+				area.Center.X ^ groundY ^ 0x464F_4F54,
+				29,
+				7,
+				3,
+				2);
+			irregularBottom = Math.Max(groundY + 3, irregularBottom);
 			for (int y = groundY + 3; y <= Math.Min(area.Bottom - 1, irregularBottom); y++) {
 				if (!TileEditor.IsSolid(x, y)) {
 					TileEditor.SetTerrain(x, y, foundation);
@@ -766,6 +773,7 @@ internal static class LandmarkGenerator
 	private static void BuildRoomShell(LandmarkRoom room, LandmarkStyle style, int variant)
 	{
 		Rectangle shell = room.Shell;
+		int wallSeed = shell.Center.X ^ shell.Center.Y * 31 ^ variant * 193;
 		for (int x = shell.Left; x < shell.Right; x++) {
 			for (int y = shell.Top; y < shell.Bottom; y++) {
 				bool horizontal = y < shell.Top + ShellThickness || y == shell.Bottom - 1;
@@ -776,9 +784,30 @@ internal static class LandmarkGenerator
 				}
 
 				TileEditor.ClearTerrain(x, y);
-				bool wainscot = y >= shell.Bottom - 4;
-				bool accentPanel = !wainscot && Math.Abs(x - shell.Center.X) >= shell.Width / 3
-					&& (x + variant) % 3 != 0;
+				int wainscotTop = shell.Bottom - 4 + OrganicBoundary.Profile(
+					x,
+					wallSeed ^ 0x5741_494E,
+					17,
+					5,
+					2,
+					1);
+				bool wainscot = y >= wainscotTop;
+				double panelField = OrganicBoundary.Field(
+					x,
+					y,
+					wallSeed ^ 0x5041_4E45,
+					13,
+					4);
+				int sideWarp = OrganicBoundary.Profile(
+					y,
+					wallSeed ^ 0x5349_4445,
+					11,
+					4,
+					3,
+					1);
+				bool accentPanel = !wainscot
+					&& Math.Abs(x + sideWarp - shell.Center.X) >= Math.Max(3, shell.Width / 4)
+					&& panelField > 0.43d;
 				TileEditor.SetWall(x, y, wainscot || accentPanel ? style.AccentWall : style.Wall);
 			}
 		}
@@ -825,6 +854,7 @@ internal static class LandmarkGenerator
 		int centerX = room.Center.X;
 		int halfWidth = Math.Max(1, room.Width / 2 + 2);
 		int rise = Math.Clamp(halfWidth / 2, 4, 8);
+		int wallSeed = room.Center.X ^ room.Center.Y * 31 ^ 0x4741_424C;
 		for (int x = room.Left - 2; x <= room.Right + 1; x++) {
 			int distance = Math.Abs(x - centerX);
 			int roofY = room.Top - rise + distance / 2;
@@ -838,7 +868,10 @@ internal static class LandmarkGenerator
 			TileEditor.SetTerrain(x, roofY + 1, distance % 4 == 0 ? style.Pillar : style.Foundation);
 			for (int y = roofY + 2; y < room.Top; y++) {
 				TileEditor.ClearTerrain(x, y);
-				TileEditor.SetWall(x, y, distance % 5 == 0 ? style.AccentWall : style.Wall);
+				double accentField = OrganicBoundary.Field(x, y, wallSeed, 11, 4);
+				int edgeBias = OrganicBoundary.Profile(y, wallSeed ^ 0x4544_4745, 13, 5, 3, 1);
+				bool accent = distance + edgeBias > halfWidth / 2 && accentField > 0.47d;
+				TileEditor.SetWall(x, y, accent ? style.AccentWall : style.Wall);
 			}
 		}
 	}
