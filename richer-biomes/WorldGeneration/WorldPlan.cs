@@ -65,6 +65,54 @@ internal enum SkyHighlandStyle
 	BrokenArchipelago
 }
 
+internal enum LandmarkArchetype
+{
+	ForestRangerLodge,
+	ForestSplitHall,
+	ForestWatchHouse,
+	SnowChalet,
+	SnowIceWatch,
+	SnowBuriedIgloo,
+	DesertCourtyard,
+	DesertCaravanserai,
+	DesertSunTower,
+	JungleCanopyLodge,
+	JungleStiltHall,
+	JungleOvergrownTower,
+	EvilRiftChapel,
+	EvilQuarantineKeep,
+	EvilBrokenSpire,
+	OceanStiltHouse,
+	OceanHarborHall,
+	OceanLighthouse,
+	SkyObservatory,
+	SkySunplateAerie,
+	SkyCloudMonastery,
+	MushroomCapHouse,
+	MushroomSporeTower,
+	MushroomMyceliumHall,
+	CavernStoneDepot,
+	CavernArchVault,
+	CavernShaftHouse,
+	UnderworldAshForge,
+	UnderworldObsidianKeep,
+	UnderworldHangingFort
+}
+
+internal enum ForestBridgeStyle
+{
+	TimberFootbridge,
+	LivingWoodCauseway,
+	StoneAndTimber
+}
+
+internal enum MountainWaterStyle
+{
+	SpringPond,
+	CavernLake,
+	HangingPool
+}
+
 internal enum MineSectionKind
 {
 	Workyard,
@@ -200,7 +248,10 @@ internal readonly record struct LandmarkRecord(
 	Rectangle Area,
 	int AnchorX,
 	int AnchorY,
+	LandmarkArchetype Archetype,
 	int RoomCount,
+	int FloorCount,
+	int StairCount,
 	int FurnitureCount,
 	int LayoutVariant);
 
@@ -215,11 +266,33 @@ internal readonly record struct MountainRecord(
 	int WideCavityColumns,
 	int PotTiles,
 	int VineTiles,
-	int ClimbAidTiles);
+	int ClimbAidTiles,
+	int WaterCells,
+	int WaterBodyCount);
 
 internal readonly record struct ValleyRecord(ValleyTheme Theme, Rectangle Area, int LiquidCells);
 
 internal readonly record struct BridgeRecord(BridgeStyle Style, Rectangle Area, int DeckTiles);
+
+internal readonly record struct ForestLakeBridgeRecord(
+	ForestBridgeStyle Style,
+	Rectangle Area,
+	int DeckY,
+	int WaterlineY,
+	int Depth,
+	int FeatureSeed,
+	int WaterCells,
+	int DeckTiles,
+	int SupportTiles);
+
+internal readonly record struct MountainWaterRecord(
+	int RegionId,
+	MountainWaterStyle Style,
+	Rectangle Area,
+	int WaterlineY,
+	int Depth,
+	int FeatureSeed,
+	int WaterCells);
 
 internal readonly record struct SkyHighlandRecord(
 	Rectangle Area,
@@ -247,7 +320,7 @@ internal readonly record struct SurfaceMineRecord(
 
 internal sealed class GenerationManifest
 {
-	public const int CurrentVersion = 5;
+	public const int CurrentVersion = 6;
 
 	public int GenerationSeed { get; init; }
 	public List<BuildTerrace> Terraces { get; } = [];
@@ -255,6 +328,8 @@ internal sealed class GenerationManifest
 	public List<MountainRecord> Mountains { get; } = [];
 	public List<ValleyRecord> Valleys { get; } = [];
 	public List<BridgeRecord> Bridges { get; } = [];
+	public List<ForestLakeBridgeRecord> ForestLakeBridges { get; } = [];
+	public List<MountainWaterRecord> MountainWaters { get; } = [];
 	public List<SkyHighlandRecord> SkyHighlands { get; } = [];
 	public List<BiomeTransitionRecord> BiomeTransitions { get; } = [];
 	public List<MineSection> MineSections { get; } = [];
@@ -272,6 +347,8 @@ internal sealed record GenerationReport(
 	int LandmarkCount,
 	int AccentCount,
 	int BridgeCount,
+	int ForestLakeBridgeCount,
+	int MountainWaterCount,
 	int SkyHighlandCount,
 	int MineTrackTiles)
 {
@@ -279,5 +356,6 @@ internal sealed record GenerationReport(
 		$"valid={Valid}; regions={RegionCount}; relief={Relief}; mountains={MountainCount}; " +
 		$"caveRoutes={ConnectedCaveRoutes}; terraces={BuildTerraces}; " +
 		$"landmarks={LandmarkCount}; accents={AccentCount}; bridges={BridgeCount}; " +
+		$"forestLakeBridges={ForestLakeBridgeCount}; mountainWaters={MountainWaterCount}; " +
 		$"skyHighlands={SkyHighlandCount}; mineTrackTiles={MineTrackTiles}";
 }

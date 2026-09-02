@@ -1,6 +1,6 @@
 # World-generation research record
 
-This record separates observations, design conclusions, implementation targets, and external references. It began with the 0.3.0 majestic-world rewrite on 2026-08-31 and includes the 0.3.3 organic-boundary audit.
+This record separates observations, design conclusions, implementation targets, and external references. It began with the 0.3.0 majestic-world rewrite on 2026-08-31 and includes the 0.3.3 organic-boundary audit and 0.3.4 structure-and-watershed study.
 
 ## Reference-world audit
 
@@ -280,6 +280,26 @@ The exact final-code matrix ran on 2026-09-01 against Terraria 1.4.4.9 and tModL
 | Classic large | `Majesty-Matrix-Large-001` (`1180213525`) | Crimson | Sky-piercing / Branching Grottoes; Highland / Split-Level Caves | 4,010 tiles | 60.2 s |
 
 Every row completed generation, strict final-tile validation, first reload, save, and second reload with manifest version 5 intact. An independent tile-state renderer then inspected each full world and its complete surface-connected mine crop. The maps retained deliberate rail grades and work lines while showing irregular mountain skins, highland layers, wall fields, mine district ownership, and broad biome folds without visible reservation-box outlines.
+
+## 0.3.4 structure-and-watershed verification record
+
+The landmark study treated a building as a room graph before treating it as a shell. A three-column ground level establishes horizontal circulation; selected upper components create terraced, tower, and split silhouettes; and every disconnected upper component receives an explicit stair edge. This avoids the common failure where two towers look distinct outside but only one is reachable. Room roles, furniture, roof family, foundation behavior, and terrain relationship carry biome identity together. Changing only the block palette does not produce a biome-characteristic building.
+
+Snow exposed a separate vertical rule. A descending igloo cannot share the surface floor with its first basement ceiling: doing so preserves the outline but collapses usable headroom. The buried grammar therefore owns one domed surface room and two separately spaced basement levels, then validates that the recorded below-ground rooms remain. All landmark families retain open approaches and incomplete housing boundaries; Terraria's real housing query remains the final authority on whether progression-breaking NPC occupancy is possible.
+
+The watershed study applies the same ownership model to liquids. A level settled water surface is physically expected, but the bed, shoreline, retaining material, walls, supports, and approach terrain must come from correlated contours. Forest lake crossings and mountain ponds are reserved before the mine and landmarks, store their feature seeds, and replay the same shape during final repair. This prevents later clearance or refill work from replacing an organic basin with a rectangular scar. Mountain water also supplies a stable humidity context for denser vine curtains.
+
+The final-code matrix ran on 2026-09-02 against Terraria 1.4.4.9 and tModLoader 2026.07.3.0:
+
+| Mode and size | Seed | Landmarks | Forest lake bridges | Mountains / mountain waters | Mine entrance component |
+| --- | --- | ---: | ---: | --- | ---: |
+| Classic small | `1399794971` | 11 | 0 | 1 / 2 | 2,328 tiles |
+| Journey medium | `204860939` | 11 | 1 | 2 / 5 | 3,073 tiles |
+| Classic large | `RicherBiomes-Overhaul-Large-01` | 11 | 1 | 2 / 4 | 3,777 tiles |
+
+Every row completed strict finished-tile validation, first reload, save, and second reload with manifest version 6 intact. The small and medium seeds prove both sides of the optional Forest feature: omission remains valid and occurrence remains substantial. Across the matrix, every mountain retained at least two protected water bodies, and all eleven landmarks retained the recorded room, floor, stair, material, furniture, clearance, and anti-housing contracts.
+
+An independent tile-state render then inspected all three world overviews, all 33 landmark crops, every mountain and mountain-water crop, and both generated Forest bridge lakes. The landmark sheets show broad halls, terraced compounds, separated towers, asymmetric wings, varied roof families, and the medium seed's three-level buried Snow igloo rather than one repeated cabin outline. Mountain crops show large background-open chambers, crossing routes, dense hanging curtains, bridges, and multiple visibly separate ponds. Both Forest scenes keep readable level decks while their beds, banks, supports, and approach terrain break up the reservation footprint; the small seed correctly contains no such scene.
 
 ## Future research queue
 

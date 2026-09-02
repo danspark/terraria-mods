@@ -49,7 +49,9 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		InsertAfter(tasks, "Richer Biomes: reopen mountain crossings", new RicherBiomesPass("Richer Biomes: blend surface biome seams", 18d, BlendBiomeTransitions), ref totalWeight);
 		InsertAfter(tasks, "Shimmer", new RicherBiomesPass("Richer Biomes: reserve building terraces", 8d, ReserveTerraces), ref totalWeight);
 		InsertAfter(tasks, "Hives", new RicherBiomesPass("Richer Biomes: form mountain valleys", 18d, BuildMountainValleys), ref totalWeight);
-		InsertAfter(tasks, "Richer Biomes: form mountain valleys", new RicherBiomesPass("Richer Biomes: reserve surface mine", 8d, ReserveSurfaceMine), ref totalWeight);
+		InsertAfter(tasks, "Richer Biomes: form mountain valleys", new RicherBiomesPass("Richer Biomes: form forest lake crossings", 16d, BuildForestWaterCrossings), ref totalWeight);
+		InsertAfter(tasks, "Richer Biomes: form forest lake crossings", new RicherBiomesPass("Richer Biomes: form mountain interior waters", 14d, BuildMountainInteriorWaters), ref totalWeight);
+		InsertAfter(tasks, "Richer Biomes: form mountain interior waters", new RicherBiomesPass("Richer Biomes: reserve surface mine", 8d, ReserveSurfaceMine), ref totalWeight);
 		InsertAfter(tasks, "Richer Biomes: reserve surface mine", new RicherBiomesPass("Richer Biomes: excavate surface mine", 42d, ExcavateSurfaceMine), ref totalWeight);
 		InsertAfter(tasks, "Smooth World", new RicherBiomesPass("Richer Biomes: stabilize routes and terraces", 26d, StabilizeRoutesAndTerraces), ref totalWeight);
 		InsertAfter(tasks, "Micro Biomes", new RicherBiomesPass("Richer Biomes: stabilize summit buttresses", 22d, StabilizeMountainSummits), ref totalWeight);
@@ -87,6 +89,8 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		tag["mountains"] = _manifest.Mountains.Select(SerializeMountain).ToList();
 		tag["valleys"] = _manifest.Valleys.Select(SerializeValley).ToList();
 		tag["bridges"] = _manifest.Bridges.Select(SerializeBridge).ToList();
+		tag["forestLakeBridges"] = _manifest.ForestLakeBridges.Select(SerializeForestLakeBridge).ToList();
+		tag["mountainWaters"] = _manifest.MountainWaters.Select(SerializeMountainWater).ToList();
 		tag["skyHighlands"] = _manifest.SkyHighlands.Select(SerializeSkyHighland).ToList();
 		tag["biomeTransitions"] = _manifest.BiomeTransitions.Select(SerializeBiomeTransition).ToList();
 		tag["mineSections"] = _manifest.MineSections.Select(SerializeMineSection).ToList();
@@ -120,8 +124,11 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		}
 
 		foreach (TagCompound saved in tag.GetList<TagCompound>("landmarks")) {
+			BiomeKind biome = (BiomeKind)saved.GetInt("biome");
+			int layoutVariant = saved.ContainsKey("layoutVariant") ? saved.GetInt("layoutVariant") : 0;
+			int roomCount = saved.ContainsKey("rooms") ? saved.GetInt("rooms") : 1;
 			manifest.Landmarks.Add(new LandmarkRecord(
-				(BiomeKind)saved.GetInt("biome"),
+				biome,
 				new Microsoft.Xna.Framework.Rectangle(
 					saved.GetInt("x"),
 					saved.GetInt("y"),
@@ -129,9 +136,14 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 					saved.GetInt("height")),
 				saved.GetInt("anchorX"),
 				saved.GetInt("anchorY"),
-				saved.ContainsKey("rooms") ? saved.GetInt("rooms") : 1,
+				saved.ContainsKey("archetype")
+					? (LandmarkArchetype)saved.GetInt("archetype")
+					: (LandmarkArchetype)((int)biome * 3 + Math.Abs(layoutVariant) % 3),
+				roomCount,
+				saved.ContainsKey("floors") ? saved.GetInt("floors") : Math.Min(2, roomCount),
+				saved.ContainsKey("stairs") ? saved.GetInt("stairs") : Math.Max(1, roomCount / 3),
 				saved.ContainsKey("furniture") ? saved.GetInt("furniture") : 0,
-				saved.ContainsKey("layoutVariant") ? saved.GetInt("layoutVariant") : 0));
+				layoutVariant));
 		}
 
 		foreach (TagCompound saved in tag.GetList<TagCompound>("mountains")) {
@@ -146,7 +158,9 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 				saved.ContainsKey("wideCavityColumns") ? saved.GetInt("wideCavityColumns") : 0,
 				saved.ContainsKey("potTiles") ? saved.GetInt("potTiles") : 0,
 				saved.ContainsKey("vineTiles") ? saved.GetInt("vineTiles") : 0,
-				saved.ContainsKey("climbAidTiles") ? saved.GetInt("climbAidTiles") : 0));
+				saved.ContainsKey("climbAidTiles") ? saved.GetInt("climbAidTiles") : 0,
+				saved.ContainsKey("waterCells") ? saved.GetInt("waterCells") : 0,
+				saved.ContainsKey("waterBodies") ? saved.GetInt("waterBodies") : 0));
 		}
 		foreach (TagCompound saved in tag.GetList<TagCompound>("valleys")) {
 			manifest.Valleys.Add(new ValleyRecord(
@@ -159,6 +173,28 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 				(BridgeStyle)saved.GetInt("style"),
 				DeserializeRectangle(saved),
 				saved.GetInt("deckTiles")));
+		}
+		foreach (TagCompound saved in tag.GetList<TagCompound>("forestLakeBridges")) {
+			manifest.ForestLakeBridges.Add(new ForestLakeBridgeRecord(
+				(ForestBridgeStyle)saved.GetInt("style"),
+				DeserializeRectangle(saved),
+				saved.GetInt("deckY"),
+				saved.GetInt("waterlineY"),
+				saved.ContainsKey("depth") ? saved.GetInt("depth") : Math.Max(8, DeserializeRectangle(saved).Bottom - saved.GetInt("waterlineY") - 7),
+				saved.ContainsKey("featureSeed") ? saved.GetInt("featureSeed") : saved.GetInt("x") ^ saved.GetInt("y") ^ 0x464C_414B,
+				saved.GetInt("waterCells"),
+				saved.GetInt("deckTiles"),
+				saved.GetInt("supportTiles")));
+		}
+		foreach (TagCompound saved in tag.GetList<TagCompound>("mountainWaters")) {
+			manifest.MountainWaters.Add(new MountainWaterRecord(
+				saved.GetInt("regionId"),
+				(MountainWaterStyle)saved.GetInt("style"),
+				DeserializeRectangle(saved),
+				saved.GetInt("waterlineY"),
+				saved.ContainsKey("depth") ? saved.GetInt("depth") : 8,
+				saved.ContainsKey("featureSeed") ? saved.GetInt("featureSeed") : saved.GetInt("x") ^ saved.GetInt("y") ^ 0x4D57_4154,
+				saved.GetInt("waterCells")));
 		}
 		foreach (TagCompound saved in tag.GetList<TagCompound>("skyHighlands")) {
 			manifest.SkyHighlands.Add(new SkyHighlandRecord(
@@ -206,7 +242,8 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		Mod.Logger.Info(
 			$"Loaded Richer Biomes manifest v{tag.GetInt("manifestVersion")}: "
 			+ $"landmarks={manifest.Landmarks.Count}; mountains={manifest.Mountains.Count}; "
-			+ $"bridges={manifest.Bridges.Count}; skyHighlands={manifest.SkyHighlands.Count}; "
+			+ $"bridges={manifest.Bridges.Count}; forestLakeBridges={manifest.ForestLakeBridges.Count}; "
+			+ $"mountainWaters={manifest.MountainWaters.Count}; skyHighlands={manifest.SkyHighlands.Count}; "
 			+ $"mine={(manifest.SurfaceMine is null ? "missing" : "present")}; "
 			+ $"validation={_savedValidationSummary ?? "missing"}");
 	}
@@ -300,6 +337,20 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		MountainBiomeGenerator.BuildValleys(RequirePlan(), RequireManifest());
 		SkyHighlandGenerator.RefillLakes(RequirePlan(), RequireManifest());
 		progress.Set(1d);
+	}
+
+	private void BuildForestWaterCrossings(GenerationProgress progress, GameConfiguration _)
+	{
+		progress.Message = "Fitting forest footbridges over natural lake basins";
+		ForestWaterBridgeGenerator.Apply(RequirePlan(), RequireManifest(), progress);
+		Mod.Logger.Info($"Richer Biomes formed {RequireManifest().ForestLakeBridges.Count} optional forest lake crossings.");
+	}
+
+	private void BuildMountainInteriorWaters(GenerationProgress progress, GameConfiguration _)
+	{
+		progress.Message = "Sealing ponds and lakes into mountain chambers";
+		MountainBiomeGenerator.BuildInteriorWaters(RequirePlan(), RequireManifest(), progress);
+		Mod.Logger.Info($"Richer Biomes formed {RequireManifest().MountainWaters.Count} protected mountain water bodies.");
 	}
 
 	private void ExcavateSurfaceMine(GenerationProgress progress, GameConfiguration _)
@@ -415,6 +466,8 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 			Mod.Logger.Info($"Richer Biomes omitted {lateOccludedTransitions} surface seams after final traversal repair.");
 		}
 		MountainBiomeGenerator.RepairInteriorDecorations(RequirePlan(), RequireManifest());
+		ForestWaterBridgeGenerator.RepairAndRefill(RequireManifest());
+		MountainBiomeGenerator.RefillInteriorWaters(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RefillValleyLiquids(RequireManifest());
 		MountainBiomeGenerator.RecordFinalState(RequirePlan(), RequireManifest());
 		progress.Set(1d);
@@ -475,7 +528,10 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		["height"] = landmark.Area.Height,
 		["anchorX"] = landmark.AnchorX,
 		["anchorY"] = landmark.AnchorY,
+		["archetype"] = (int)landmark.Archetype,
 		["rooms"] = landmark.RoomCount,
+		["floors"] = landmark.FloorCount,
+		["stairs"] = landmark.StairCount,
 		["furniture"] = landmark.FurnitureCount,
 		["layoutVariant"] = landmark.LayoutVariant
 	};
@@ -490,7 +546,9 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		["wideCavityColumns"] = mountain.WideCavityColumns,
 		["potTiles"] = mountain.PotTiles,
 		["vineTiles"] = mountain.VineTiles,
-		["climbAidTiles"] = mountain.ClimbAidTiles
+		["climbAidTiles"] = mountain.ClimbAidTiles,
+		["waterCells"] = mountain.WaterCells,
+		["waterBodies"] = mountain.WaterBodyCount
 	});
 
 	private static TagCompound SerializeValley(ValleyRecord valley) => WithRectangle(valley.Area, new TagCompound {
@@ -501,6 +559,26 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 	private static TagCompound SerializeBridge(BridgeRecord bridge) => WithRectangle(bridge.Area, new TagCompound {
 		["style"] = (int)bridge.Style,
 		["deckTiles"] = bridge.DeckTiles
+	});
+
+	private static TagCompound SerializeForestLakeBridge(ForestLakeBridgeRecord bridge) => WithRectangle(bridge.Area, new TagCompound {
+		["style"] = (int)bridge.Style,
+		["deckY"] = bridge.DeckY,
+		["waterlineY"] = bridge.WaterlineY,
+		["depth"] = bridge.Depth,
+		["featureSeed"] = bridge.FeatureSeed,
+		["waterCells"] = bridge.WaterCells,
+		["deckTiles"] = bridge.DeckTiles,
+		["supportTiles"] = bridge.SupportTiles
+	});
+
+	private static TagCompound SerializeMountainWater(MountainWaterRecord water) => WithRectangle(water.Area, new TagCompound {
+		["regionId"] = water.RegionId,
+		["style"] = (int)water.Style,
+		["waterlineY"] = water.WaterlineY,
+		["depth"] = water.Depth,
+		["featureSeed"] = water.FeatureSeed,
+		["waterCells"] = water.WaterCells
 	});
 
 	private static TagCompound SerializeSkyHighland(SkyHighlandRecord highland) => WithRectangle(highland.Area, new TagCompound {

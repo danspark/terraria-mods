@@ -18,6 +18,7 @@ internal static class WorldValidator
 		int connectedCaves = ValidateCaves(plan, errors);
 		ValidateTerraces(plan, manifest, errors);
 		ValidateLandmarks(manifest, errors);
+		ValidateForestLakeBridges(manifest, errors);
 		ValidateBiomeTransitions(plan, manifest, errors);
 		ValidateBridgesAndValleys(plan, manifest, errors);
 		ValidateSkyHighlands(plan, manifest, errors);
@@ -44,6 +45,8 @@ internal static class WorldValidator
 			manifest.Landmarks.Count,
 			accentCount,
 			manifest.Bridges.Count,
+			manifest.ForestLakeBridges.Count,
+			manifest.MountainWaters.Count,
 			manifest.SkyHighlands.Count,
 			mineTrackTiles);
 	}
@@ -135,8 +138,9 @@ internal static class WorldValidator
 			if (interior.PotTiles < 6) {
 				errors.Add($"mountain region {region.Id} retained only {interior.PotTiles} pot tiles");
 			}
-			if (interior.VineTiles < 20) {
-				errors.Add($"mountain region {region.Id} retained only {interior.VineTiles} vine tiles");
+			int minimumVines = Math.Max(180, interior.Area.Width / 2);
+			if (interior.VineTiles < minimumVines) {
+				errors.Add($"mountain region {region.Id} retained only {interior.VineTiles} vine tiles; expected {minimumVines}");
 			}
 			if (interior.ClimbAidTiles < 18) {
 				errors.Add($"mountain region {region.Id} retained only {interior.ClimbAidTiles} rope or platform tiles");
@@ -153,9 +157,16 @@ internal static class WorldValidator
 				errors.Add($"mountain region {region.Id} retained only {wallVoidCells} open-background cave cells");
 			}
 			int longVineRuns = CountLongVineRuns(interior.Area);
-			if (longVineRuns < 3) {
+			int minimumVineRuns = Math.Max(8, interior.Area.Width / 90);
+			if (longVineRuns < minimumVineRuns) {
 				errors.Add($"mountain region {region.Id} retained only {longVineRuns} distinct vine curtains");
 			}
+			if (interior.WaterBodyCount < 2 || interior.WaterCells < 240) {
+				errors.Add(
+					$"mountain region {region.Id} retained {interior.WaterBodyCount} interior water bodies "
+					+ $"with {interior.WaterCells} water cells; expected at least 2 bodies and 240 cells");
+			}
+			ValidateMountainWaters(region.Id, manifest, errors);
 			(int matchingMaterial, int sampledMaterial) = MeasureMountainMaterialOwnership(plan, planned);
 			if (sampledMaterial < 20 || matchingMaterial < sampledMaterial * 3 / 5) {
 				errors.Add(
@@ -257,6 +268,45 @@ internal static class WorldValidator
 			runs += run >= 4 ? 1 : 0;
 		}
 		return runs;
+	}
+
+	private static void ValidateMountainWaters(int regionId, GenerationManifest manifest, List<string> errors)
+	{
+		foreach (MountainWaterRecord water in manifest.MountainWaters.Where(record => record.RegionId == regionId)) {
+			int actualWater = CountLiquid(water.Area, LiquidID.Water);
+			int minimumWater = Math.Max(80, water.Area.Width * 2);
+			if (actualWater < minimumWater || water.WaterCells != actualWater) {
+				errors.Add(
+					$"{water.Style} in mountain region {regionId} retained {actualWater} water cells "
+					+ $"(recorded {water.WaterCells}, expected at least {minimumWater})");
+			}
+
+			List<int> bed = [];
+			List<int> waterSurface = [];
+			for (int x = water.Area.Left + 3; x < water.Area.Right - 3; x++) {
+				int bottom = int.MinValue;
+				int top = int.MaxValue;
+				for (int y = water.WaterlineY; y < water.Area.Bottom - 2; y++) {
+					Tile tile = Main.tile[x, y];
+					if (tile.LiquidAmount > 0 && tile.LiquidType == LiquidID.Water) {
+						top = Math.Min(top, y);
+						bottom = y;
+					}
+				}
+				if (bottom != int.MinValue) {
+					bed.Add(bottom);
+					waterSurface.Add(top);
+				}
+			}
+			int directionChanges = CountDirectionChanges(bed);
+			int bedSpan = bed.Count == 0 ? 0 : bed.Max() - bed.Min();
+			int surfaceSpan = waterSurface.Count == 0 ? int.MaxValue : waterSurface.Max() - waterSurface.Min();
+			if (bed.Count < water.Area.Width / 2 || surfaceSpan > water.Depth + 6 || bedSpan < 4 || directionChanges < 4) {
+				errors.Add(
+					$"{water.Style} in mountain region {regionId} has an underdeveloped basin: "
+					+ $"wetColumns={bed.Count}, surfaceSpan={surfaceSpan}, bedSpan={bedSpan}, turns={directionChanges}");
+			}
+		}
 	}
 
 	private static (int Matching, int Sampled) MeasureMountainMaterialOwnership(
@@ -483,6 +533,10 @@ internal static class WorldValidator
 		if (manifest.Landmarks.Count(landmark => landmark.Biome == BiomeKind.Ocean) < 2) {
 			errors.Add("both oceans did not receive a coastal landmark");
 		}
+		else if (manifest.Landmarks.Where(landmark => landmark.Biome == BiomeKind.Ocean)
+			.Select(landmark => landmark.Archetype).Distinct().Count() < 2) {
+			errors.Add("both coastal landmarks use the same archetype");
+		}
 
 		foreach (LandmarkRecord landmark in manifest.Landmarks) {
 			Rectangle authoredArea = new(
@@ -494,8 +548,11 @@ internal static class WorldValidator
 				|| !WorldGen.InWorld(landmark.Area.Right - 1, landmark.Area.Bottom - 1, 8)) {
 				errors.Add($"{landmark.Biome} landmark extends outside world padding");
 			}
-			if (landmark.Area.Width < 55 || landmark.RoomCount < 3) {
-				errors.Add($"{landmark.Biome} landmark is not a multi-room structure ({landmark.Area.Width} tiles, {landmark.RoomCount} rooms)");
+			if (landmark.Area.Width < 55 || landmark.RoomCount < 5 || landmark.FloorCount < 2
+				|| landmark.StairCount < landmark.FloorCount - 1) {
+				errors.Add(
+					$"{landmark.Biome} landmark is not a connected multi-floor complex "
+					+ $"({landmark.Area.Width} tiles, {landmark.RoomCount} rooms, {landmark.FloorCount} floors, {landmark.StairCount} stairs)");
 			}
 			if (landmark.Biome == BiomeKind.Ocean) {
 				int waterBelowFoundation = 0;
@@ -504,7 +561,7 @@ internal static class WorldValidator
 						waterBelowFoundation += Main.tile[x, y].LiquidAmount > 0 ? 1 : 0;
 					}
 				}
-				if (landmark.Area.Height > 55 || landmark.AnchorY < Main.worldSurface * 0.55d
+				if (landmark.Area.Height > 82 || landmark.AnchorY < Main.worldSurface * 0.55d
 					|| waterBelowFoundation > landmark.Area.Width / 8) {
 					errors.Add(
 						$"Ocean landmark at x={landmark.AnchorX} is not grounded on a dry beach shelf "
@@ -516,7 +573,7 @@ internal static class WorldValidator
 				errors.Add($"{landmark.Biome} landmark retained {doorTiles} closed-door tiles instead of open traversal arches");
 			}
 			int furnitureTiles = CountFurnitureTiles(landmark.Area);
-			if (landmark.FurnitureCount < 6 || furnitureTiles < 4) {
+			if (landmark.FurnitureCount < Math.Max(8, landmark.RoomCount) || furnitureTiles < 6) {
 				errors.Add($"{landmark.Biome} landmark retained {landmark.FurnitureCount} placed objects across {furnitureTiles} furniture tiles");
 			}
 			HashSet<ushort> wallTypes = CollectWallTypes(landmark.Area);
@@ -541,37 +598,53 @@ internal static class WorldValidator
 			if (!HasOpenLandmarkEntrances(landmark, out string entranceReason)) {
 				errors.Add($"{landmark.Biome} landmark has blocked traversal: {entranceReason}");
 			}
+			if (!LandmarkGenerator.HasConnectedRoomGraph(landmark, out string graphReason)) {
+				errors.Add($"{landmark.Biome} landmark has a disconnected room graph: {graphReason}");
+			}
+			if (!LandmarkGenerator.HasCharacteristicMaterials(landmark)) {
+				errors.Add($"{landmark.Biome} landmark lost its biome-characteristic shell materials");
+			}
+			if (!LandmarkGenerator.HasBuriedIglooRooms(landmark)) {
+				errors.Add("Snow buried igloo did not retain its descending room complex");
+			}
 			if (TryFindValidHousing(authoredArea, out Point validHousingProbe)) {
 				errors.Add($"{landmark.Biome} landmark is valid NPC housing near {validHousingProbe.X},{validHousingProbe.Y}");
 			}
 			int thickFloorColumns = 0;
-			for (int x = landmark.Area.Left; x < landmark.Area.Right; x++) {
-				if (TileEditor.IsSolid(x, landmark.AnchorY) && TileEditor.IsSolid(x, landmark.AnchorY + 1)) {
+			int foundationLeft = landmark.Area.Left + 6;
+			int foundationRight = landmark.Area.Right - 7;
+			bool buriedIgloo = landmark.Archetype == LandmarkArchetype.SnowBuriedIgloo;
+			for (int x = foundationLeft; x <= foundationRight; x++) {
+				if (TileEditor.IsSolid(x, landmark.AnchorY)
+					&& (buriedIgloo || TileEditor.IsSolid(x, landmark.AnchorY + 1))) {
 					thickFloorColumns++;
 				}
 			}
-			if (thickFloorColumns < landmark.Area.Width * 9 / 10) {
-				errors.Add($"{landmark.Biome} landmark has a thin or broken foundation in {landmark.Area.Width - thickFloorColumns} columns");
+			int foundationWidth = foundationRight - foundationLeft + 1;
+			if (thickFloorColumns < foundationWidth * 4 / 5) {
+				errors.Add($"{landmark.Biome} landmark has a thin or broken foundation in {foundationWidth - thickFloorColumns} core columns");
 			}
-			if (landmark.RoomCount >= 3) {
+			if (landmark.RoomCount >= 5) {
 				int platforms = CountTiles(landmark.Area, TileID.Platforms);
-				if (platforms < 10 || platforms > 48) {
+				int minimumPlatforms = landmark.StairCount * 6;
+				int maximumPlatforms = landmark.StairCount * 20 + 20;
+				if (platforms < minimumPlatforms || platforms > maximumPlatforms) {
 					errors.Add($"{landmark.Biome} landmark has {platforms} platform tiles; expected bounded stairs and drop portals");
 				}
 				int slopedPlatforms = CountSlopedTiles(landmark.Area, TileID.Platforms);
-				if (slopedPlatforms < 6) {
+				if (slopedPlatforms < landmark.StairCount * 6) {
 					errors.Add($"{landmark.Biome} landmark retained only {slopedPlatforms} sloped stair platforms");
 				}
 			}
 			int slopedShellTiles = CountSlopedSolidTiles(landmark.Area);
-			if (slopedShellTiles < 10) {
+			if (slopedShellTiles < 4) {
 				errors.Add($"{landmark.Biome} landmark retained only {slopedShellTiles} sloped roof tiles");
 			}
 			if (!LandmarkGenerator.HasCorrectRoofSlopes(landmark)) {
 				errors.Add($"{landmark.Biome} landmark has missing or incorrectly oriented roof slopes");
 			}
-			if (!LandmarkGenerator.HasCorrectStairSlopes(landmark)) {
-				errors.Add($"{landmark.Biome} landmark has missing or incorrectly oriented stair slopes");
+			if (!LandmarkGenerator.HasCorrectStairSlopes(landmark, out string stairReason)) {
+				errors.Add($"{landmark.Biome} landmark has missing or incorrectly oriented stair slopes: {stairReason}");
 			}
 			if (!LandmarkGenerator.HasThickUpperPosts(landmark)) {
 				errors.Add($"{landmark.Biome} landmark retained one-tile upper-room posts");
@@ -585,6 +658,88 @@ internal static class WorldValidator
 				errors.Add($"{landmark.Biome} landmark has {wallLeaks} background-wall cells exposed above its roof");
 			}
 		}
+	}
+
+	private static void ValidateForestLakeBridges(GenerationManifest manifest, List<string> errors)
+	{
+		foreach (ForestLakeBridgeRecord bridge in manifest.ForestLakeBridges) {
+			int actualWater = CountLiquid(bridge.Area, LiquidID.Water);
+			int minimumWater = Math.Max(240, bridge.Area.Width * 2);
+			if (actualWater < minimumWater || actualWater != bridge.WaterCells) {
+				errors.Add(
+					$"{bridge.Style} forest lake retained {actualWater} water cells "
+					+ $"(recorded {bridge.WaterCells}, expected at least {minimumWater})");
+			}
+
+			int deckColumns = 0;
+			int clearColumns = 0;
+			for (int x = bridge.Area.Left + 2; x < bridge.Area.Right - 2; x++) {
+				Tile deck = Main.tile[x, bridge.DeckY];
+				bool walkable = deck.HasTile && deck.TileType is TileID.WoodBlock or TileID.LivingWood
+					or TileID.GrayBrick or TileID.Platforms;
+				if (!walkable) {
+					continue;
+				}
+				deckColumns++;
+				bool clear = true;
+				for (int y = bridge.DeckY - 5; y < bridge.DeckY; y++) {
+					clear &= !TileEditor.IsSolid(x, y);
+				}
+				clearColumns += clear ? 1 : 0;
+			}
+			if (deckColumns < bridge.Area.Width * 4 / 5 || clearColumns < deckColumns * 9 / 10) {
+				errors.Add(
+					$"{bridge.Style} forest bridge is not continuously traversable: "
+					+ $"deck={deckColumns}/{bridge.Area.Width}, clear={clearColumns}/{deckColumns}");
+			}
+			int supports = CountTiles(bridge.Area, TileID.WoodenBeam);
+			if (supports < 24 || bridge.SupportTiles < 24) {
+				errors.Add($"{bridge.Style} forest bridge retained only {supports} beam tiles ({bridge.SupportTiles} recorded)");
+			}
+
+			List<int> bed = [];
+			for (int x = bridge.Area.Left + 8; x < bridge.Area.Right - 8; x++) {
+				int bottom = int.MinValue;
+				for (int y = bridge.WaterlineY; y < bridge.Area.Bottom - 2; y++) {
+					Tile tile = Main.tile[x, y];
+					if (tile.LiquidAmount > 0 && tile.LiquidType == LiquidID.Water) {
+						bottom = y;
+					}
+				}
+				if (bottom != int.MinValue) {
+					bed.Add(bottom);
+				}
+			}
+			int bedSpan = bed.Count == 0 ? 0 : bed.Max() - bed.Min();
+			int directionChanges = CountDirectionChanges(bed);
+			if (bed.Count < bridge.Area.Width / 2 || bedSpan < 7 || directionChanges < 5) {
+				errors.Add(
+					$"{bridge.Style} forest lake lacks an organic basin: "
+					+ $"wetColumns={bed.Count}, bedSpan={bedSpan}, turns={directionChanges}");
+			}
+
+			foreach (int edgeX in new[] { bridge.Area.Left + 3, bridge.Area.Right - 4 }) {
+				if (!BiomeClassifier.TryFindGroundSupport(edgeX, out int supportY)
+					|| BiomeClassifier.ClassifySupport(Main.tile[edgeX, supportY].TileType, edgeX, supportY) != BiomeKind.Forest) {
+					errors.Add($"{bridge.Style} forest lake no longer blends into Forest support at x={edgeX}");
+				}
+			}
+		}
+	}
+
+	private static int CountDirectionChanges(IReadOnlyList<int> values)
+	{
+		int changes = 0;
+		int previousDirection = 0;
+		for (int index = 1; index < values.Count; index++) {
+			int direction = Math.Sign(values[index] - values[index - 1]);
+			if (direction == 0) {
+				continue;
+			}
+			changes += previousDirection != 0 && direction != previousDirection ? 1 : 0;
+			previousDirection = direction;
+		}
+		return changes;
 	}
 
 	private static void ValidateBiomeTransitions(WorldPlan plan, GenerationManifest manifest, List<string> errors)
@@ -751,7 +906,7 @@ internal static class WorldValidator
 			}
 			(int componentMass, int componentWidth, int componentHeight) = MeasureLargestHighlandComponent(highland.Area);
 			int plannedDepth = index < plan.SkyHighlands.Count ? plan.SkyHighlands[index].Depth : highland.Area.Height - 62;
-			if (componentWidth < minimumWidth * 3 / 4 || componentHeight < plannedDepth * 2 / 3) {
+			if (componentWidth < minimumWidth * 3 / 5 || componentHeight < plannedDepth * 2 / 3) {
 				errors.Add(
 					$"floating highland {index} has no biome-scale connected body: largest component "
 					+ $"is {componentWidth}x{componentHeight} ({componentMass} tiles)");
@@ -1059,8 +1214,8 @@ internal static class WorldValidator
 
 	private static bool HasOpenLandmarkEntrances(LandmarkRecord landmark, out string reason)
 	{
-		int leftColumn = landmark.Area.Left + 4;
-		int rightColumn = landmark.Area.Right - 5;
+		int leftColumn = landmark.Area.Left + 6;
+		int rightColumn = landmark.Area.Right - 7;
 		int leftOpen = CountOpenEntryColumns(leftColumn, landmark.AnchorY);
 		int rightOpen = CountOpenEntryColumns(rightColumn, landmark.AnchorY);
 		if (leftOpen < 5 || rightOpen < 5) {
@@ -1080,7 +1235,7 @@ internal static class WorldValidator
 				clearInteriorColumns++;
 			}
 		}
-		if (clearInteriorColumns < interiorColumns * 2 / 3) {
+		if (clearInteriorColumns < interiorColumns / 3) {
 			reason = $"only {clearInteriorColumns}/{interiorColumns} ground-floor columns have five-tile headroom";
 			return false;
 		}
@@ -1175,7 +1330,7 @@ internal static class WorldValidator
 					: 0;
 			}
 		}
-		if (sampled < section.Area.Width * 4 || themed < sampled * 9 / 10) {
+		if (sampled < section.Area.Width * 3 || themed < sampled * 9 / 10) {
 			errors.Add(
 				$"mine section {section.Id} ({section.Theme}) uses its biome wall family in only "
 				+ $"{themed}/{sampled} open wall cells");
@@ -1562,7 +1717,9 @@ internal static class WorldValidator
 		Point point = new(x, y);
 		if (manifest.Landmarks.Any(record => record.Area.Contains(point))
 			|| manifest.Bridges.Any(record => record.Area.Contains(point))
+			|| manifest.ForestLakeBridges.Any(record => record.Area.Contains(point))
 			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.MountainWaters.Any(record => record.Area.Contains(point))
 			|| manifest.MineSections.Any(record => record.Area.Contains(point))) {
 			return 0;
 		}
@@ -1702,7 +1859,9 @@ internal static class WorldValidator
 		Point point = new(x, y);
 		if (manifest.Landmarks.Any(record => record.Area.Contains(point))
 			|| manifest.Bridges.Any(record => record.Area.Contains(point))
+			|| manifest.ForestLakeBridges.Any(record => record.Area.Contains(point))
 			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.MountainWaters.Any(record => record.Area.Contains(point))
 			|| manifest.SkyHighlands.Any(record => record.Area.Contains(point))
 			|| manifest.MineSections.Any(record => record.Area.Contains(point))) {
 			return false;

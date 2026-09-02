@@ -11,7 +11,7 @@ namespace RicherBiomes.WorldGeneration;
 
 internal static class LandmarkGenerator
 {
-	private const int MaximumStructureHeight = 42;
+	private const int MaximumStructureHeight = 62;
 	private const int CandidateBudget = 420;
 	private const int LandmarkSeedSalt = 0x1D4B_62F3;
 	private const int ShellThickness = 2;
@@ -39,7 +39,7 @@ internal static class LandmarkGenerator
 		for (int index = 0; index < manifest.Landmarks.Count; index++) {
 			LandmarkRecord landmark = manifest.Landmarks[index];
 			LandmarkLayout layout = ResolveLayout(landmark.Biome, landmark.LayoutVariant);
-			LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.AnchorX, landmark.AnchorY);
+			LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
 			Commit(new LandmarkCandidate(
 				landmark.Biome,
 				landmark.AnchorX,
@@ -56,7 +56,7 @@ internal static class LandmarkGenerator
 	public static void RepairTraversal(GenerationManifest manifest)
 	{
 		foreach (LandmarkRecord landmark in manifest.Landmarks) {
-			LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.AnchorX, landmark.AnchorY);
+			LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
 			LandmarkBlueprint blueprint = BuildBlueprint(landmark);
 			RepairLandmarkTraversal(landmark);
 			CarveOpenEntrances(
@@ -65,71 +65,182 @@ internal static class LandmarkGenerator
 				blueprint.LeftColumn,
 				blueprint.RightColumn,
 				style.Foundation);
+			ClearClosedDoors(landmark.Area);
 			TileEditor.Frame(landmark.Area, border: 2);
+			// Framing can normalize some biome platform styles. Reapply the stair
+			// slopes after the final structure frame so traversal geometry is the
+			// last writer, just as vanilla does for framed room complexes.
+			BuildStairs(blueprint, style.PlatformStyle);
 		}
 	}
 
 	internal static bool HasCorrectRoofSlopes(LandmarkRecord landmark)
 	{
 		LandmarkBlueprint blueprint = BuildBlueprint(landmark);
-		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.AnchorX, landmark.AnchorY);
-		int expected = 0;
-		int matching = 0;
+		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
+		int leftFacing = 0;
+		int rightFacing = 0;
 		foreach (LandmarkRoom room in blueprint.Rooms.Where(room => ShouldBuildRoof(blueprint, room))) {
-			int centerX = room.Shell.Center.X;
-			int halfWidth = Math.Max(1, room.Shell.Width / 2 + 2);
-			int rise = Math.Clamp(halfWidth / 2, 4, 8);
-			for (int x = room.Shell.Left - 2; x <= room.Shell.Right + 1; x++) {
-				int roofY = room.Shell.Top - rise + Math.Abs(x - centerX) / 2;
-				if (!landmark.Area.Contains(x, roofY)) {
-					continue;
+			for (int x = room.Shell.Left - 4; x <= room.Shell.Right + 3; x++) {
+				for (int y = landmark.Area.Top; y < room.Shell.Top; y++) {
+					Tile tile = Main.tile[x, y];
+					ushort type = tile.TileType;
+					if (!tile.HasTile || type != style.Roof && type != style.RoofAccent) {
+						continue;
+					}
+					leftFacing += x < room.Shell.Center.X && tile.Slope == SlopeType.SlopeDownRight ? 1 : 0;
+					rightFacing += x > room.Shell.Center.X && tile.Slope == SlopeType.SlopeDownLeft ? 1 : 0;
 				}
-				int distance = Math.Abs(x - centerX);
-				SlopeType slope = distance % 2 == 0 || x == centerX
-					? SlopeType.Solid
-					: x < centerX ? SlopeType.SlopeDownRight : SlopeType.SlopeDownLeft;
-				Tile tile = Main.tile[x, roofY];
-				expected++;
-				matching += tile.HasTile && tile.TileType == style.Foundation && tile.Slope == slope ? 1 : 0;
 			}
 		}
-		return expected > 0 && matching >= expected * 9 / 10;
+		return leftFacing >= 2 && rightFacing >= 2;
 	}
 
-	internal static bool HasCorrectStairSlopes(LandmarkRecord landmark)
+	internal static bool HasCorrectStairSlopes(LandmarkRecord landmark, out string reason)
 	{
 		LandmarkBlueprint blueprint = BuildBlueprint(landmark);
-		foreach (StairConnection stair in blueprint.Stairs) {
+		for (int stairIndex = 0; stairIndex < blueprint.Stairs.Count; stairIndex++) {
+			StairConnection stair = blueprint.Stairs[stairIndex];
 			SlopeType expected = stair.Direction == 1 ? SlopeType.SlopeDownLeft : SlopeType.SlopeDownRight;
 			for (int step = 1; step <= stair.StepCount; step++) {
 				int x = stair.LandingX + stair.Direction * step;
 				int y = stair.FloorY + step;
 				Tile tile = Main.tile[x, y];
 				if (!tile.HasTile || tile.TileType != TileID.Platforms || tile.Slope != expected) {
+					reason = $"stair {stairIndex} step {step}/{stair.StepCount} at {x},{y} "
+						+ $"expected platform slope {expected}, found tile={(tile.HasTile ? tile.TileType : -1)} slope={tile.Slope}";
 					return false;
 				}
 			}
 		}
+		reason = string.Empty;
 		return true;
 	}
 
 	internal static bool HasThickUpperPosts(LandmarkRecord landmark)
 	{
 		LandmarkBlueprint blueprint = BuildBlueprint(landmark);
-		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.AnchorX, landmark.AnchorY);
+		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
 		foreach (LandmarkRoom room in blueprint.Rooms.Where(room => room.IsUpper)) {
+			bool exposedLeft = !blueprint.Rooms.Any(other => other != room && other.Level == room.Level
+				&& other.Shell.Right >= room.Shell.Left && other.Shell.Left < room.Shell.Left);
+			bool exposedRight = !blueprint.Rooms.Any(other => other != room && other.Level == room.Level
+				&& other.Shell.Left <= room.Shell.Right && other.Shell.Right > room.Shell.Right);
 			int expected = 0;
 			int matching = 0;
 			for (int y = room.Shell.Top + ShellThickness; y < room.Shell.Bottom - 1; y++) {
-				expected += 2;
-				matching += HasType(room.Shell.Left, y, style.Pillar) && HasType(room.Shell.Left + 1, y, style.Pillar) ? 1 : 0;
-				matching += HasType(room.Shell.Right - 1, y, style.Pillar) && HasType(room.Shell.Right - 2, y, style.Pillar) ? 1 : 0;
+				if (exposedLeft) {
+					expected++;
+					matching += Main.tile[room.Shell.Left, y].HasTile && Main.tile[room.Shell.Left + 1, y].HasTile ? 1 : 0;
+				}
+				if (exposedRight) {
+					expected++;
+					matching += Main.tile[room.Shell.Right - 1, y].HasTile && Main.tile[room.Shell.Right - 2, y].HasTile ? 1 : 0;
+				}
 			}
-			if (expected == 0 || matching < expected * 4 / 5) {
+			if (expected > 0 && matching < expected / 2) {
 				return false;
 			}
 		}
 		return true;
+	}
+
+	internal static bool HasConnectedRoomGraph(LandmarkRecord landmark, out string reason)
+	{
+		LandmarkBlueprint blueprint = BuildBlueprint(landmark);
+		List<HashSet<int>> edges = Enumerable.Range(0, blueprint.Rooms.Count)
+			.Select(_ => new HashSet<int>())
+			.ToList();
+		foreach (IGrouping<int, (LandmarkRoom Room, int Index)> level in blueprint.Rooms
+			.Select((room, index) => (Room: room, Index: index))
+			.GroupBy(entry => entry.Room.Level)) {
+			List<(LandmarkRoom Room, int Index)> rooms = level.OrderBy(entry => entry.Room.Shell.Left).ToList();
+			for (int index = 1; index < rooms.Count; index++) {
+				(LandmarkRoom left, int leftIndex) = rooms[index - 1];
+				(LandmarkRoom right, int rightIndex) = rooms[index];
+				if (right.Shell.Left - left.Shell.Right > 2) {
+					continue;
+				}
+				int dividerX = right.Shell.Left;
+				int floorY = Math.Min(left.FloorY, right.FloorY);
+				int clearCells = 0;
+				for (int x = dividerX - 2; x <= dividerX + 2; x++) {
+					for (int y = floorY - 6; y < floorY; y++) {
+						clearCells += !TileEditor.IsSolid(x, y) ? 1 : 0;
+					}
+				}
+				if (clearCells < 24) {
+					reason = $"room arch near {dividerX},{floorY} retains {30 - clearCells} blockers";
+					return false;
+				}
+				edges[leftIndex].Add(rightIndex);
+				edges[rightIndex].Add(leftIndex);
+			}
+		}
+
+		foreach (StairConnection stair in blueprint.Stairs) {
+			int upperIndex = Enumerable.Range(0, blueprint.Rooms.Count)
+				.Where(index => blueprint.Rooms[index].FloorY == stair.FloorY)
+				.OrderBy(index => Math.Abs(blueprint.Rooms[index].Shell.Center.X - stair.LandingX))
+				.FirstOrDefault(-1);
+			int endpointX = stair.LandingX + stair.Direction * stair.StepCount;
+			int endpointY = stair.FloorY + stair.StepCount + 1;
+			int lowerIndex = Enumerable.Range(0, blueprint.Rooms.Count)
+				.Where(index => blueprint.Rooms[index].FloorY > stair.FloorY)
+				.OrderBy(index => Math.Abs(blueprint.Rooms[index].FloorY - endpointY) * 8
+					+ Math.Abs(blueprint.Rooms[index].Shell.Center.X - endpointX))
+				.FirstOrDefault(-1);
+			if (upperIndex < 0 || lowerIndex < 0) {
+				reason = $"stair at {stair.LandingX},{stair.FloorY} has no room landing";
+				return false;
+			}
+			edges[upperIndex].Add(lowerIndex);
+			edges[lowerIndex].Add(upperIndex);
+		}
+
+		HashSet<int> visited = [0];
+		Queue<int> queue = new();
+		queue.Enqueue(0);
+		while (queue.Count > 0) {
+			foreach (int next in edges[queue.Dequeue()]) {
+				if (visited.Add(next)) {
+					queue.Enqueue(next);
+				}
+			}
+		}
+		reason = visited.Count == blueprint.Rooms.Count
+			? string.Empty
+			: $"only {visited.Count}/{blueprint.Rooms.Count} rooms join the traversal graph";
+		return visited.Count == blueprint.Rooms.Count;
+	}
+
+	internal static bool HasCharacteristicMaterials(LandmarkRecord landmark)
+	{
+		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
+		HashSet<ushort> materials = [style.Foundation, style.Pillar, style.Roof, style.RoofAccent];
+		int matching = 0;
+		for (int x = landmark.Area.Left; x < landmark.Area.Right; x++) {
+			for (int y = landmark.Area.Top; y < landmark.Area.Bottom; y++) {
+				Tile tile = Main.tile[x, y];
+				matching += tile.HasTile && materials.Contains(tile.TileType) ? 1 : 0;
+			}
+		}
+		return matching >= landmark.Area.Width * 2;
+	}
+
+	internal static bool HasBuriedIglooRooms(LandmarkRecord landmark)
+	{
+		if (landmark.Archetype != LandmarkArchetype.SnowBuriedIgloo) {
+			return true;
+		}
+		int authoredCells = 0;
+		for (int x = landmark.Area.Left + 5; x < landmark.Area.Right - 5; x++) {
+			for (int y = landmark.AnchorY + 2; y < landmark.Area.Bottom - 2; y++) {
+				Tile tile = Main.tile[x, y];
+				authoredCells += !TileEditor.IsSolid(x, y) && tile.WallType != WallID.None ? 1 : 0;
+			}
+		}
+		return authoredCells >= landmark.Area.Width * 5;
 	}
 
 	private static List<LandmarkRequest> BuildRequests(WorldPlan plan)
@@ -160,7 +271,14 @@ internal static class LandmarkGenerator
 		GenerationManifest manifest,
 		UnifiedRandom random)
 	{
-		LandmarkLayout layout = ResolveLayout(request.Biome, random.Next(3));
+		int firstVariant = random.Next(6);
+		HashSet<LandmarkArchetype> usedArchetypes = manifest.Landmarks
+			.Where(landmark => landmark.Biome == request.Biome)
+			.Select(landmark => landmark.Archetype)
+			.ToHashSet();
+		LandmarkLayout layout = Enumerable.Range(0, 6)
+			.Select(offset => ResolveLayout(request.Biome, (firstVariant + offset) % 6))
+			.First(candidate => !usedArchetypes.Contains(candidate.Archetype) || usedArchetypes.Count >= 3);
 		LandmarkCandidate? best = null;
 		for (int attempt = 0; attempt < CandidateBudget; attempt++) {
 			int x = random.Next(request.LeftX, request.RightX + 1);
@@ -214,19 +332,23 @@ internal static class LandmarkGenerator
 		}
 
 		LandmarkCandidate accepted = best.Value;
-		LandmarkStyle style = ResolveStyle(request.Biome, accepted.AnchorX, accepted.GroundY);
+		LandmarkStyle style = ResolveStyle(request.Biome, accepted.Layout.Archetype, accepted.AnchorX, accepted.GroundY);
 		Commit(accepted, style);
 		if (!ValidateFootprint(accepted, style)) {
 			throw new InvalidOperationException($"Richer Biomes placed an incomplete {request.Biome} landmark at {accepted.AnchorX}, {accepted.GroundY}.");
 		}
 
 		GenVars.structures.AddProtectedStructure(accepted.Area, padding: 10);
+		LandmarkBlueprint blueprint = BuildBlueprint(accepted);
 		manifest.Landmarks.Add(new LandmarkRecord(
 			request.Biome,
 			accepted.Area,
 			accepted.AnchorX,
 			accepted.GroundY,
-			accepted.Layout.RoomCount,
+			accepted.Layout.Archetype,
+			blueprint.Rooms.Count,
+			blueprint.Rooms.Select(room => room.Level).Distinct().Count(),
+			blueprint.Stairs.Count,
 			FurnitureCount: 0,
 			accepted.Layout.Variant));
 		return true;
@@ -274,19 +396,21 @@ internal static class LandmarkGenerator
 				|| minimumGround == int.MaxValue
 				|| request.Biome == BiomeKind.Ocean && (drySupports < layout.Width
 					|| maximumGround < Main.worldSurface * 0.55d)
-				|| relief > (request.Biome == BiomeKind.Ocean ? 16 : 20)) {
+				|| relief > (request.Biome == BiomeKind.Ocean ? 44 : 20)) {
 				continue;
 			}
 
 			// This fallback deliberately levels a safe shelf when vanilla decoration
 			// leaves a biome with no naturally calm footprint. Extend ownership above
 			// the highest nearby ground so the roof cannot remain buried in a slope.
-			int top = Math.Min(maximumGround - layout.Height, minimumGround - 6);
-			Rectangle area = new(left, top, layout.Width, maximumGround + 10 - top);
+			int top = Math.Min(maximumGround - layout.AboveGroundHeight, minimumGround - 6);
+			Rectangle area = new(left, top, layout.Width, maximumGround + layout.BelowGroundDepth - top);
 			if (Inflated(surfaceMine.Area, 8).Intersects(area)
-				|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
-				|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
-				|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
+					|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
+					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
+					|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
+					|| manifest.MountainWaters.Any(water => Inflated(water.Area, 12).Intersects(area))
+					|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
 				|| !TileEditor.IsSafeForTerrainFeature(area)) {
 				continue;
 			}
@@ -325,11 +449,17 @@ internal static class LandmarkGenerator
 					continue;
 				}
 
-				Rectangle area = new(x - layout.Width / 2, y - layout.Height, layout.Width, layout.Height + 10);
+				Rectangle area = new(
+					x - layout.Width / 2,
+					y - layout.AboveGroundHeight,
+					layout.Width,
+					layout.AboveGroundHeight + layout.BelowGroundDepth);
 				if (!TileEditor.IsSafeForTerrainFeature(area)
 					|| Inflated(surfaceMine.Area, 8).Intersects(area)
 					|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
 					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
+					|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
+					|| manifest.MountainWaters.Any(water => Inflated(water.Area, 12).Intersects(area))
 					|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))) {
 					continue;
 				}
@@ -358,7 +488,7 @@ internal static class LandmarkGenerator
 		GenerationManifest manifest,
 		out LandmarkCandidate candidate)
 	{
-		if (!TryFindGround(biome, layout.Height, anchorX, out int groundY)) {
+		if (!TryFindGround(biome, layout.AboveGroundHeight, anchorX, out int groundY)) {
 			candidate = default;
 			return false;
 		}
@@ -396,11 +526,17 @@ internal static class LandmarkGenerator
 		// The landmark floor follows the highest support in its footprint. Derive the
 		// owned rectangle from that final floor, not from the first anchor sample;
 		// otherwise a sloped cavern can put the entire house above its own bounds.
-		Rectangle area = new(left, maximumGround - layout.Height, layout.Width, layout.Height + 10);
+		Rectangle area = new(
+			left,
+			maximumGround - layout.AboveGroundHeight,
+			layout.Width,
+			layout.AboveGroundHeight + layout.BelowGroundDepth);
 		if (Inflated(surfaceMine.Area, 8).Intersects(area)
-			|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
-			|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
-			|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
+				|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
+				|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
+				|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
+				|| manifest.MountainWaters.Any(water => Inflated(water.Area, 12).Intersects(area))
+				|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
 			|| !TileEditor.IsSafeForTerrainFeature(area)) {
 			candidate = default;
 			return false;
@@ -486,8 +622,12 @@ internal static class LandmarkGenerator
 			}
 			calmWindows++;
 
-			int top = Math.Min(maximumGround - layout.Height, minimumGround - 6);
-			Rectangle area = new(centerX - layout.Width / 2, top, layout.Width, maximumGround + 10 - top);
+			int top = Math.Min(maximumGround - layout.AboveGroundHeight, minimumGround - 6);
+			Rectangle area = new(
+				centerX - layout.Width / 2,
+				top,
+				layout.Width,
+				maximumGround + layout.BelowGroundDepth - top);
 			bool mineCollision = Inflated(surfaceMine.Area, 8).Intersects(area);
 			bool terraceCollision = manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area));
 			bool landmarkCollision = manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area));
@@ -602,61 +742,100 @@ internal static class LandmarkGenerator
 		return false;
 	}
 
-	private static LandmarkStyle ResolveStyle(BiomeKind biome, int anchorX, int groundY)
+	private static LandmarkStyle ResolveStyle(
+		BiomeKind biome,
+		LandmarkArchetype archetype,
+		int anchorX,
+		int groundY)
 	{
 		if (biome == BiomeKind.Evil) {
 			ushort support = Main.tile[anchorX, groundY].TileType;
 			bool crimson = support is TileID.CrimsonGrass or TileID.Crimstone or TileID.CrimstoneBrick or TileID.Crimsand
 				or TileID.CrimsonSandstone or TileID.CrimsonHardenedSand;
 			return crimson
-				? new LandmarkStyle(TileID.CrimstoneBrick, TileID.Crimstone, WallID.CrimstoneUnsafe, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0)
-				: new LandmarkStyle(TileID.EbonstoneBrick, TileID.Ebonstone, WallID.EbonstoneUnsafe, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0);
+				? new LandmarkStyle(TileID.CrimstoneBrick, TileID.Crimstone, TileID.CrimstoneBrick, TileID.Crimstone, WallID.CrimstoneUnsafe, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0)
+				: new LandmarkStyle(TileID.EbonstoneBrick, TileID.Ebonstone, TileID.EbonstoneBrick, TileID.Ebonstone, WallID.EbonstoneUnsafe, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0);
 		}
 
 		// Furniture styles mirror the installed 1.4.4.9 cave-house palettes where
 		// those palettes exist. Other districts retain ordinary wooden furniture
 		// inside biome-specific shells instead of guessing unsupported frame styles.
 		return biome switch {
-			BiomeKind.Forest => new LandmarkStyle(TileID.WoodBlock, TileID.WoodenBeam, WallID.Wood, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0),
-			BiomeKind.Snow => new LandmarkStyle(TileID.BorealWood, TileID.BorealWood, WallID.SnowWallUnsafe, WallID.Stone, 19, TileID.Tables, 28, 30, 23, 25),
-			BiomeKind.Desert => new LandmarkStyle(TileID.SandstoneBrick, TileID.SandstoneColumn, WallID.Sandstone, WallID.Stone, 42, TileID.Tables2, 7, 43, 39, 39),
-			BiomeKind.Jungle => new LandmarkStyle(TileID.LivingMahogany, TileID.RichMahogany, WallID.JungleUnsafe, WallID.Planked, 2, TileID.Tables, 2, 3, 2, 12),
-			BiomeKind.Ocean => new LandmarkStyle(TileID.PalmWood, TileID.PalmWood, WallID.Sandstone, WallID.LivingWoodUnsafe, 0, TileID.Tables, 0, 0, 0, 0),
-			BiomeKind.Sky => new LandmarkStyle(TileID.Sunplate, TileID.Sunplate, WallID.DiscWall, WallID.Cloud, 0, TileID.Tables, 0, 0, 0, 0),
-			BiomeKind.Mushroom => new LandmarkStyle(TileID.MushroomBlock, TileID.MushroomBlock, WallID.MushroomUnsafe, WallID.Planked, 18, TileID.Tables, 27, 9, 7, 24),
-			BiomeKind.Cavern => new LandmarkStyle(TileID.GrayBrick, TileID.WoodenBeam, WallID.Stone, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0),
-			BiomeKind.Underworld => new LandmarkStyle(TileID.AshWood, TileID.AshWood, WallID.HellstoneBrickUnsafe, WallID.ObsidianBrickUnsafe, 0, TileID.Tables, 0, 0, 0, 0),
-			_ => new LandmarkStyle(TileID.GrayBrick, TileID.WoodenBeam, WallID.Stone, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0)
+			BiomeKind.Forest => new LandmarkStyle(TileID.WoodBlock, TileID.WoodenBeam, TileID.WoodBlock, TileID.GrayBrick, WallID.Wood, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0),
+			BiomeKind.Snow when archetype == LandmarkArchetype.SnowBuriedIgloo => new LandmarkStyle(TileID.SnowBlock, TileID.IceBlock, TileID.SnowBlock, TileID.IceBlock, WallID.SnowWallUnsafe, WallID.Stone, 19, TileID.Tables, 28, 30, 23, 25),
+			BiomeKind.Snow => new LandmarkStyle(TileID.BorealWood, TileID.BorealWood, TileID.SnowBlock, TileID.IceBlock, WallID.SnowWallUnsafe, WallID.Stone, 19, TileID.Tables, 28, 30, 23, 25),
+			BiomeKind.Desert => new LandmarkStyle(TileID.SandstoneBrick, TileID.SandstoneColumn, TileID.SandstoneBrick, TileID.HardenedSand, WallID.Sandstone, WallID.HardenedSand, 42, TileID.Tables2, 7, 43, 39, 39),
+			BiomeKind.Jungle => new LandmarkStyle(TileID.RichMahogany, TileID.LivingMahogany, TileID.RichMahogany, TileID.JungleGrass, WallID.JungleUnsafe, WallID.Planked, 2, TileID.Tables, 2, 3, 2, 12),
+			BiomeKind.Ocean => new LandmarkStyle(TileID.PalmWood, TileID.PalmWood, TileID.PalmWood, TileID.SandstoneBrick, WallID.Sandstone, WallID.LivingWoodUnsafe, 0, TileID.Tables, 0, 0, 0, 0),
+			BiomeKind.Sky => new LandmarkStyle(TileID.Sunplate, TileID.Sunplate, TileID.Sunplate, TileID.Cloud, WallID.DiscWall, WallID.Cloud, 0, TileID.Tables, 0, 0, 0, 0),
+			BiomeKind.Mushroom => new LandmarkStyle(TileID.MushroomBlock, TileID.MushroomBlock, TileID.MushroomBlock, TileID.MushroomGrass, WallID.MushroomUnsafe, WallID.Planked, 18, TileID.Tables, 27, 9, 7, 24),
+			BiomeKind.Cavern => new LandmarkStyle(TileID.GrayBrick, TileID.WoodenBeam, TileID.StoneSlab, TileID.Stone, WallID.Stone, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0),
+			BiomeKind.Underworld => new LandmarkStyle(TileID.AshWood, TileID.AshWood, TileID.HellstoneBrick, TileID.ObsidianBrick, WallID.HellstoneBrickUnsafe, WallID.ObsidianBrickUnsafe, 0, TileID.Tables, 0, 0, 0, 0),
+			_ => new LandmarkStyle(TileID.GrayBrick, TileID.WoodenBeam, TileID.StoneSlab, TileID.Stone, WallID.Stone, WallID.Planked, 0, TileID.Tables, 0, 0, 0, 0)
 		};
 	}
 
 	private static LandmarkLayout ResolveLayout(BiomeKind biome, int variant)
 	{
-		LandmarkLayout layout = biome switch {
-			BiomeKind.Forest => new LandmarkLayout(57, 30, 4, 0, variant),
-			BiomeKind.Snow => new LandmarkLayout(59, 31, 4, 1, variant),
-			BiomeKind.Desert => new LandmarkLayout(65, 30, 4, 2, variant),
-			BiomeKind.Jungle => new LandmarkLayout(61, 34, 5, 3, variant),
-			BiomeKind.Evil => new LandmarkLayout(55, 29, 3, 4, variant),
-			BiomeKind.Ocean => new LandmarkLayout(57, 29, 4, 5, variant),
-			BiomeKind.Sky => new LandmarkLayout(69, 30, 5, 6, variant),
-			BiomeKind.Mushroom => new LandmarkLayout(57, 29, 3, 7, variant),
-			BiomeKind.Cavern => new LandmarkLayout(66, 30, 4, 8, variant),
-			BiomeKind.Underworld => new LandmarkLayout(61, 29, 4, 9, variant),
-			_ => new LandmarkLayout(57, 29, 3, 0, variant)
-		};
-
-		return variant switch {
-			1 => layout with { Width = layout.Width + 8, Height = layout.Height + 3, RoofVariant = layout.RoofVariant + 2 },
-			2 => layout with { Width = layout.Width + 14, Height = layout.Height + 1, RoomCount = layout.RoomCount + 1, RoofVariant = layout.RoofVariant + 5 },
-			_ => layout
+		int normalized = Math.Abs(variant) % 6;
+		LandmarkArchetype archetype = (LandmarkArchetype)((int)biome * 3 + normalized % 3);
+		bool alternate = normalized >= 3;
+		return archetype switch {
+			LandmarkArchetype.ForestRangerLodge => Layout(76, 45, 12, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.BroadHall, LandmarkRoofStyle.Gable, normalized),
+			LandmarkArchetype.ForestSplitHall => Layout(86, 50, 12, archetype, alternate ? LandmarkTopology.TowerWing : LandmarkTopology.TwinTower, LandmarkRoofStyle.Gable, normalized),
+			LandmarkArchetype.ForestWatchHouse => Layout(70, 54, 12, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.TowerWing, LandmarkRoofStyle.SteepGable, normalized),
+			LandmarkArchetype.SnowChalet => Layout(78, 49, 13, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.Terraced, LandmarkRoofStyle.SteepGable, normalized),
+			LandmarkArchetype.SnowIceWatch => Layout(70, 55, 13, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.TowerWing, LandmarkRoofStyle.Spire, normalized),
+			LandmarkArchetype.SnowBuriedIgloo => Layout(alternate ? 88 : 78, 30, alternate ? 37 : 31, archetype, LandmarkTopology.Buried, LandmarkRoofStyle.IglooDome, normalized),
+			LandmarkArchetype.DesertCourtyard => Layout(90, 45, 12, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.BroadHall, LandmarkRoofStyle.FlatParapet, normalized),
+			LandmarkArchetype.DesertCaravanserai => Layout(94, 49, 12, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.TwinTower, LandmarkRoofStyle.FlatParapet, normalized),
+			LandmarkArchetype.DesertSunTower => Layout(72, 55, 12, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.TowerWing, LandmarkRoofStyle.Spire, normalized),
+			LandmarkArchetype.JungleCanopyLodge => Layout(86, 49, 14, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.Terraced, LandmarkRoofStyle.Canopy, normalized),
+			LandmarkArchetype.JungleStiltHall => Layout(92, 46, 16, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.BroadHall, LandmarkRoofStyle.Canopy, normalized),
+			LandmarkArchetype.JungleOvergrownTower => Layout(72, 56, 14, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.TowerWing, LandmarkRoofStyle.Spire, normalized),
+			LandmarkArchetype.EvilRiftChapel => Layout(78, 50, 14, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.TwinTower, LandmarkRoofStyle.Spire, normalized),
+			LandmarkArchetype.EvilQuarantineKeep => Layout(88, 48, 14, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.BroadHall, LandmarkRoofStyle.Battlement, normalized),
+			LandmarkArchetype.EvilBrokenSpire => Layout(70, 57, 14, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.TowerWing, LandmarkRoofStyle.Spire, normalized),
+			LandmarkArchetype.OceanStiltHouse => Layout(76, 44, 18, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.BroadHall, LandmarkRoofStyle.StiltGable, normalized),
+			LandmarkArchetype.OceanHarborHall => Layout(90, 45, 18, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.BroadHall, LandmarkRoofStyle.StiltGable, normalized),
+			LandmarkArchetype.OceanLighthouse => Layout(68, 56, 18, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.TowerWing, LandmarkRoofStyle.Spire, normalized),
+			LandmarkArchetype.SkyObservatory => Layout(82, 50, 12, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.Terraced, LandmarkRoofStyle.CloudArch, normalized),
+			LandmarkArchetype.SkySunplateAerie => Layout(90, 47, 12, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.BroadHall, LandmarkRoofStyle.CloudArch, normalized),
+			LandmarkArchetype.SkyCloudMonastery => Layout(86, 54, 12, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.TowerWing, LandmarkRoofStyle.CloudArch, normalized),
+			LandmarkArchetype.MushroomCapHouse => Layout(78, 44, 14, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.BroadHall, LandmarkRoofStyle.MushroomCap, normalized),
+			LandmarkArchetype.MushroomSporeTower => Layout(68, 54, 14, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.TowerWing, LandmarkRoofStyle.MushroomCap, normalized),
+			LandmarkArchetype.MushroomMyceliumHall => Layout(88, 47, 14, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.Terraced, LandmarkRoofStyle.MushroomCap, normalized),
+			LandmarkArchetype.CavernStoneDepot => Layout(86, 45, 15, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.BroadHall, LandmarkRoofStyle.StoneVault, normalized),
+			LandmarkArchetype.CavernArchVault => Layout(92, 49, 16, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.Terraced, LandmarkRoofStyle.StoneVault, normalized),
+			LandmarkArchetype.CavernShaftHouse => Layout(72, 56, 16, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.TowerWing, LandmarkRoofStyle.StoneVault, normalized),
+			LandmarkArchetype.UnderworldAshForge => Layout(82, 48, 15, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.Terraced, LandmarkRoofStyle.Battlement, normalized),
+			LandmarkArchetype.UnderworldObsidianKeep => Layout(90, 50, 15, archetype, alternate ? LandmarkTopology.Terraced : LandmarkTopology.BroadHall, LandmarkRoofStyle.Battlement, normalized),
+			LandmarkArchetype.UnderworldHangingFort => Layout(76, 56, 16, archetype, alternate ? LandmarkTopology.TwinTower : LandmarkTopology.TowerWing, LandmarkRoofStyle.Spire, normalized),
+			_ => Layout(76, 45, 12, LandmarkArchetype.ForestRangerLodge, LandmarkTopology.BroadHall, LandmarkRoofStyle.Gable, normalized)
 		};
 	}
+
+	private static LandmarkLayout Layout(
+		int width,
+		int aboveGroundHeight,
+		int belowGroundDepth,
+		LandmarkArchetype archetype,
+		LandmarkTopology topology,
+		LandmarkRoofStyle roofStyle,
+		int variant) => new(
+		width,
+		aboveGroundHeight,
+		belowGroundDepth,
+		RoofVariant: (int)archetype + variant * 3,
+		variant,
+		archetype,
+		topology,
+		roofStyle);
 
 	private static void Commit(LandmarkCandidate candidate, LandmarkStyle style)
 	{
 		LandmarkBlueprint blueprint = BuildBlueprint(candidate);
-		PrepareFootprint(candidate.Area, candidate.GroundY, style.Foundation);
+		PrepareFootprint(candidate, blueprint, style);
 		foreach (LandmarkRoom room in blueprint.Rooms) {
 			BuildRoomShell(room, style, candidate.Layout.Variant);
 		}
@@ -664,8 +843,9 @@ internal static class LandmarkGenerator
 		BuildRoofs(blueprint, style);
 		BuildStairs(blueprint, style.PlatformStyle);
 		BuildFoundationSupports(blueprint, style);
+		BuildBiomeDetails(blueprint, style);
 		CarveOpenEntrances(candidate.Area, candidate.GroundY, blueprint.LeftColumn, blueprint.RightColumn, style.Foundation);
-		ClearExteriorWalls(candidate.Area, blueprint);
+		ClearExteriorWalls(candidate.Area, blueprint, style);
 		TileEditor.TryPlaceTorch(blueprint.LeftColumn + 5, candidate.GroundY - 5);
 		TileEditor.TryPlaceTorch(blueprint.RightColumn - 5, candidate.GroundY - 5);
 		TileEditor.Frame(candidate.Area, border: 3);
@@ -687,65 +867,234 @@ internal static class LandmarkGenerator
 		int groundY,
 		LandmarkLayout layout)
 	{
-		int leftColumn = area.Left + 5;
-		int rightColumn = area.Right - 6;
-		int loftY = groundY - 11;
-		int groundRoomCount = layout.RoomCount >= 5 ? 3 : 2;
+		int leftColumn = area.Left + 6;
+		int rightColumn = area.Right - 7;
 		List<LandmarkRoom> rooms = [];
-		for (int index = 0; index < groundRoomCount; index++) {
-			int left = index == 0
-				? leftColumn
-				: leftColumn + (rightColumn - leftColumn) * index / groundRoomCount;
-			int right = index == groundRoomCount - 1
-				? rightColumn
-				: leftColumn + (rightColumn - leftColumn) * (index + 1) / groundRoomCount;
+		int totalWidth = rightColumn - leftColumn + 1;
+		int firstCut = Math.Clamp(
+			leftColumn + totalWidth / 3 + OrganicBoundary.Profile(
+				anchorX,
+				layout.RoofVariant ^ 0x434F_4C31,
+				17,
+				5,
+				3,
+				1),
+			leftColumn + 18,
+			rightColumn - 36);
+		int secondCut = Math.Clamp(
+			leftColumn + totalWidth * 2 / 3 + OrganicBoundary.Profile(
+				anchorX,
+				layout.RoofVariant ^ 0x434F_4C32,
+				19,
+				7,
+				3,
+				1),
+			firstCut + 18,
+			rightColumn - 18);
+		int[] columnEdges = [leftColumn, firstCut, secondCut, rightColumn];
+
+		if (layout.Topology == LandmarkTopology.Buried) {
 			rooms.Add(new LandmarkRoom(
-				new Rectangle(left, loftY, right - left + 1, groundY - loftY + 1),
-				(RoomRole)(index % 3),
-				IsUpper: false));
+				new Rectangle(leftColumn, groundY - 13, totalWidth, 14),
+				RoleFor(layout.Archetype, Level: 0, Column: 1, index: 0),
+				Level: 0,
+				Column: 1));
+			AddGridLevel(rooms, columnEdges, groundY + 1, groundY + 11, Level: -1, [true, true, true], layout);
+			bool mirror = layout.Variant % 2 != 0;
+			AddGridLevel(
+				rooms,
+				columnEdges,
+				groundY + 12,
+				groundY + 22,
+				Level: -2,
+				mirror ? [false, true, true] : [true, true, false],
+				layout);
+		}
+		else {
+			int groundTop = groundY - 12;
+			AddGridLevel(rooms, columnEdges, groundTop, groundY, Level: 0, [true, true, true], layout);
+			(bool[] first, bool[] second) = OccupancyFor(layout.Topology, layout.Variant);
+			int firstBottom = groundTop + 1;
+			int firstTop = firstBottom - 11;
+			AddGridLevel(rooms, columnEdges, firstTop, firstBottom, Level: 1, first, layout);
+			if (second.Any(occupied => occupied)) {
+				int secondBottom = firstTop + 1;
+				int secondTop = secondBottom - 11;
+				AddGridLevel(rooms, columnEdges, secondTop, secondBottom, Level: 2, second, layout);
+			}
 		}
 
-		int upperRoomCount = Math.Max(1, layout.RoomCount - groundRoomCount);
-		for (int index = 0; index < upperRoomCount; index++) {
-			bool leftSide = upperRoomCount == 1
-				? layout.Variant % 2 == 0
-				: index == 0;
-			int width = upperRoomCount == 1
-				? Math.Clamp((rightColumn - leftColumn + 1) * 5 / 9, 22, 31)
-				: Math.Clamp((rightColumn - leftColumn + 1) / 2 - 3, 19, 28);
-			int left = leftSide ? leftColumn + 2 : rightColumn - width - 1;
-			int height = 9 + (layout.RoofVariant + index * 2) % 3;
-			Rectangle shell = new(left, loftY - height, width, height + 1);
-			rooms.Add(new LandmarkRoom(
-				shell,
-				index == 0 ? RoomRole.Study : RoomRole.Lookout,
-				IsUpper: true));
-		}
-
-		List<StairConnection> stairs = [];
-		foreach (LandmarkRoom upper in rooms.Where(room => room.IsUpper)) {
-			int direction = upper.Shell.Center.X < anchorX ? 1 : -1;
-			int landingX = direction == 1 ? upper.Shell.Left + 4 : upper.Shell.Right - 5;
-			stairs.Add(new StairConnection(landingX, loftY, direction, groundY - loftY - 2));
-		}
-
-		return new LandmarkBlueprint(rooms, stairs, leftColumn, rightColumn, groundY);
+		List<StairConnection> stairs = BuildVerticalConnections(rooms, layout);
+		return new LandmarkBlueprint(rooms, stairs, leftColumn, rightColumn, groundY, layout);
 	}
 
-	private static void PrepareFootprint(Rectangle area, int groundY, ushort foundation)
+	private static void AddGridLevel(
+		List<LandmarkRoom> rooms,
+		IReadOnlyList<int> columnEdges,
+		int top,
+		int bottom,
+		int Level,
+		IReadOnlyList<bool> occupancy,
+		LandmarkLayout layout)
 	{
+		for (int column = 0; column < 3; column++) {
+			if (!occupancy[column]) {
+				continue;
+			}
+			int left = columnEdges[column];
+			int right = columnEdges[column + 1];
+			rooms.Add(new LandmarkRoom(
+				new Rectangle(left, top, right - left + 1, bottom - top + 1),
+				RoleFor(layout.Archetype, Level, column, rooms.Count),
+				Level,
+				column));
+		}
+	}
+
+	private static (bool[] First, bool[] Second) OccupancyFor(LandmarkTopology topology, int variant)
+	{
+		bool mirror = variant % 2 != 0;
+		return topology switch {
+			LandmarkTopology.BroadHall => ([true, true, true], variant >= 3 ? [false, true, false] : [false, false, false]),
+			LandmarkTopology.Terraced => (mirror ? [false, true, true] : [true, true, false], mirror ? [false, false, true] : [true, false, false]),
+			LandmarkTopology.TwinTower => ([true, false, true], mirror ? [false, false, true] : [true, false, false]),
+			LandmarkTopology.TowerWing => (mirror ? [true, true, false] : [false, true, true], mirror ? [true, false, false] : [false, false, true]),
+			_ => ([true, true, true], [false, true, false])
+		};
+	}
+
+	private static List<StairConnection> BuildVerticalConnections(
+		IReadOnlyList<LandmarkRoom> rooms,
+		LandmarkLayout layout)
+	{
+		List<StairConnection> stairs = [];
+		List<int> levels = rooms
+			.GroupBy(room => room.Level)
+			.OrderBy(group => group.Min(room => room.FloorY))
+			.Select(group => group.Key)
+			.ToList();
+		for (int index = 1; index < levels.Count; index++) {
+			List<LandmarkRoom> upperRooms = rooms.Where(room => room.Level == levels[index - 1]).ToList();
+			List<LandmarkRoom> lowerRooms = rooms.Where(room => room.Level == levels[index]).ToList();
+			List<List<LandmarkRoom>> upperComponents = [];
+			foreach (LandmarkRoom room in upperRooms.OrderBy(room => room.Column)) {
+				if (upperComponents.Count == 0 || room.Column - upperComponents[^1][^1].Column > 1) {
+					upperComponents.Add([]);
+				}
+				upperComponents[^1].Add(room);
+			}
+			for (int componentIndex = 0; componentIndex < upperComponents.Count; componentIndex++) {
+				List<LandmarkRoom> component = upperComponents[componentIndex];
+				LandmarkRoom upper = component[0];
+				LandmarkRoom lower = lowerRooms[0];
+				int bestOverlap = int.MinValue;
+				foreach (LandmarkRoom upperCandidate in component) {
+					foreach (LandmarkRoom lowerCandidate in lowerRooms) {
+						int overlap = Math.Min(upperCandidate.Shell.Right, lowerCandidate.Shell.Right)
+							- Math.Max(upperCandidate.Shell.Left, lowerCandidate.Shell.Left);
+						if (overlap > bestOverlap) {
+							bestOverlap = overlap;
+							upper = upperCandidate;
+							lower = lowerCandidate;
+						}
+					}
+				}
+
+				int stepCount = Math.Clamp(lower.FloorY - upper.FloorY - 1, 6, 11);
+				int overlapLeft = Math.Max(upper.Shell.Left, lower.Shell.Left) + 3;
+				int overlapRight = Math.Min(upper.Shell.Right, lower.Shell.Right) - 4;
+				int direction = (layout.RoofVariant + index + componentIndex) % 2 == 0 ? 1 : -1;
+				if (overlapRight - overlapLeft < stepCount + 2) {
+					direction = upper.Shell.Center.X < lower.Shell.Center.X ? 1 : -1;
+				}
+				int landingX = direction == 1 ? overlapLeft : overlapRight;
+				stairs.Add(new StairConnection(landingX, upper.FloorY, direction, stepCount));
+			}
+		}
+		return stairs;
+	}
+
+	private static RoomRole RoleFor(
+		LandmarkArchetype archetype,
+		int Level,
+		int Column,
+		int index)
+	{
+		BiomeKind biome = (BiomeKind)((int)archetype / 3);
+		RoomRole[] palette = biome switch {
+			BiomeKind.Forest => [RoomRole.Commons, RoomRole.Workshop, RoomRole.Storehouse, RoomRole.Study, RoomRole.Lookout],
+			BiomeKind.Snow => [RoomRole.Hearth, RoomRole.Storehouse, RoomRole.Workshop, RoomRole.Study, RoomRole.Lookout],
+			BiomeKind.Desert => [RoomRole.Commons, RoomRole.Shrine, RoomRole.Storehouse, RoomRole.Study, RoomRole.Lookout],
+			BiomeKind.Jungle => [RoomRole.Greenhouse, RoomRole.Workshop, RoomRole.Commons, RoomRole.Study, RoomRole.Lookout],
+			BiomeKind.Evil => [RoomRole.Shrine, RoomRole.Storehouse, RoomRole.Workshop, RoomRole.Study, RoomRole.Lookout],
+			BiomeKind.Ocean => [RoomRole.Commons, RoomRole.Storehouse, RoomRole.Workshop, RoomRole.Hearth, RoomRole.Lookout],
+			BiomeKind.Sky => [RoomRole.Observatory, RoomRole.Study, RoomRole.Commons, RoomRole.Workshop, RoomRole.Lookout],
+			BiomeKind.Mushroom => [RoomRole.Greenhouse, RoomRole.Commons, RoomRole.Storehouse, RoomRole.Study, RoomRole.Lookout],
+			BiomeKind.Cavern => [RoomRole.Workshop, RoomRole.Storehouse, RoomRole.Forge, RoomRole.Commons, RoomRole.Lookout],
+			BiomeKind.Underworld => [RoomRole.Forge, RoomRole.Workshop, RoomRole.Storehouse, RoomRole.Shrine, RoomRole.Lookout],
+			_ => [RoomRole.Commons, RoomRole.Workshop, RoomRole.Study, RoomRole.Lookout]
+		};
+		return palette[Math.Abs(index + Level * 3 + Column + (int)archetype) % palette.Length];
+	}
+
+	private static void PrepareFootprint(
+		LandmarkCandidate candidate,
+		LandmarkBlueprint blueprint,
+		LandmarkStyle style)
+	{
+		Rectangle area = candidate.Area;
+		int groundY = candidate.GroundY;
 		for (int x = area.Left; x < area.Right; x++) {
-			for (int y = area.Top; y < groundY; y++) {
-				TileEditor.ClearTerrain(x, y, clearWall: true);
+			int ownedTop = groundY;
+			foreach (LandmarkRoom room in blueprint.Rooms) {
+				if (x < room.Shell.Left - 4 || x > room.Shell.Right + 3 || room.Level < 0) {
+					continue;
+				}
+				int roofAllowance = blueprint.Layout.RoofStyle switch {
+					LandmarkRoofStyle.Spire => 13,
+					LandmarkRoofStyle.SteepGable => 11,
+					LandmarkRoofStyle.MushroomCap or LandmarkRoofStyle.CloudArch => 10,
+					_ => 8
+				};
+				ownedTop = Math.Min(ownedTop, room.Shell.Top - roofAllowance);
+			}
+			if (ownedTop < groundY) {
+				int clearTop = Math.Clamp(
+					ownedTop + OrganicBoundary.Profile(
+						x,
+						candidate.AnchorX ^ candidate.GroundY ^ 0x434C_4541,
+						19,
+						5,
+						3,
+						1),
+					area.Top + 1,
+					groundY - 1);
+				for (int y = clearTop; y < groundY; y++) {
+					TileEditor.ClearTerrain(x, y, clearWall: true);
+				}
 			}
 			int edgeDistance = Math.Min(x - area.Left, area.Right - 1 - x);
-			int foundationDepth = edgeDistance switch {
-				0 => 1,
-				1 or 2 => 2,
-				_ => 3
-			};
+			int foundationDepth = Math.Clamp(
+				3 + OrganicBoundary.Profile(
+					x,
+					candidate.AnchorX ^ candidate.GroundY ^ 0x464F_554E,
+					23,
+					7,
+					3,
+					1)
+					- Math.Max(0, 4 - edgeDistance),
+				1,
+				7);
 			for (int depth = 0; depth < foundationDepth; depth++) {
-				TileEditor.SetTerrain(x, groundY + depth, foundation);
+				ushort material = depth >= 3 && OrganicBoundary.Field(
+					x,
+					groundY + depth,
+					candidate.AnchorX ^ 0x424C_454E,
+					17,
+					5) > 0.66d
+					? style.Pillar
+					: style.Foundation;
+				TileEditor.SetTerrain(x, groundY + depth, material);
 			}
 			int irregularBottom = groundY + 5 + OrganicBoundary.Profile(
 				x,
@@ -757,13 +1106,13 @@ internal static class LandmarkGenerator
 			irregularBottom = Math.Max(groundY + 3, irregularBottom);
 			for (int y = groundY + 3; y <= Math.Min(area.Bottom - 1, irregularBottom); y++) {
 				if (!TileEditor.IsSolid(x, y)) {
-					TileEditor.SetTerrain(x, y, foundation);
+					TileEditor.SetTerrain(x, y, style.Foundation);
 				}
 			}
 		}
 
-		TileEditor.SetSlopedTerrain(area.Left, groundY, foundation, SlopeType.SlopeDownRight);
-		TileEditor.SetSlopedTerrain(area.Right - 1, groundY, foundation, SlopeType.SlopeDownLeft);
+		TileEditor.SetSlopedTerrain(area.Left, groundY, style.Foundation, SlopeType.SlopeDownRight);
+		TileEditor.SetSlopedTerrain(area.Right - 1, groundY, style.Foundation, SlopeType.SlopeDownLeft);
 		Tile leftShoulder = Main.tile[area.Left + 1, groundY];
 		leftShoulder.IsHalfBlock = true;
 		Tile rightShoulder = Main.tile[area.Right - 2, groundY];
@@ -824,13 +1173,21 @@ internal static class LandmarkGenerator
 
 	private static void CarveRoomArches(LandmarkBlueprint blueprint)
 	{
-		List<LandmarkRoom> groundRooms = blueprint.Rooms.Where(room => !room.IsUpper).ToList();
-		for (int index = 1; index < groundRooms.Count; index++) {
-			int dividerX = groundRooms[index].Shell.Left;
-			for (int x = dividerX - 2; x <= dividerX + 2; x++) {
-				int archLift = Math.Abs(x - dividerX) == 2 ? 1 : 0;
-				for (int y = blueprint.GroundY - 8 + archLift; y < blueprint.GroundY; y++) {
-					TileEditor.ClearTerrain(x, y);
+		foreach (IGrouping<int, LandmarkRoom> level in blueprint.Rooms.GroupBy(room => room.Level)) {
+			List<LandmarkRoom> rooms = level.OrderBy(room => room.Shell.Left).ToList();
+			for (int index = 1; index < rooms.Count; index++) {
+				LandmarkRoom left = rooms[index - 1];
+				LandmarkRoom right = rooms[index];
+				if (right.Shell.Left - left.Shell.Right > 2) {
+					continue;
+				}
+				int dividerX = right.Shell.Left;
+				int floorY = Math.Min(left.FloorY, right.FloorY);
+				for (int x = dividerX - 2; x <= dividerX + 2; x++) {
+					int archLift = Math.Abs(x - dividerX) == 2 ? 1 : 0;
+					for (int y = floorY - 7 + archLift; y <= floorY; y++) {
+						TileEditor.ClearTerrain(x, y);
+					}
 				}
 			}
 		}
@@ -839,33 +1196,57 @@ internal static class LandmarkGenerator
 	private static void BuildRoofs(LandmarkBlueprint blueprint, LandmarkStyle style)
 	{
 		foreach (LandmarkRoom room in blueprint.Rooms) {
-			if (ShouldBuildRoof(blueprint, room)) {
-				BuildGabledRoof(room.Shell, style);
+			if (!ShouldBuildRoof(blueprint, room)) {
+				continue;
+			}
+			switch (blueprint.Layout.RoofStyle) {
+				case LandmarkRoofStyle.FlatParapet:
+				case LandmarkRoofStyle.Battlement:
+					BuildFlatRoof(room.Shell, style, blueprint.Layout.RoofStyle == LandmarkRoofStyle.Battlement);
+					break;
+				case LandmarkRoofStyle.CloudArch:
+				case LandmarkRoofStyle.MushroomCap:
+				case LandmarkRoofStyle.StoneVault:
+				case LandmarkRoofStyle.IglooDome:
+					BuildCurvedRoof(room.Shell, style, blueprint.Layout.RoofStyle);
+					break;
+				case LandmarkRoofStyle.SteepGable:
+				case LandmarkRoofStyle.Spire:
+					BuildGabledRoof(room.Shell, style, steep: true);
+					break;
+				default:
+					BuildGabledRoof(room.Shell, style, steep: false);
+					break;
 			}
 		}
 	}
 
 	private static bool ShouldBuildRoof(LandmarkBlueprint blueprint, LandmarkRoom room) =>
-		room.IsUpper || !blueprint.Rooms.Any(upper =>
-			upper.IsUpper && upper.Shell.Left < room.Shell.Right - 3 && upper.Shell.Right > room.Shell.Left + 3);
+		!blueprint.Rooms.Any(upper =>
+			upper.FloorY < room.FloorY
+			&& upper.Shell.Bottom <= room.Shell.Top + 3
+			&& upper.Shell.Left < room.Shell.Right - 3
+			&& upper.Shell.Right > room.Shell.Left + 3);
 
-	private static void BuildGabledRoof(Rectangle room, LandmarkStyle style)
+	private static void BuildGabledRoof(Rectangle room, LandmarkStyle style, bool steep)
 	{
 		int centerX = room.Center.X;
 		int halfWidth = Math.Max(1, room.Width / 2 + 2);
-		int rise = Math.Clamp(halfWidth / 2, 4, 8);
+		int rise = steep
+			? Math.Clamp(halfWidth * 2 / 3, 7, 13)
+			: Math.Clamp(halfWidth / 2, 4, 9);
 		int wallSeed = room.Center.X ^ room.Center.Y * 31 ^ 0x4741_424C;
 		for (int x = room.Left - 2; x <= room.Right + 1; x++) {
 			int distance = Math.Abs(x - centerX);
-			int roofY = room.Top - rise + distance / 2;
+			int roofY = room.Top - rise + (int)Math.Round(distance * rise / (double)halfWidth);
 			// Terraria names slopes by the solid corner. A roof rising toward the
 			// center therefore uses DownRight on its left face and DownLeft on its
 			// right face.
 			SlopeType slope = distance % 2 == 0 || x == centerX
 				? SlopeType.Solid
 				: x < centerX ? SlopeType.SlopeDownRight : SlopeType.SlopeDownLeft;
-			TileEditor.SetSlopedTerrain(x, roofY, style.Foundation, slope);
-			TileEditor.SetTerrain(x, roofY + 1, distance % 4 == 0 ? style.Pillar : style.Foundation);
+			TileEditor.SetSlopedTerrain(x, roofY, style.Roof, slope);
+			TileEditor.SetTerrain(x, roofY + 1, distance % 4 == 0 ? style.RoofAccent : style.Roof);
 			for (int y = roofY + 2; y < room.Top; y++) {
 				TileEditor.ClearTerrain(x, y);
 				double accentField = OrganicBoundary.Field(x, y, wallSeed, 11, 4);
@@ -873,6 +1254,74 @@ internal static class LandmarkGenerator
 				bool accent = distance + edgeBias > halfWidth / 2 && accentField > 0.47d;
 				TileEditor.SetWall(x, y, accent ? style.AccentWall : style.Wall);
 			}
+		}
+	}
+
+	private static void BuildCurvedRoof(
+		Rectangle room,
+		LandmarkStyle style,
+		LandmarkRoofStyle roofStyle)
+	{
+		int overhang = roofStyle == LandmarkRoofStyle.MushroomCap ? 5 : 3;
+		int halfWidth = room.Width / 2 + overhang;
+		int centerX = room.Center.X;
+		int rise = roofStyle switch {
+			LandmarkRoofStyle.IglooDome => Math.Clamp(room.Width / 5, 8, 13),
+			LandmarkRoofStyle.MushroomCap => Math.Clamp(room.Width / 6, 7, 11),
+			_ => Math.Clamp(room.Width / 7, 6, 10)
+		};
+		int seed = centerX ^ room.Top * 31 ^ (int)roofStyle * 977;
+		for (int x = centerX - halfWidth; x <= centerX + halfWidth; x++) {
+			double normalized = (x - centerX) / (double)Math.Max(1, halfWidth);
+			double curve = Math.Sqrt(Math.Max(0d, 1d - normalized * normalized));
+			int roofY = room.Top - (int)Math.Round(rise * curve)
+				+ OrganicBoundary.Profile(x, seed, 17, 5, 1, 1);
+			SlopeType slope = x < centerX ? SlopeType.SlopeDownRight
+				: x > centerX ? SlopeType.SlopeDownLeft
+				: SlopeType.Solid;
+			if (Math.Abs(x - centerX) % 3 == 0) {
+				slope = SlopeType.Solid;
+			}
+			TileEditor.SetSlopedTerrain(x, roofY, style.Roof, slope);
+			TileEditor.SetTerrain(x, roofY + 1, OrganicBoundary.Field(x, roofY, seed, 13, 5) > 0.56d
+				? style.RoofAccent
+				: style.Roof);
+			FillRoofInterior(room, style, x, roofY + 2, seed);
+		}
+	}
+
+	private static void BuildFlatRoof(Rectangle room, LandmarkStyle style, bool battlement)
+	{
+		int seed = room.Center.X ^ room.Top * 31 ^ 0x464C_4154;
+		for (int x = room.Left - 3; x <= room.Right + 2; x++) {
+			int roofY = room.Top - 3 + OrganicBoundary.Profile(x, seed, 29, 7, 1, 0);
+			SlopeType slope = x == room.Left - 3 ? SlopeType.SlopeDownRight
+				: x == room.Right + 2 ? SlopeType.SlopeDownLeft
+				: SlopeType.Solid;
+			TileEditor.SetSlopedTerrain(x, roofY, style.Roof, slope);
+			TileEditor.SetTerrain(x, roofY + 1, style.RoofAccent);
+			FillRoofInterior(room, style, x, roofY + 2, seed);
+		}
+		if (!battlement) {
+			return;
+		}
+		for (int x = room.Left - 1; x < room.Right;) {
+			TileEditor.SetTerrain(x, room.Top - 5, style.RoofAccent);
+			x += 4 + Math.Abs(HashNoise(x, room.Center.X)) % 3;
+		}
+	}
+
+	private static void FillRoofInterior(
+		Rectangle room,
+		LandmarkStyle style,
+		int x,
+		int startY,
+		int seed)
+	{
+		for (int y = startY; y < room.Top; y++) {
+			TileEditor.ClearTerrain(x, y);
+			double accentField = OrganicBoundary.Field(x, y, seed, 11, 4);
+			TileEditor.SetWall(x, y, accentField > 0.58d ? style.AccentWall : style.Wall);
 		}
 	}
 
@@ -891,11 +1340,18 @@ internal static class LandmarkGenerator
 
 			int landingStart = stair.Direction == 1 ? stair.LandingX - 3 : stair.LandingX;
 			for (int offset = 0; offset < 4; offset++) {
-				int x = landingStart + offset;
-				TileEditor.ClearTerrain(x, stair.FloorY);
-				TileEditor.TryPlacePlatformForced(x, stair.FloorY, platformStyle);
+				TileEditor.ClearTerrain(landingStart + offset, stair.FloorY);
 			}
+		}
 
+		// Clear every flight before placing any platform. A lower connector can
+		// overlap the landing envelope of an upper flight in compact towers; doing
+		// this in one pass used to erase the final step of the earlier staircase.
+		foreach (StairConnection stair in blueprint.Stairs) {
+			int landingStart = stair.Direction == 1 ? stair.LandingX - 3 : stair.LandingX;
+			for (int offset = 0; offset < 4; offset++) {
+				TileEditor.TryPlacePlatformForced(landingStart + offset, stair.FloorY, platformStyle);
+			}
 			for (int step = 1; step <= stair.StepCount; step++) {
 				int x = stair.LandingX + stair.Direction * step;
 				int y = stair.FloorY + step;
@@ -910,6 +1366,9 @@ internal static class LandmarkGenerator
 
 	private static void BuildFoundationSupports(LandmarkBlueprint blueprint, LandmarkStyle style)
 	{
+		if (blueprint.Layout.Topology == LandmarkTopology.Buried) {
+			return;
+		}
 		int cadence = 5 + Math.Abs(blueprint.LeftColumn + blueprint.RightColumn) % 2;
 		for (int x = blueprint.LeftColumn + 2; x <= blueprint.RightColumn - 2; x += cadence) {
 			for (int y = blueprint.GroundY + 3; y <= blueprint.GroundY + 7; y++) {
@@ -918,9 +1377,156 @@ internal static class LandmarkGenerator
 		}
 	}
 
+	private static void BuildBiomeDetails(LandmarkBlueprint blueprint, LandmarkStyle style)
+	{
+		BiomeKind biome = (BiomeKind)((int)blueprint.Layout.Archetype / 3);
+		switch (biome) {
+			case BiomeKind.Forest:
+				BuildPorch(blueprint, style, width: 9);
+				break;
+			case BiomeKind.Snow:
+				if (blueprint.Layout.Archetype == LandmarkArchetype.SnowBuriedIgloo) {
+					BuildBuriedIceRibs(blueprint, style);
+				}
+				else {
+					BuildPorch(blueprint, style, width: 7);
+				}
+				break;
+			case BiomeKind.Desert:
+				BuildExteriorColumns(blueprint, style, height: 11);
+				break;
+			case BiomeKind.Jungle:
+				BuildExteriorColumns(blueprint, style, height: 13);
+				BuildEaveVines(blueprint);
+				break;
+			case BiomeKind.Evil:
+				BuildExteriorColumns(blueprint, style, height: 15);
+				break;
+			case BiomeKind.Ocean:
+				BuildStilts(blueprint, style);
+				BuildPorch(blueprint, style, width: 11);
+				break;
+			case BiomeKind.Sky:
+				BuildCloudFooting(blueprint);
+				break;
+			case BiomeKind.Mushroom:
+				BuildEaveVines(blueprint);
+				break;
+			case BiomeKind.Cavern:
+			case BiomeKind.Underworld:
+				BuildExteriorColumns(blueprint, style, height: 12);
+				break;
+		}
+	}
+
+	private static void BuildPorch(LandmarkBlueprint blueprint, LandmarkStyle style, int width)
+	{
+		foreach ((int centerX, int direction) in new[] { (blueprint.LeftColumn, -1), (blueprint.RightColumn, 1) }) {
+			for (int step = 1; step <= width; step++) {
+				int x = centerX + direction * step;
+				int y = blueprint.GroundY - Math.Max(0, (step - 3) / 4);
+				TileEditor.ClearTerrain(x, y - 1);
+				if (step > width - 3) {
+					TileEditor.TryPlacePlatformForced(x, y, style.PlatformStyle);
+				}
+				else {
+					TileEditor.SetTerrain(x, y, style.Foundation);
+				}
+			}
+		}
+	}
+
+	private static void BuildExteriorColumns(LandmarkBlueprint blueprint, LandmarkStyle style, int height)
+	{
+		foreach (int x in new[] { blueprint.LeftColumn, blueprint.LeftColumn + 1, blueprint.RightColumn - 1, blueprint.RightColumn }) {
+			int top = blueprint.GroundY - height
+				+ OrganicBoundary.Profile(x, blueprint.Layout.RoofVariant ^ 0x434F_4C55, 13, 5, 2, 1);
+			for (int y = top; y <= blueprint.GroundY + 4; y++) {
+				TileEditor.SetTerrain(x, y, style.Pillar);
+			}
+		}
+	}
+
+	private static void BuildEaveVines(LandmarkBlueprint blueprint)
+	{
+		int seed = blueprint.Layout.RoofVariant ^ blueprint.GroundY ^ 0x5649_4E45;
+		foreach (LandmarkRoom room in blueprint.Rooms.Where(room => ShouldBuildRoof(blueprint, room))) {
+			for (int x = room.Shell.Left + 3; x < room.Shell.Right - 3;) {
+				int ceilingY = room.Shell.Top - 1;
+				int minimumY = blueprint.Layout.Topology == LandmarkTopology.Buried
+					? room.Shell.Top - 6
+					: room.Shell.Top - 15;
+				for (int y = ceilingY; y >= minimumY; y--) {
+					if (!TileEditor.IsSolid(x, y)) {
+						continue;
+					}
+					int length = 4 + Math.Abs(HashNoise(x, seed)) % 9;
+					for (int offset = 1; offset <= length; offset++) {
+						int vineY = y + offset;
+						if (Main.tile[x, vineY].HasTile || Main.tile[x, vineY].LiquidAmount > 0) {
+							break;
+						}
+						TileEditor.SetTerrain(x, vineY, biomeVine(blueprint.Layout.Archetype));
+					}
+					break;
+				}
+				x += 5 + Math.Abs(HashNoise(x, seed ^ 0x4741_5021)) % 5;
+			}
+		}
+
+		static ushort biomeVine(LandmarkArchetype archetype) => archetype switch {
+			LandmarkArchetype.JungleCanopyLodge or LandmarkArchetype.JungleStiltHall or LandmarkArchetype.JungleOvergrownTower => TileID.JungleVines,
+			LandmarkArchetype.MushroomCapHouse or LandmarkArchetype.MushroomSporeTower or LandmarkArchetype.MushroomMyceliumHall => TileID.MushroomVines,
+			_ => TileID.Vines
+		};
+	}
+
+	private static void BuildBuriedIceRibs(LandmarkBlueprint blueprint, LandmarkStyle style)
+	{
+		foreach (LandmarkRoom room in blueprint.Rooms.Where(room => room.Level < 0)) {
+			for (int y = room.Shell.Top + 2; y < room.Shell.Bottom - 2; y += 5) {
+				TileEditor.SetTerrain(room.Shell.Left + 1, y, style.RoofAccent);
+				TileEditor.SetTerrain(room.Shell.Right - 2, y, style.RoofAccent);
+			}
+		}
+	}
+
+	private static void BuildStilts(LandmarkBlueprint blueprint, LandmarkStyle style)
+	{
+		for (int x = blueprint.LeftColumn + 3; x <= blueprint.RightColumn - 3;) {
+			int depth = 8 + Math.Abs(HashNoise(x, blueprint.GroundY ^ 0x5354_494C)) % 9;
+			for (int y = blueprint.GroundY + 3; y <= blueprint.GroundY + depth; y++) {
+				TileEditor.SetTerrain(x, y, style.Pillar);
+			}
+			x += 7 + Math.Abs(HashNoise(x, blueprint.GroundY)) % 5;
+		}
+	}
+
+	private static void BuildCloudFooting(LandmarkBlueprint blueprint)
+	{
+		for (int x = blueprint.LeftColumn - 4; x <= blueprint.RightColumn + 4; x++) {
+			int depth = 2 + Math.Max(0, OrganicBoundary.Profile(
+				x,
+				blueprint.Layout.RoofVariant ^ 0x434C_4F55,
+				21,
+				7,
+				4,
+				1));
+			for (int y = blueprint.GroundY + 3; y < blueprint.GroundY + 3 + depth; y++) {
+				double cloudField = OrganicBoundary.Field(
+					x,
+					y,
+					blueprint.Layout.RoofVariant ^ 0x434C_4D58,
+					13,
+					5);
+				TileEditor.SetTerrain(x, y, cloudField > 0.68d ? TileID.RainCloud : TileID.Cloud);
+			}
+		}
+	}
+
 	private static int FurnishLandmark(LandmarkRecord landmark)
 	{
-		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.AnchorX, landmark.AnchorY);
+		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
 		LandmarkBlueprint blueprint = BuildBlueprint(landmark);
 		int placed = 0;
 		foreach (LandmarkRoom room in blueprint.Rooms) {
@@ -934,7 +1540,7 @@ internal static class LandmarkGenerator
 			blueprint.LeftColumn,
 			blueprint.RightColumn,
 			style.Foundation);
-		ClearExteriorWalls(landmark.Area, blueprint);
+		ClearExteriorWalls(landmark.Area, blueprint, style);
 		TileEditor.Frame(landmark.Area, border: 3);
 		int retainedFurnitureTiles = CountFurnitureTiles(landmark.Area);
 		if (retainedFurnitureTiles < 6) {
@@ -968,6 +1574,30 @@ internal static class LandmarkGenerator
 				count += TryPlaceFurniture(room, centerX - 2, style.TableTile, style.TableStyle) ? 1 : 0;
 				count += TryPlaceFurniture(room, centerX + 4, TileID.Chairs, style.ChairStyle) ? 1 : 0;
 				break;
+			case RoomRole.Hearth:
+				count += TryPlaceFurniture(room, centerX, TileID.Campfire, 0) ? 1 : 0;
+				count += TryPlaceFurniture(room, centerX + 6, TileID.Benches, 0) ? 1 : 0;
+				break;
+			case RoomRole.Storehouse:
+				count += TryPlaceFurniture(room, centerX - 4, TileID.Kegs, 0) ? 1 : 0;
+				count += TryPlaceFurniture(room, centerX + 5, TileID.Loom, 0) ? 1 : 0;
+				break;
+			case RoomRole.Greenhouse:
+				count += TryPlaceFurniture(room, centerX - 4, style.TableTile, style.TableStyle) ? 1 : 0;
+				count += TryPlaceFurniture(room, centerX + 5, TileID.Chairs, style.ChairStyle) ? 1 : 0;
+				break;
+			case RoomRole.Shrine:
+				count += TryPlaceFurniture(room, centerX, TileID.Benches, 0) ? 1 : 0;
+				count += TryPlaceFurniture(room, centerX + 6, TileID.Bookcases, style.BookcaseStyle) ? 1 : 0;
+				break;
+			case RoomRole.Forge:
+				count += TryPlaceFurniture(room, centerX - 4, TileID.Anvils, 0) ? 1 : 0;
+				count += TryPlaceFurniture(room, centerX + 5, TileID.WorkBenches, style.WorkbenchStyle) ? 1 : 0;
+				break;
+			case RoomRole.Observatory:
+				count += TryPlaceFurniture(room, centerX - 4, TileID.Bookcases, style.BookcaseStyle) ? 1 : 0;
+				count += TryPlaceFurniture(room, centerX + 5, TileID.Pianos, style.BookcaseStyle) ? 1 : 0;
+				break;
 		}
 
 		if (TileEditor.TryPlaceSmallPile(room.Shell.Right - 3, floorY, ((int)biome + room.Shell.Width) % 6, 0)) {
@@ -981,9 +1611,20 @@ internal static class LandmarkGenerator
 	private static void RepairLandmarkTraversal(LandmarkRecord landmark)
 	{
 		LandmarkBlueprint blueprint = BuildBlueprint(landmark);
-		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.AnchorX, landmark.AnchorY);
+		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
 		BuildStairs(blueprint, style.PlatformStyle);
-		ClearExteriorWalls(landmark.Area, blueprint);
+		ClearExteriorWalls(landmark.Area, blueprint, style);
+	}
+
+	private static void ClearClosedDoors(Rectangle area)
+	{
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = area.Top; y < area.Bottom; y++) {
+				if (Main.tile[x, y].HasTile && Main.tile[x, y].TileType == TileID.ClosedDoor) {
+					TileEditor.ClearTerrain(x, y);
+				}
+			}
+		}
 	}
 
 	private static void CarveOpenEntrances(
@@ -1078,14 +1719,17 @@ internal static class LandmarkGenerator
 		return false;
 	}
 
-	private static void ClearExteriorWalls(Rectangle area, LandmarkBlueprint blueprint)
+	private static void ClearExteriorWalls(
+		Rectangle area,
+		LandmarkBlueprint blueprint,
+		LandmarkStyle style)
 	{
 		for (int x = area.Left; x < area.Right; x++) {
 			for (int y = area.Top; y < blueprint.GroundY; y++) {
 				bool interior = blueprint.Rooms.Any(room =>
 					x > room.Shell.Left && x < room.Shell.Right - 1
 					&& y > room.Shell.Top && y < room.Shell.Bottom - 1)
-					|| blueprint.Rooms.Any(room => IsInsideRoofGable(room.Shell, x, y));
+					|| blueprint.Rooms.Any(room => IsInsideRoofEnvelope(room.Shell, style, x, y));
 				if (!interior) {
 					Main.tile[x, y].WallType = WallID.None;
 				}
@@ -1093,15 +1737,23 @@ internal static class LandmarkGenerator
 		}
 	}
 
-	private static bool IsInsideRoofGable(Rectangle room, int x, int y)
+	private static bool IsInsideRoofEnvelope(
+		Rectangle room,
+		LandmarkStyle style,
+		int x,
+		int y)
 	{
-		if (x < room.Left - 1 || x > room.Right || y >= room.Top) {
+		if (x < room.Left - 4 || x > room.Right + 3 || y >= room.Top) {
 			return false;
 		}
-		int halfWidth = Math.Max(1, room.Width / 2 + 2);
-		int rise = Math.Clamp(halfWidth / 2, 4, 8);
-		int roofY = room.Top - rise + Math.Abs(x - room.Center.X) / 2;
-		return y > roofY + 1;
+		for (int roofY = Math.Max(45, room.Top - 18); roofY < room.Top; roofY++) {
+			Tile tile = Main.tile[x, roofY];
+			ushort type = tile.TileType;
+			if (tile.HasTile && (type == style.Roof || type == style.RoofAccent)) {
+				return y > roofY + 1;
+			}
+		}
+		return false;
 	}
 
 	private static bool ValidateFootprint(LandmarkCandidate candidate, LandmarkStyle style)
@@ -1112,9 +1764,11 @@ internal static class LandmarkGenerator
 		int slopedPlatforms = 0;
 		for (int x = candidate.Area.Left; x < candidate.Area.Right; x++) {
 			foundationColumns += HasType(x, candidate.GroundY, style.Foundation) ? 1 : 0;
-			for (int y = candidate.Area.Top; y < candidate.GroundY; y++) {
+			for (int y = candidate.Area.Top; y < candidate.Area.Bottom; y++) {
 				Tile tile = Main.tile[x, y];
-				if (tile.HasTile && tile.TileType == style.Foundation && tile.Slope != SlopeType.Solid) {
+				if (y < candidate.GroundY && tile.HasTile && tile.TileType is ushort type
+					&& (type == style.Roof || type == style.RoofAccent)
+					&& tile.Slope != SlopeType.Solid) {
 					slopedRoofTiles++;
 				}
 				if (tile.HasTile && tile.TileType == TileID.Platforms && tile.Slope != SlopeType.Solid) {
@@ -1122,7 +1776,10 @@ internal static class LandmarkGenerator
 				}
 			}
 		}
-		if (foundationColumns < candidate.Area.Width * 9 / 10 || slopedRoofTiles < 10 || slopedPlatforms < 6) {
+		int minimumRoofSlopes = candidate.Layout.RoofStyle is LandmarkRoofStyle.FlatParapet or LandmarkRoofStyle.Battlement ? 4 : 8;
+		if (foundationColumns < candidate.Area.Width * 4 / 5
+			|| slopedRoofTiles < minimumRoofSlopes
+			|| slopedPlatforms < 6) {
 			return false;
 		}
 		int downLeft = 0;
@@ -1131,7 +1788,7 @@ internal static class LandmarkGenerator
 			for (int x = room.Shell.Left - 2; x <= room.Shell.Right + 1; x++) {
 				for (int y = candidate.Area.Top; y < room.Shell.Top; y++) {
 					Tile tile = Main.tile[x, y];
-					if (!tile.HasTile || tile.TileType != style.Foundation) {
+					if (!tile.HasTile || tile.TileType != style.Roof && tile.TileType != style.RoofAccent) {
 						continue;
 					}
 					downLeft += tile.Slope == SlopeType.SlopeDownLeft ? 1 : 0;
@@ -1139,7 +1796,8 @@ internal static class LandmarkGenerator
 				}
 			}
 		}
-		if (downLeft < 4 || downRight < 4) {
+		int minimumFacingSlopes = candidate.Layout.RoofStyle is LandmarkRoofStyle.FlatParapet or LandmarkRoofStyle.Battlement ? 2 : 4;
+		if (downLeft < minimumFacingSlopes || downRight < minimumFacingSlopes) {
 			return false;
 		}
 		foreach (int centerX in new[] { blueprint.LeftColumn, blueprint.RightColumn }) {
@@ -1188,6 +1846,8 @@ internal static class LandmarkGenerator
 		}
 	}
 
+	private static int HashNoise(int value, int seed) => HashNoise(value, 0, seed);
+
 	private readonly record struct LandmarkRequest(BiomeKind Biome, int LeftX, int RightX, bool Required);
 
 	private readonly record struct LandmarkCandidate(
@@ -1201,6 +1861,8 @@ internal static class LandmarkGenerator
 	private readonly record struct LandmarkStyle(
 		ushort Foundation,
 		ushort Pillar,
+		ushort Roof,
+		ushort RoofAccent,
 		ushort Wall,
 		ushort AccentWall,
 		int PlatformStyle,
@@ -1210,19 +1872,58 @@ internal static class LandmarkGenerator
 		int WorkbenchStyle,
 		int BookcaseStyle);
 
-	private readonly record struct LandmarkLayout(int Width, int Height, int RoomCount, int RoofVariant, int Variant);
+	private readonly record struct LandmarkLayout(
+		int Width,
+		int AboveGroundHeight,
+		int BelowGroundDepth,
+		int RoofVariant,
+		int Variant,
+		LandmarkArchetype Archetype,
+		LandmarkTopology Topology,
+		LandmarkRoofStyle RoofStyle);
+
+	private enum LandmarkTopology
+	{
+		BroadHall,
+		Terraced,
+		TwinTower,
+		TowerWing,
+		Buried
+	}
+
+	private enum LandmarkRoofStyle
+	{
+		Gable,
+		SteepGable,
+		FlatParapet,
+		Canopy,
+		Spire,
+		StiltGable,
+		CloudArch,
+		MushroomCap,
+		StoneVault,
+		Battlement,
+		IglooDome
+	}
 
 	private enum RoomRole
 	{
 		Workshop,
 		Commons,
 		Study,
-		Lookout
+		Lookout,
+		Hearth,
+		Storehouse,
+		Greenhouse,
+		Shrine,
+		Forge,
+		Observatory
 	}
 
-	private readonly record struct LandmarkRoom(Rectangle Shell, RoomRole Role, bool IsUpper)
+	private readonly record struct LandmarkRoom(Rectangle Shell, RoomRole Role, int Level, int Column)
 	{
 		public int FloorY => Shell.Bottom - 2;
+		public bool IsUpper => Level > 0;
 	}
 
 	private readonly record struct StairConnection(int LandingX, int FloorY, int Direction, int StepCount);
@@ -1232,5 +1933,6 @@ internal static class LandmarkGenerator
 		IReadOnlyList<StairConnection> Stairs,
 		int LeftColumn,
 		int RightColumn,
-		int GroundY);
+		int GroundY,
+		LandmarkLayout Layout);
 }

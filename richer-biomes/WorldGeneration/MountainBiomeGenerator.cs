@@ -59,8 +59,21 @@ internal static class MountainBiomeGenerator
 			PlaceFloatingInclusions(plan, mountain, layout, random, manifest);
 			PlaceChamberVignettes(layout, random, manifest);
 			PlaceInteriorObjects(plan, mountain, random, manifest);
+			PlaceHumidityVines(plan, mountain, random, manifest);
 			EnsureInteriorDecorationMinimums(plan, mountain, manifest);
 			TileEditor.Frame(MountainArea(plan, mountain), border: 3);
+			progress.Set((double)(mountainIndex + 1) / Math.Max(1, plan.Mountains.Count));
+		}
+	}
+
+	public static void BuildInteriorWaters(WorldPlan plan, GenerationManifest manifest, GenerationProgress progress)
+	{
+		manifest.MountainWaters.Clear();
+		for (int mountainIndex = 0; mountainIndex < plan.Mountains.Count; mountainIndex++) {
+			MountainRangePlan mountain = plan.Mountains[mountainIndex];
+			MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
+			UnifiedRandom random = new(MixSeed(mountain.FeatureSeed, 0x4D44_4543));
+			PlaceInteriorWaterFeatures(plan, mountain, layout, random, manifest);
 			progress.Set((double)(mountainIndex + 1) / Math.Max(1, plan.Mountains.Count));
 		}
 	}
@@ -112,6 +125,9 @@ internal static class MountainBiomeGenerator
 				region.Width,
 				Math.Min(Main.maxTilesY - 45, (int)Main.worldSurface + 70) - Math.Max(45, peakY - 8));
 			(int caveAirTiles, int wideCavityColumns) = MeasureCavities(area);
+			List<MountainWaterRecord> waters = manifest.MountainWaters
+				.Where(water => water.RegionId == mountain.RegionId)
+				.ToList();
 			manifest.Mountains.Add(new MountainRecord(
 				mountain.RegionId,
 				area,
@@ -123,7 +139,30 @@ internal static class MountainBiomeGenerator
 				wideCavityColumns,
 				CountTiles(area, TileID.Pots),
 				CountVines(area),
-				CountTiles(area, TileID.Platforms) + CountTiles(area, TileID.Rope)));
+				CountTiles(area, TileID.Platforms) + CountTiles(area, TileID.Rope),
+				waters.Sum(water => water.WaterCells),
+				waters.Count));
+		}
+	}
+
+	public static void RefillInteriorWaters(WorldPlan plan, GenerationManifest manifest)
+	{
+		for (int index = 0; index < manifest.MountainWaters.Count; index++) {
+			MountainWaterRecord water = manifest.MountainWaters[index];
+			MountainRangePlan? matchingMountain = plan.Mountains
+				.Where(mountain => mountain.RegionId == water.RegionId)
+				.Select<MountainRangePlan, MountainRangePlan?>(mountain => mountain)
+				.FirstOrDefault();
+			if (matchingMountain is not MountainRangePlan mountain) {
+				continue;
+			}
+			MountainWaterPlan replay = new(
+				water.Style,
+				water.Area,
+				water.WaterlineY,
+				water.Depth,
+				water.FeatureSeed);
+			manifest.MountainWaters[index] = BuildInteriorWater(plan, mountain, replay);
 		}
 	}
 
@@ -800,6 +839,169 @@ internal static class MountainBiomeGenerator
 		}
 	}
 
+	private static void PlaceInteriorWaterFeatures(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		MountainInteriorLayout layout,
+		UnifiedRandom random,
+		GenerationManifest manifest)
+	{
+		int target = 2 + (random.Next(100) < 38 ? 1 : 0);
+		int placed = 0;
+		for (int attempt = 0; attempt < layout.Chambers.Count * 18 && placed < target; attempt++) {
+			MountainChamber chamber = layout.Chambers[(attempt * 5 + random.Next(layout.Chambers.Count)) % layout.Chambers.Count];
+			int halfWidth = Math.Clamp(chamber.RadiusX - random.Next(12, 20), 12, 31);
+			int depth = Math.Clamp(random.Next(7, 13), 6, Math.Max(6, chamber.RadiusY - 8));
+			int centerX = chamber.Center.X + random.Next(-Math.Max(2, chamber.RadiusX / 5), Math.Max(3, chamber.RadiusX / 5 + 1));
+			int waterlineY = chamber.Center.Y + chamber.RadiusY - depth - random.Next(5, 9);
+			Rectangle area = new(centerX - halfWidth - 4, waterlineY - 6, halfWidth * 2 + 9, depth + 16);
+			if (!WorldGen.InWorld(area.Left, area.Top, 12)
+				|| !WorldGen.InWorld(area.Right - 1, area.Bottom - 1, 12)
+				|| IntersectsCriticalWaterFeature(manifest, area)
+				|| ContainsMineRailEnvelope(area)) {
+				continue;
+			}
+
+			int featureSeed = MixSeed(mountain.FeatureSeed, 0x4D57_4154 ^ placed * 7919 ^ centerX);
+			MountainWaterStyle style = placed switch {
+				0 => MountainWaterStyle.SpringPond,
+				1 => MountainWaterStyle.CavernLake,
+				_ => MountainWaterStyle.HangingPool
+			};
+			MountainWaterPlan water = new(style, area, waterlineY, depth, featureSeed);
+			MountainWaterRecord record = BuildInteriorWater(plan, mountain, water);
+			if (record.WaterCells < halfWidth * 2) {
+				continue;
+			}
+			manifest.MountainWaters.Add(record);
+			GenVars.structures.AddProtectedStructure(area, padding: 3);
+			placed++;
+		}
+		if (placed < 2) {
+			throw new InvalidOperationException(
+				$"Richer Biomes could fit only {placed} protected water bodies inside mountain region {mountain.RegionId}.");
+		}
+	}
+
+	private static bool IntersectsCriticalWaterFeature(GenerationManifest manifest, Rectangle area)
+	{
+		Rectangle padded = area;
+		padded.Inflate(5, 5);
+		return manifest.Landmarks.Any(record => record.Area.Intersects(padded))
+			|| manifest.Bridges.Any(record => record.Area.Intersects(padded))
+			|| manifest.ForestLakeBridges.Any(record => record.Area.Intersects(padded))
+			|| manifest.Valleys.Any(record => record.Area.Intersects(padded))
+			|| manifest.MountainWaters.Any(record => record.Area.Intersects(padded))
+			|| manifest.SkyHighlands.Any(record => record.Area.Intersects(padded))
+			|| manifest.MineSections.Any(record => record.Area.Intersects(padded));
+	}
+
+	private static MountainWaterRecord BuildInteriorWater(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		MountainWaterPlan water)
+	{
+		int innerLeft = water.Area.Left + 4;
+		int innerRight = water.Area.Right - 5;
+		int span = Math.Max(1, innerRight - innerLeft);
+		for (int x = innerLeft; x <= innerRight; x++) {
+			double amount = (double)(x - innerLeft) / span;
+			double bowl = Math.Pow(Math.Sin(Math.PI * amount), water.Style == MountainWaterStyle.CavernLake ? 0.68d : 0.83d);
+			int bedJitter = OrganicBoundary.Profile(x, water.FeatureSeed ^ 0x4D42_4544, 19, 7, 2, 1);
+			int floorY = water.WaterlineY + 2 + (int)Math.Round(water.Depth * bowl) + bedJitter;
+			floorY = Math.Clamp(floorY, water.WaterlineY + 2, water.Area.Bottom - 5);
+			int ceilingJitter = OrganicBoundary.Profile(x, water.FeatureSeed ^ 0x4D43_4C52, 17, 5, 2, 1);
+			int clearTop = Math.Clamp(water.WaterlineY - 4 + ceilingJitter, water.Area.Top + 1, water.WaterlineY - 1);
+			for (int y = clearTop; y < floorY; y++) {
+				if (TileEditor.IsProgressionTile(Main.tile[x, y]) || IsMineRailEnvelope(x, y)) {
+					continue;
+				}
+				TileEditor.ClearTerrain(x, y);
+				TileEditor.SetWall(x, y, MountainWallAt(plan, mountain, x, y));
+			}
+
+			int shellDepth = 3 + Math.Abs(OrganicBoundary.Profile(x, water.FeatureSeed ^ 0x4D53_484C, 23, 9, 2, 1));
+			for (int shell = 0; shell < shellDepth; shell++) {
+				int y = floorY + shell;
+				if (TileEditor.IsProgressionTile(Main.tile[x, y]) || IsMineRailEnvelope(x, y)) {
+					continue;
+				}
+				int naturalDepth = Math.Max(0, y - plan.SurfaceAt(x));
+				TileEditor.SetTerrain(x, y, LandformGenerator.MountainTerrainAt(plan, mountain, x, naturalDepth));
+			}
+
+			for (int y = water.WaterlineY; y < floorY; y++) {
+				if (!Main.tile[x, y].HasTile && !IsMineRailEnvelope(x, y)) {
+					TileEditor.SetLiquid(x, y, (byte)LiquidID.Water, byte.MaxValue);
+				}
+			}
+		}
+
+		BuildInteriorWaterBanks(plan, mountain, water, innerLeft, innerRight);
+		TileEditor.Frame(water.Area, border: 2);
+		return new MountainWaterRecord(
+			mountain.RegionId,
+			water.Style,
+			water.Area,
+			water.WaterlineY,
+			water.Depth,
+			water.FeatureSeed,
+			CountWaterCells(water.Area));
+	}
+
+	private static void BuildInteriorWaterBanks(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		MountainWaterPlan water,
+		int innerLeft,
+		int innerRight)
+	{
+		foreach ((int edgeX, int direction) in new[] { (innerLeft, -1), (innerRight, 1) }) {
+			for (int step = 0; step <= 7; step++) {
+				int x = edgeX + direction * step;
+				int bankY = water.WaterlineY - 1 - step / 3
+					+ OrganicBoundary.Profile(x, water.FeatureSeed ^ edgeX ^ 0x4D42_414E, 11, 5, 2, 1);
+				int thickness = 4 + Math.Abs(OrganicBoundary.Profile(x, water.FeatureSeed ^ 0x4D42_4153, 13, 7, 2, 1));
+				for (int depth = 0; depth < thickness; depth++) {
+					int y = bankY + depth;
+					if (TileEditor.IsProgressionTile(Main.tile[x, y]) || IsMineRailEnvelope(x, y)) {
+						continue;
+					}
+					int naturalDepth = Math.Max(0, y - plan.SurfaceAt(x));
+					TileEditor.SetTerrain(x, y, LandformGenerator.MountainTerrainAt(plan, mountain, x, naturalDepth));
+				}
+				if (step <= 5) {
+					Tile bank = Main.tile[x, bankY];
+					bank.Slope = direction < 0 ? SlopeType.SlopeDownLeft : SlopeType.SlopeDownRight;
+				}
+			}
+		}
+	}
+
+	private static bool ContainsMineRailEnvelope(Rectangle area)
+	{
+		for (int x = area.Left; x < area.Right; x += 2) {
+			for (int y = area.Top; y < area.Bottom; y += 2) {
+				if (IsMineRailEnvelope(x, y)) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private static int CountWaterCells(Rectangle area)
+	{
+		int cells = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = area.Top; y < area.Bottom; y++) {
+				Tile tile = Main.tile[x, y];
+				cells += tile.LiquidAmount > 0 && tile.LiquidType == LiquidID.Water ? 1 : 0;
+			}
+		}
+		return cells;
+	}
+
 	private static void PlaceInteriorObjects(
 		WorldPlan plan,
 		MountainRangePlan mountain,
@@ -833,7 +1035,7 @@ internal static class MountainBiomeGenerator
 			}
 		}
 
-		int vineTarget = 35 + area.Width / 45 + random.Next(12, 29);
+		int vineTarget = Math.Max(220, area.Width * 2 / 3) + random.Next(35, 86);
 		for (int attempt = 0, vines = 0; attempt < vineTarget * 90 && vines < vineTarget; attempt++) {
 			int x = random.Next(area.Left + 8, area.Right - 9);
 			int y = random.Next(Math.Max(area.Top + 7, plan.SurfaceAt(x) + 6), area.Bottom - 16);
@@ -843,7 +1045,7 @@ internal static class MountainBiomeGenerator
 			}
 
 			ushort vineType = VineTypeAt(x, y - 1);
-			int length = random.Next(3, 13);
+			int length = random.Next(5, 21);
 			for (int offset = 0; offset < length; offset++) {
 				int vineY = y + offset;
 				if (IsDecorationExcluded(manifest, x, vineY) || Main.tile[x, vineY].HasTile || Main.tile[x, vineY].LiquidAmount > 0) {
@@ -863,6 +1065,45 @@ internal static class MountainBiomeGenerator
 			if (!IsDecorationExcluded(manifest, x, y) && Main.tile[x, y].WallType != WallID.None
 				&& TileEditor.TryPlaceTorch(x, y)) {
 				torches++;
+			}
+		}
+	}
+
+	private static void PlaceHumidityVines(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		UnifiedRandom random,
+		GenerationManifest manifest)
+	{
+		foreach (MountainWaterRecord water in manifest.MountainWaters.Where(record => record.RegionId == mountain.RegionId)) {
+			int desiredCurtains = Math.Clamp(water.Area.Width / 7, 6, 15);
+			int placed = 0;
+			for (int attempt = 0; attempt < desiredCurtains * 36 && placed < desiredCurtains; attempt++) {
+				int x = random.Next(water.Area.Left + 2, water.Area.Right - 2);
+				int searchTop = Math.Max(plan.SurfaceAt(x) + 7, water.Area.Top - 32);
+				int searchBottom = Math.Min(water.WaterlineY - 2, water.Area.Top + 1);
+				for (int y = searchTop; y <= searchBottom; y++) {
+					if (IsDecorationExcluded(manifest, x, y) || !TileEditor.IsSolid(x, y - 1)
+						|| Main.tile[x, y].HasTile || Main.tile[x, y].WallType == WallID.None) {
+						continue;
+					}
+					ushort vineType = VineTypeAt(x, y - 1);
+					int length = random.Next(8, 22);
+					int authored = 0;
+					for (int offset = 0; offset < length; offset++) {
+						int vineY = y + offset;
+						if (Main.tile[x, vineY].HasTile || Main.tile[x, vineY].LiquidAmount > 0
+							|| IsMineRailEnvelope(x, vineY)) {
+							break;
+						}
+						TileEditor.SetTerrain(x, vineY, vineType);
+						authored++;
+					}
+					if (authored >= 5) {
+						placed++;
+					}
+					break;
+				}
 			}
 		}
 	}
@@ -1029,15 +1270,17 @@ internal static class MountainBiomeGenerator
 		GenerationManifest manifest)
 	{
 		Rectangle area = MountainArea(plan, mountain);
+		int minimumVines = Math.Max(220, area.Width / 2);
 		int vineTiles = CountVines(area);
-		for (int x = area.Left + 10; x < area.Right - 10 && vineTiles < 28; x += 3) {
-			for (int y = Math.Max(area.Top + 8, plan.SurfaceAt(x) + 7); y < area.Bottom - 12 && vineTiles < 28; y++) {
+		for (int x = area.Left + 10; x < area.Right - 10 && vineTiles < minimumVines; x += 3) {
+			for (int y = Math.Max(area.Top + 8, plan.SurfaceAt(x) + 7); y < area.Bottom - 18 && vineTiles < minimumVines; y++) {
 				if (IsDecorationExcluded(manifest, x, y) || !TileEditor.IsSolid(x, y - 1)
 					|| Main.tile[x, y].HasTile || Main.tile[x, y].WallType == WallID.None) {
 					continue;
 				}
 				ushort vineType = VineTypeAt(x, y - 1);
-				for (int length = 0; length < 7 && vineTiles < 28; length++) {
+				int targetLength = 8 + HashNoise(x, mountain.FeatureSeed ^ y ^ 0x5649_4E45) % 10;
+				for (int length = 0; length < targetLength && vineTiles < minimumVines; length++) {
 					int vineY = y + length;
 					if (IsDecorationExcluded(manifest, x, vineY) || Main.tile[x, vineY].HasTile
 						|| Main.tile[x, vineY].LiquidAmount > 0) {
@@ -1107,7 +1350,9 @@ internal static class MountainBiomeGenerator
 		Point point = new(x, y);
 		return manifest.Landmarks.Any(record => record.Area.Contains(point))
 			|| manifest.Bridges.Any(record => record.Area.Contains(point))
+			|| manifest.ForestLakeBridges.Any(record => record.Area.Contains(point))
 			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.MountainWaters.Any(record => record.Area.Contains(point))
 			|| manifest.SkyHighlands.Any(record => record.Area.Contains(point))
 			|| manifest.BiomeTransitions.Any(record => record.Area.Contains(point))
 			|| manifest.MineSections.Any(record => record.Area.Contains(point));
@@ -1500,4 +1745,11 @@ internal static class MountainBiomeGenerator
 	private readonly record struct MountainShaft(Point Top, Point Bottom, int HalfWidth);
 
 	private readonly record struct MountainWallClimb(int CenterX, int TopY, int BottomY, int HalfWidth);
+
+	private readonly record struct MountainWaterPlan(
+		MountainWaterStyle Style,
+		Rectangle Area,
+		int WaterlineY,
+		int Depth,
+		int FeatureSeed);
 }

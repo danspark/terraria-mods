@@ -255,7 +255,9 @@ internal static class SkyHighlandGenerator
 		Point point = new(x, y);
 		return manifest.Landmarks.Any(record => record.Area.Contains(point))
 			|| manifest.Bridges.Any(record => record.Area.Contains(point))
+			|| manifest.ForestLakeBridges.Any(record => record.Area.Contains(point))
 			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.MountainWaters.Any(record => record.Area.Contains(point))
 			|| manifest.MineSections.Any(record => record.Area.Contains(point));
 	}
 

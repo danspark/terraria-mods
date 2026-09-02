@@ -550,6 +550,17 @@ internal static class SurfaceMineGenerator
 			reason = "surface transition";
 			return false;
 		}
+		if (manifest.ForestLakeBridges.Any(bridge => bridge.Area.Intersects(workyardBuffer)
+			|| plan.Sections.Any(section => section.Area.Intersects(bridge.Area))
+			|| plan.Routes.SelectMany(RasterizeCenterline).Any(bridge.Area.Contains))) {
+			reason = "forest lake bridge";
+			return false;
+		}
+		if (manifest.MountainWaters.Any(water => plan.Sections.Any(section => section.Area.Intersects(water.Area))
+			|| plan.Routes.SelectMany(RasterizeCenterline).Any(water.Area.Contains))) {
+			reason = "mountain interior water";
+			return false;
+		}
 		MineRoute surfaceDescent = plan.Routes[0];
 		foreach (BuildTerrace terrace in manifest.Terraces) {
 			Rectangle terraceBuffer = new(

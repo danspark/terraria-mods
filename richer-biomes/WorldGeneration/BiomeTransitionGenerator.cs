@@ -391,7 +391,9 @@ internal static class BiomeTransitionGenerator
 		return manifest.Terraces.Any(terrace => terrace.Area.Contains(point))
 			|| manifest.Landmarks.Any(landmark => landmark.Area.Contains(point))
 			|| manifest.Bridges.Any(bridge => bridge.Area.Contains(point))
+			|| manifest.ForestLakeBridges.Any(bridge => bridge.Area.Contains(point))
 			|| manifest.Valleys.Any(valley => valley.Area.Contains(point))
+			|| manifest.MountainWaters.Any(water => water.Area.Contains(point))
 			|| manifest.SkyHighlands.Any(highland => highland.Area.Contains(point))
 			|| manifest.MineSections.Any(section => section.Area.Contains(point));
 	}

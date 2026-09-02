@@ -17,6 +17,8 @@
 ## Richer Biomes organic boundaries
 
 - Do not generate a custom biome, mountain, natural wall field, terrain layer, structure-to-ground join, or material transition from a constant row, constant column, rectangular fill edge, or independent per-tile randomness. Use deterministic correlated variation at more than one scale, with enough amplitude to remain visible on the map.
+- Before modeling a terrain-integrated structure, sample the finished terrain, walls, liquids, and biome materials across its complete padded footprint. Derive the foundation depth, approaches, supports, shoreline, basin walls, and exterior material blend from those samples. Do not clear a rectangle and disguise its edge afterward.
 - Keep functional construction geometry readable. Rails, room floors, doors, bridge decks, and reserved traversal lanes may be straight when their role requires it, but their decorative material fields and joins into natural terrain must use the organic boundary field.
+- A settled liquid surface may be level, but its shore, bed, spill lip, retaining material, and structure approaches must follow correlated contours and blend into the host biome. The same rule applies to a straight bridge deck: its abutments, supports, banks, and background field must not expose the generator footprint.
 - A late repair pass must reapply the same seeded boundary function as the original owner. It must not restore a feature with a simpler axis-aligned approximation.
-- Validate the finished tile and wall grid for long exact-axis material seams. Planned jitter or a noisy placement mask does not count if later passes leave a straight boundary in the saved world.
+- Validate the finished tile and wall grid for long exact-axis material seams, rectangular clearance scars, abrupt host-material changes, and unsupported structure edges. Planned jitter or a noisy placement mask does not count if later passes leave a straight boundary in the saved world.

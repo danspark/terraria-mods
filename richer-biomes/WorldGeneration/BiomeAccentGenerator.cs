@@ -120,6 +120,14 @@ internal static class BiomeAccentGenerator
 			}
 		}
 
+		foreach (ForestLakeBridgeRecord bridge in manifest.ForestLakeBridges) {
+			Rectangle quiet = bridge.Area;
+			quiet.Inflate(5, 3);
+			if (quiet.Contains(x, y)) {
+				return true;
+			}
+		}
+
 		return false;
 	}
 
