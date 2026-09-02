@@ -172,7 +172,9 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 			manifest.Bridges.Add(new BridgeRecord(
 				(BridgeStyle)saved.GetInt("style"),
 				DeserializeRectangle(saved),
-				saved.GetInt("deckTiles")));
+				saved.GetInt("deckTiles"),
+				saved.ContainsKey("graveyard") && saved.GetBool("graveyard"),
+				saved.ContainsKey("tombstoneTiles") ? saved.GetInt("tombstoneTiles") : 0));
 		}
 		foreach (TagCompound saved in tag.GetList<TagCompound>("forestLakeBridges")) {
 			manifest.ForestLakeBridges.Add(new ForestLakeBridgeRecord(
@@ -184,7 +186,9 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 				saved.ContainsKey("featureSeed") ? saved.GetInt("featureSeed") : saved.GetInt("x") ^ saved.GetInt("y") ^ 0x464C_414B,
 				saved.GetInt("waterCells"),
 				saved.GetInt("deckTiles"),
-				saved.GetInt("supportTiles")));
+				saved.GetInt("supportTiles"),
+				saved.ContainsKey("graveyard") && saved.GetBool("graveyard"),
+				saved.ContainsKey("tombstoneTiles") ? saved.GetInt("tombstoneTiles") : 0));
 		}
 		foreach (TagCompound saved in tag.GetList<TagCompound>("mountainWaters")) {
 			manifest.MountainWaters.Add(new MountainWaterRecord(
@@ -474,6 +478,8 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 		MountainBiomeGenerator.RepairBridgePortals(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan(), RequireManifest());
 		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
+		LandmarkGenerator.RepairFinalGeometry(RequireManifest());
+		MountainBiomeGenerator.RepairGraveyardBridges(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RecordFinalState(RequirePlan(), RequireManifest());
 		progress.Set(1d);
 	}
@@ -563,7 +569,9 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 
 	private static TagCompound SerializeBridge(BridgeRecord bridge) => WithRectangle(bridge.Area, new TagCompound {
 		["style"] = (int)bridge.Style,
-		["deckTiles"] = bridge.DeckTiles
+		["deckTiles"] = bridge.DeckTiles,
+		["graveyard"] = bridge.Graveyard,
+		["tombstoneTiles"] = bridge.TombstoneTiles
 	});
 
 	private static TagCompound SerializeForestLakeBridge(ForestLakeBridgeRecord bridge) => WithRectangle(bridge.Area, new TagCompound {
@@ -574,7 +582,9 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 		["featureSeed"] = bridge.FeatureSeed,
 		["waterCells"] = bridge.WaterCells,
 		["deckTiles"] = bridge.DeckTiles,
-		["supportTiles"] = bridge.SupportTiles
+		["supportTiles"] = bridge.SupportTiles,
+		["graveyard"] = bridge.Graveyard,
+		["tombstoneTiles"] = bridge.TombstoneTiles
 	});
 
 	private static TagCompound SerializeMountainWater(MountainWaterRecord water) => WithRectangle(water.Area, new TagCompound {

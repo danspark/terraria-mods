@@ -18,10 +18,10 @@ The showcase world used the numeric seed `882350129`. The exact result is determ
 
 ## What it generates
 
-- Ground-connected mountain ranges with varied heights, broad chambers, open-background caves, ledges, climbing aids, vines, ponds, furnished vignettes, and two surface entrances. Bridges enter traversable mountain passages instead of terminating against solid rock.
+- Ground-connected mountain ranges with varied heights, zigzagging cave chains, broad chambers, open-background pockets, natural spawn shelves, biome-rooted growing vines, ponds, and two surface entrances. Bridges enter traversable mountain passages, and some stone crossings become functional graveyards.
 - Large floating highlands with terraced meadow, cloud basin, or broken archipelago forms. Mountain attachment is occasional, not the default.
 - Biome-specific landmarks with multiple rooms, floors, stairs, roof shapes, furniture sets, and blended foundations. Snow landmarks can become buried igloos. Every landmark deliberately fails NPC housing checks so it cannot bypass progression.
-- Occasional forest lakes and terrain-integrated bridges with irregular shores, beds, supports, and approaches.
+- Occasional forest lakes and terrain-integrated bridges with irregular shores, beds, supports, and approaches. Stone variants can become tombstone-lined graveyard crossings.
 - Broad, correlated biome and material transitions. Natural terrain, walls, foundations, and structure joins avoid straight rectangular generator seams.
 - One guaranteed visible surface mine leading into an interconnected Cavern rail district with junctions, cycles, work lines, timber supports, furniture, flooded areas, collapses, mountain routes, and sealed world-evil sections.
 - Protected spawn ground, building terraces, regional cave routes, and quieter construction space between major landmarks.

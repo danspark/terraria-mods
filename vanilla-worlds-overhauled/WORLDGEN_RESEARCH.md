@@ -301,6 +301,24 @@ Every row completed strict finished-tile validation, first reload, save, and sec
 
 An independent tile-state render then inspected all three world overviews, all 33 landmark crops, every mountain and mountain-water crop, and both generated Forest bridge lakes. The landmark sheets show broad halls, terraced compounds, separated towers, asymmetric wings, varied roof families, and the medium seed's three-level buried Snow igloo rather than one repeated cabin outline. Mountain crops show large background-open chambers, crossing routes, dense hanging curtains, bridges, and multiple visibly separate ponds. Both Forest scenes keep readable level decks while their beds, banks, supports, and approach terrain break up the reservation footprint; the small seed correctly contains no such scene.
 
+## Natural-vine, cave-turn, and graveyard verification record
+
+The mountain-vine audit distinguished Terraria's growing vegetation from `VineRope`, the player-placeable rope tile that merely uses a vine-like texture. Terraria assigns each natural vine family a living ceiling root: Vines grow from Grass; Jungle Vines from Jungle Grass and its evil variants; Corrupt and Crimson Vines from their corresponding Grass; Mushroom Vines from Mushroom Grass; and Ash Vines from Ash Grass. Mountain decoration now creates a short compatible living-root patch before extending the matching natural vine downward. It refuses protected, mine-owned, frame-important, and progression-critical roots. Validation counts only the six growing vine families, rejects any retained Vine Rope, and traces the top of every curtain back to a compatible living root.
+
+The reference cave image also exposed a shape requirement that decoration density alone cannot satisfy. Vanilla-like caves change heading repeatedly, widen into chambers, and periodically leave short, stable floors where ambient objects can settle. Each authored mountain connection is therefore overlaid with deterministic nineteen-to-thirty-two-tile cave legs whose lateral direction alternates. Thick host-material shelves add level runs with clear headroom and sloped ends; validation requires at least eighteen substantial route turns and three usable wall-backed floor runs per mountain.
+
+Terraria's Graveyard check counts Tombstone tile cells rather than placed objects. In tModLoader 2026.07.3.0, the biome threshold is 28 cells and nearby Sunflower cells subtract at half weight. A complete Tombstone occupies four cells, so selected stone crossings place nine complete, spaced objects for 36 cells. The final validator reproduces the game's biome-scan footprint at the center of the bridge, including Sunflower suppression, instead of validating only the structure rectangle. Timber, living-wood, suspension, and rail crossings never receive this treatment.
+
+The final manifest-version-7 matrix ran on 2026-09-02 against Terraria 1.4.4.9 and tModLoader 2026.07.3.0:
+
+| Mode and size | Seed | Mountains | Growing vine tiles | Graveyard bridges / tombstone cells | Generation time |
+| --- | --- | ---: | ---: | --- | ---: |
+| Classic small | `Majesty-Matrix-Small-001` (`1399794971`) | 1 | at least 260 | 0 / 0 | 22.3 s |
+| Journey medium | `Majesty-Matrix-Medium-001` (`204860939`) | 2 | at least 260 each | 1 / 36 | 29.7 s |
+| Classic large | `Majesty-Matrix-Large-001` (`1180213525`) | 2 | 417; 297 | 1 / 36 | 46.2 s |
+
+All three rows passed finished-tile validation, first reload, save, and second reload. The small row proves that graveyards remain optional; medium and large exercise their successful occurrence. A persisted large-world tile render then showed the new turning cave chains, flat natural shelves, bright natural-vine curtains, and nine complete tombstones on the selected stone bridge. The renderer found no player-placeable Vine Rope in either mountain.
+
 ## Future research queue
 
 - Move the independent deterministic full-world and feature-crop renderer into the repository test harness so shape review becomes as repeatable as connectivity validation.

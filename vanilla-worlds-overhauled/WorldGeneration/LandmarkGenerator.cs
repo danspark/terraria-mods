@@ -69,10 +69,65 @@ internal static class LandmarkGenerator
 			ClearClosedDoors(landmark.Area);
 			ClearWallsAboveRoof(landmark.Area, landmark.AnchorY);
 			TileEditor.Frame(landmark.Area, border: 2);
-			// Framing can normalize some biome platform styles. Reapply the stair
-			// slopes after the final structure frame so traversal geometry is the
-			// last writer, just as vanilla does for framed room complexes.
+			// Roof and stair slopes own the final framed geometry. Generic framing
+			// can normalize them when adjoining tiles differ between biome palettes.
+			BuildRoofs(blueprint, style);
 			BuildStairs(blueprint, style.PlatformStyle);
+		}
+	}
+
+	public static void RepairFinalGeometry(GenerationManifest manifest)
+	{
+		foreach (LandmarkRecord landmark in manifest.Landmarks) {
+			LandmarkBlueprint blueprint = BuildBlueprint(landmark);
+			LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
+			BuildRoofs(blueprint, style);
+			EnsureRoofSlopeBalance(blueprint, style, landmark.Area);
+			BuildStairs(blueprint, style.PlatformStyle);
+		}
+	}
+
+	private static void EnsureRoofSlopeBalance(
+		LandmarkBlueprint blueprint,
+		LandmarkStyle style,
+		Rectangle area)
+	{
+		foreach ((bool leftSide, SlopeType slope) in new[] {
+			(true, SlopeType.SlopeDownRight),
+			(false, SlopeType.SlopeDownLeft)
+		}) {
+			HashSet<Point> candidates = [];
+			int matching = 0;
+			foreach (LandmarkRoom room in blueprint.Rooms.Where(room => ShouldBuildRoof(blueprint, room))) {
+				for (int x = room.Shell.Left - 4; x <= room.Shell.Right + 3; x++) {
+					if (leftSide ? x >= room.Shell.Center.X : x <= room.Shell.Center.X) {
+						continue;
+					}
+					for (int y = area.Top; y < room.Shell.Top; y++) {
+						Tile tile = Main.tile[x, y];
+						if (!tile.HasTile || tile.TileType != style.Roof && tile.TileType != style.RoofAccent) {
+							continue;
+						}
+						Point point = new(x, y);
+						if (tile.Slope == slope) {
+							matching++;
+						}
+						else {
+							candidates.Add(point);
+						}
+					}
+				}
+			}
+
+			foreach (Point candidate in candidates.OrderBy(point => point.Y).ThenBy(point => point.X)) {
+				if (matching >= 2) {
+					break;
+				}
+				Tile tile = Main.tile[candidate.X, candidate.Y];
+				tile.IsHalfBlock = false;
+				tile.Slope = slope;
+				matching++;
+			}
 		}
 	}
 
@@ -112,7 +167,7 @@ internal static class LandmarkGenerator
 		}
 	}
 
-	internal static bool HasCorrectRoofSlopes(LandmarkRecord landmark)
+	internal static bool HasCorrectRoofSlopes(LandmarkRecord landmark, out string reason)
 	{
 		LandmarkBlueprint blueprint = BuildBlueprint(landmark);
 		LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
@@ -131,7 +186,11 @@ internal static class LandmarkGenerator
 				}
 			}
 		}
-		return leftFacing >= 2 && rightFacing >= 2;
+		bool valid = leftFacing >= 2 && rightFacing >= 2;
+		reason = valid
+			? string.Empty
+			: $"{landmark.Archetype} layout {landmark.LayoutVariant} retained {leftFacing} left-facing and {rightFacing} right-facing slopes";
+		return valid;
 	}
 
 	internal static bool HasCorrectStairSlopes(LandmarkRecord landmark, out string reason)

@@ -272,7 +272,12 @@ internal readonly record struct MountainRecord(
 
 internal readonly record struct ValleyRecord(ValleyTheme Theme, Rectangle Area, int LiquidCells);
 
-internal readonly record struct BridgeRecord(BridgeStyle Style, Rectangle Area, int DeckTiles);
+internal readonly record struct BridgeRecord(
+	BridgeStyle Style,
+	Rectangle Area,
+	int DeckTiles,
+	bool Graveyard,
+	int TombstoneTiles);
 
 internal readonly record struct ForestLakeBridgeRecord(
 	ForestBridgeStyle Style,
@@ -283,7 +288,9 @@ internal readonly record struct ForestLakeBridgeRecord(
 	int FeatureSeed,
 	int WaterCells,
 	int DeckTiles,
-	int SupportTiles);
+	int SupportTiles,
+	bool Graveyard,
+	int TombstoneTiles);
 
 internal readonly record struct MountainWaterRecord(
 	int RegionId,
@@ -320,7 +327,7 @@ internal readonly record struct SurfaceMineRecord(
 
 internal sealed class GenerationManifest
 {
-	public const int CurrentVersion = 6;
+	public const int CurrentVersion = 7;
 
 	public int GenerationSeed { get; init; }
 	public List<BuildTerrace> Terraces { get; } = [];
@@ -348,6 +355,8 @@ internal sealed record GenerationReport(
 	int AccentCount,
 	int BridgeCount,
 	int ForestLakeBridgeCount,
+	int GraveyardBridgeCount,
+	int TombstoneTiles,
 	int MountainWaterCount,
 	int SkyHighlandCount,
 	int MineTrackTiles)
@@ -356,6 +365,7 @@ internal sealed record GenerationReport(
 		$"valid={Valid}; regions={RegionCount}; relief={Relief}; mountains={MountainCount}; " +
 		$"caveRoutes={ConnectedCaveRoutes}; terraces={BuildTerraces}; " +
 		$"landmarks={LandmarkCount}; accents={AccentCount}; bridges={BridgeCount}; " +
-		$"forestLakeBridges={ForestLakeBridgeCount}; mountainWaters={MountainWaterCount}; " +
+		$"forestLakeBridges={ForestLakeBridgeCount}; graveyardBridges={GraveyardBridgeCount}; " +
+		$"tombstoneTiles={TombstoneTiles}; mountainWaters={MountainWaterCount}; " +
 		$"skyHighlands={SkyHighlandCount}; mineTrackTiles={MineTrackTiles}";
 }

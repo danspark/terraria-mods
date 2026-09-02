@@ -30,7 +30,7 @@ internal static class ForestWaterBridgeGenerator
 				break;
 			}
 
-			ForestLakeBridgeRecord record = Build(bridge);
+			ForestLakeBridgeRecord record = Build(bridge, placeGraveyard: false);
 			manifest.ForestLakeBridges.Add(record);
 			GenVars.structures.AddProtectedStructure(record.Area, padding: 8);
 			progress.Set((double)(index + 1) / desired);
@@ -50,7 +50,7 @@ internal static class ForestWaterBridgeGenerator
 				record.WaterlineY,
 				record.Depth,
 				record.FeatureSeed);
-			manifest.ForestLakeBridges[index] = Build(plan);
+			manifest.ForestLakeBridges[index] = Build(plan, placeGraveyard: true);
 		}
 	}
 
@@ -132,7 +132,7 @@ internal static class ForestWaterBridgeGenerator
 		return best is not null;
 	}
 
-	private static ForestLakeBridgeRecord Build(ForestLakeBridgePlan plan)
+	private static ForestLakeBridgeRecord Build(ForestLakeBridgePlan plan, bool placeGraveyard)
 	{
 		int innerLeft = plan.Area.Left + 9;
 		int innerRight = plan.Area.Right - 10;
@@ -175,6 +175,9 @@ internal static class ForestWaterBridgeGenerator
 		BuildOrganicBanks(plan, innerLeft, innerRight);
 		(int deckTiles, int supportTiles) = BuildBridge(plan, innerLeft, innerRight, deckMaterial);
 		TileEditor.Frame(plan.Area, border: 3);
+		bool graveyard = plan.Style == ForestBridgeStyle.StoneAndTimber
+			&& Math.Abs(MixSeed(plan.Seed, 0x4752_4156) % 100) < 55;
+		int tombstoneTiles = graveyard && placeGraveyard ? PlaceBridgeGraveyard(plan, innerLeft, innerRight) : 0;
 		int waterCells = CountWater(plan.Area);
 		return new ForestLakeBridgeRecord(
 			plan.Style,
@@ -185,7 +188,34 @@ internal static class ForestWaterBridgeGenerator
 			plan.Seed,
 			waterCells,
 			deckTiles,
-			supportTiles);
+			supportTiles,
+			graveyard,
+			tombstoneTiles);
+	}
+
+	private static int PlaceBridgeGraveyard(ForestLakeBridgePlan plan, int innerLeft, int innerRight)
+	{
+		UnifiedRandom random = new(MixSeed(plan.Seed, 0x544F_4D42));
+		int bridgeLeft = innerLeft - 7;
+		int bridgeRight = innerRight + 7;
+		int clusterLeft = Math.Max(bridgeLeft + 10, (bridgeLeft + bridgeRight) / 2 - 45);
+		int clusterRight = Math.Min(bridgeRight - 11, clusterLeft + 90);
+		int placed = 0;
+		int nextCandidateX = clusterLeft + random.Next(0, 4);
+		for (int x = clusterLeft; x <= clusterRight - 2 && placed < 9; x++) {
+			if (x < nextCandidateX) {
+				continue;
+			}
+			if (MountainBiomeGenerator.CanPlaceTombstone(x, plan.DeckY - 1)
+				&& TileEditor.TryPlaceObject(x, plan.DeckY - 1, TileID.Tombstones, random.Next(0, 11))) {
+				placed++;
+				nextCandidateX = x + random.Next(7, 11);
+			}
+		}
+		TileEditor.Frame(
+			new Rectangle(clusterLeft - 3, plan.DeckY - 5, clusterRight - clusterLeft + 7, 9),
+			border: 2);
+		return CountTiles(plan.Area, TileID.Tombstones);
 	}
 
 	private static void BuildOrganicBanks(ForestLakeBridgePlan plan, int innerLeft, int innerRight)
@@ -287,6 +317,17 @@ internal static class ForestWaterBridgeGenerator
 			for (int y = area.Top; y < area.Bottom; y++) {
 				Tile tile = Main.tile[x, y];
 				count += tile.LiquidAmount > 0 && tile.LiquidType == LiquidID.Water ? 1 : 0;
+			}
+		}
+		return count;
+	}
+
+	private static int CountTiles(Rectangle area, ushort tileType)
+	{
+		int count = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = area.Top; y < area.Bottom; y++) {
+				count += Main.tile[x, y].HasTile && Main.tile[x, y].TileType == tileType ? 1 : 0;
 			}
 		}
 		return count;

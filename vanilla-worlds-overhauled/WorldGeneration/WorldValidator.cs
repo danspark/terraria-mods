@@ -46,6 +46,10 @@ internal static class WorldValidator
 			accentCount,
 			manifest.Bridges.Count,
 			manifest.ForestLakeBridges.Count,
+			manifest.Bridges.Count(bridge => bridge.Graveyard)
+				+ manifest.ForestLakeBridges.Count(bridge => bridge.Graveyard),
+			manifest.Bridges.Sum(bridge => bridge.TombstoneTiles)
+				+ manifest.ForestLakeBridges.Sum(bridge => bridge.TombstoneTiles),
 			manifest.MountainWaters.Count,
 			manifest.SkyHighlands.Count,
 			mineTrackTiles);
@@ -161,13 +165,29 @@ internal static class WorldValidator
 			if (longVineRuns < minimumVineRuns) {
 				errors.Add($"mountain region {region.Id} retained only {longVineRuns} distinct vine curtains");
 			}
+			int vineRopeTiles = CountTiles(interior.Area, TileID.VineRope);
+			if (vineRopeTiles > 0) {
+				errors.Add($"mountain region {region.Id} retained {vineRopeTiles} placeable Vine Rope tiles instead of growing vines");
+			}
+			int invalidVineRoots = CountInvalidNaturalVineRoots(interior.Area);
+			if (invalidVineRoots > 0) {
+				errors.Add($"mountain region {region.Id} has {invalidVineRoots} vine curtains without a matching living root tile");
+			}
+			int routeTurns = MountainBiomeGenerator.CountInteriorRouteTurns(plan, planned);
+			if (routeTurns < 18) {
+				errors.Add($"mountain region {region.Id} planned only {routeTurns} substantial cave-route turns");
+			}
+			int spawnShelves = CountUsableNaturalFloorRuns(plan, interior.Area);
+			if (spawnShelves < 3) {
+				errors.Add($"mountain region {region.Id} retained only {spawnShelves} flat natural cave shelves for pots and rubble");
+			}
 			if (interior.WaterBodyCount < 2 || interior.WaterCells < 240) {
 				errors.Add(
 					$"mountain region {region.Id} retained {interior.WaterBodyCount} interior water bodies "
 					+ $"with {interior.WaterCells} water cells; expected at least 2 bodies and 240 cells");
 			}
 			ValidateMountainWaters(region.Id, manifest, errors);
-			(int matchingMaterial, int sampledMaterial) = MeasureMountainMaterialOwnership(plan, planned);
+			(int matchingMaterial, int sampledMaterial) = MeasureMountainMaterialOwnership(plan, planned, manifest);
 			if (sampledMaterial < 20 || matchingMaterial < sampledMaterial * 3 / 5) {
 				errors.Add(
 					$"mountain region {region.Id} follows its underlying biome in only "
@@ -265,9 +285,7 @@ internal static class WorldValidator
 			int run = 0;
 			for (int y = area.Top; y < area.Bottom; y++) {
 				Tile tile = Main.tile[x, y];
-				bool vine = tile.HasTile && tile.TileType is TileID.Vines or TileID.JungleVines
-					or TileID.CrimsonVines or TileID.CorruptVines or TileID.MushroomVines or TileID.AshVines
-					or TileID.VineRope;
+				bool vine = IsNaturalVine(tile);
 				if (vine) {
 					run++;
 					continue;
@@ -276,6 +294,67 @@ internal static class WorldValidator
 				run = 0;
 			}
 			runs += run >= 4 ? 1 : 0;
+		}
+		return runs;
+	}
+
+	private static int CountInvalidNaturalVineRoots(Rectangle area)
+	{
+		int invalid = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = area.Top; y < area.Bottom; y++) {
+				Tile vine = Main.tile[x, y];
+				if (!IsNaturalVine(vine)) {
+					continue;
+				}
+				Tile above = Main.tile[x, y - 1];
+				if (above.HasTile && above.TileType == vine.TileType) {
+					continue;
+				}
+				invalid += !HasMatchingNaturalVineRoot(vine.TileType, above) ? 1 : 0;
+			}
+		}
+		return invalid;
+	}
+
+	private static bool IsNaturalVine(Tile tile) =>
+		tile.HasTile && tile.TileType is TileID.Vines or TileID.JungleVines or TileID.CrimsonVines
+			or TileID.CorruptVines or TileID.MushroomVines or TileID.AshVines;
+
+	private static bool HasMatchingNaturalVineRoot(ushort vineType, Tile root) =>
+		root.HasUnactuatedTile && (vineType switch {
+			TileID.Vines => root.TileType == TileID.Grass,
+			TileID.JungleVines => root.TileType is TileID.JungleGrass or TileID.CorruptJungleGrass or TileID.CrimsonJungleGrass,
+			TileID.CorruptVines => root.TileType == TileID.CorruptGrass,
+			TileID.CrimsonVines => root.TileType == TileID.CrimsonGrass,
+			TileID.MushroomVines => root.TileType == TileID.MushroomGrass,
+			TileID.AshVines => root.TileType == TileID.AshGrass,
+			_ => false
+		});
+
+	private static int CountUsableNaturalFloorRuns(WorldPlan plan, Rectangle area)
+	{
+		int runs = 0;
+		for (int y = area.Top + 6; y < area.Bottom - 3; y++) {
+			int run = 0;
+			for (int x = area.Left + 3; x < area.Right - 3; x++) {
+				Tile floor = Main.tile[x, y];
+				bool usable = y >= plan.SurfaceAt(x) + 12
+					&& IsNaturalMountainTile(floor)
+					&& floor.Slope == SlopeType.Solid
+					&& !floor.IsHalfBlock
+					&& Main.tile[x, y - 1].WallType != WallID.None;
+				for (int clearance = 1; clearance <= 4 && usable; clearance++) {
+					usable &= !TileEditor.IsSolid(x, y - clearance);
+				}
+				if (usable) {
+					run++;
+					continue;
+				}
+				runs += run >= 7 ? 1 : 0;
+				run = 0;
+			}
+			runs += run >= 7 ? 1 : 0;
 		}
 		return runs;
 	}
@@ -321,7 +400,8 @@ internal static class WorldValidator
 
 	private static (int Matching, int Sampled) MeasureMountainMaterialOwnership(
 		WorldPlan plan,
-		MountainRangePlan mountain)
+		MountainRangePlan mountain,
+		GenerationManifest manifest)
 	{
 		WorldRegion region = plan.Regions[mountain.RegionId];
 		ushort[] materialProfile = LandformGenerator.CaptureMountainMaterialProfile(plan, mountain);
@@ -330,7 +410,8 @@ internal static class WorldValidator
 		for (int x = region.Left + 8; x <= region.Right - 8; x += 3) {
 			int surfaceY = plan.SurfaceAt(x);
 			Tile actual = Main.tile[x, surfaceY];
-			if (!actual.HasUnactuatedTile || Main.tileFrameImportant[actual.TileType] || !IsNaturalMountainTile(actual)) {
+			if (IsMountainValidationExcluded(manifest, x, surfaceY)
+				|| !actual.HasUnactuatedTile || Main.tileFrameImportant[actual.TileType] || !IsNaturalMountainTile(actual)) {
 				continue;
 			}
 			ushort expected = LandformGenerator.MountainMaterialAt(
@@ -952,8 +1033,8 @@ internal static class WorldValidator
 			if (slopedShellTiles < 4) {
 				errors.Add($"{landmark.Biome} landmark retained only {slopedShellTiles} sloped roof tiles");
 			}
-			if (!LandmarkGenerator.HasCorrectRoofSlopes(landmark)) {
-				errors.Add($"{landmark.Biome} landmark has missing or incorrectly oriented roof slopes");
+			if (!LandmarkGenerator.HasCorrectRoofSlopes(landmark, out string roofReason)) {
+				errors.Add($"{landmark.Biome} landmark has missing or incorrectly oriented roof slopes: {roofReason}");
 			}
 			if (!LandmarkGenerator.HasCorrectStairSlopes(landmark, out string stairReason)) {
 				errors.Add($"{landmark.Biome} landmark has missing or incorrectly oriented stair slopes: {stairReason}");
@@ -1008,6 +1089,13 @@ internal static class WorldValidator
 			if (supports < 24 || bridge.SupportTiles < 24) {
 				errors.Add($"{bridge.Style} forest bridge retained only {supports} beam tiles ({bridge.SupportTiles} recorded)");
 			}
+			ValidateGraveyardBridge(
+				bridge.Style == ForestBridgeStyle.StoneAndTimber,
+				bridge.Graveyard,
+				bridge.TombstoneTiles,
+				bridge.Area,
+				$"{bridge.Style} forest bridge",
+				errors);
 
 			List<int> bed = [];
 			for (int x = bridge.Area.Left + 8; x < bridge.Area.Right - 8; x++) {
@@ -1168,6 +1256,13 @@ internal static class WorldValidator
 			if (backdrop < bridge.Area.Width * 2) {
 				errors.Add($"{bridge.Style} bridge retained only {backdrop} authored background-wall cells");
 			}
+			ValidateGraveyardBridge(
+				bridge.Style == BridgeStyle.StoneArch,
+				bridge.Graveyard,
+				bridge.TombstoneTiles,
+				bridge.Area,
+				$"{bridge.Style} mountain bridge",
+				errors);
 		}
 
 		for (int index = 0; index < Math.Min(plan.Mountains.Count, manifest.Bridges.Count); index++) {
@@ -1204,6 +1299,43 @@ internal static class WorldValidator
 			if (valley.Theme == ValleyTheme.SealedEvil && CountTiles(valley.Area, TileID.GrayBrick) < 60) {
 				errors.Add($"sealed evil valley at x={valley.Area.Center.X} lost its quarantine shell");
 			}
+		}
+	}
+
+	private static void ValidateGraveyardBridge(
+		bool stoneBridge,
+		bool graveyard,
+		int recordedTombstoneTiles,
+		Rectangle area,
+		string label,
+		List<string> errors)
+	{
+		int actualTombstoneTiles = CountTiles(area, TileID.Tombstones);
+		if (!graveyard) {
+			if (recordedTombstoneTiles != 0 || actualTombstoneTiles != 0) {
+				errors.Add($"{label} recorded an unplanned graveyard ({recordedTombstoneTiles} recorded, {actualTombstoneTiles} actual tombstone tiles)");
+			}
+			return;
+		}
+		if (!stoneBridge) {
+			errors.Add($"{label} selected a graveyard treatment without a stone bridge shell");
+		}
+		Rectangle biomeScan = Rectangle.Intersect(
+			new Rectangle(
+				area.Center.X - Main.buffScanAreaWidth / 2,
+				area.Center.Y - Main.buffScanAreaHeight / 2,
+				Main.buffScanAreaWidth,
+				Main.buffScanAreaHeight),
+			new Rectangle(0, 0, Main.maxTilesX, Main.maxTilesY));
+		int scannedTombstoneTiles = CountTiles(biomeScan, TileID.Tombstones);
+		int effectiveGraveyardTiles = scannedTombstoneTiles - CountTiles(biomeScan, TileID.Sunflower) / 2;
+		if (actualTombstoneTiles != recordedTombstoneTiles
+			|| effectiveGraveyardTiles < SceneMetrics.GraveyardTileThreshold) {
+			errors.Add(
+				$"{label} graveyard retained {actualTombstoneTiles} tombstone tiles "
+				+ $"({recordedTombstoneTiles} recorded, {scannedTombstoneTiles} in biome scan, "
+				+ $"{effectiveGraveyardTiles} effective; "
+				+ $"expected at least {SceneMetrics.GraveyardTileThreshold})");
 		}
 	}
 
