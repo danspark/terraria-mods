@@ -514,6 +514,69 @@ internal static class BiomeTransitionGenerator
 				runStart = -1;
 			}
 		}
+
+		BreakResidualWallSeams(area, manifest, seed);
+	}
+
+	private static void BreakResidualWallSeams(Rectangle area, GenerationManifest manifest, int seed)
+	{
+		for (int x = area.Left; x < area.Right - 1; x++) {
+			int runStart = -1;
+			for (int y = area.Top; y <= area.Bottom; y++) {
+				bool boundary = y < area.Bottom
+					&& IsTransitionWallCell(manifest, x, y)
+					&& IsTransitionWallCell(manifest, x + 1, y)
+					&& Main.tile[x, y].WallType != Main.tile[x + 1, y].WallType;
+				if (boundary && runStart < 0) {
+					runStart = y;
+				}
+				if (boundary) {
+					continue;
+				}
+				if (runStart >= 0 && y - runStart > 22) {
+					for (int notchY = runStart + 11, notch = 0; notchY < y - 2; notchY += 13, notch++) {
+						bool pushRight = ((notch + seed + x) & 1) == 0;
+						int targetX = pushRight ? x + 1 : x;
+						ushort wall = Main.tile[pushRight ? x : x + 1, notchY].WallType;
+						for (int offset = 0; offset < 2; offset++) {
+							if (IsTransitionWallCell(manifest, targetX, notchY + offset)) {
+								TileEditor.SetWall(targetX, notchY + offset, wall);
+							}
+						}
+					}
+				}
+				runStart = -1;
+			}
+		}
+
+		for (int y = area.Top; y < area.Bottom - 1; y++) {
+			int runStart = -1;
+			for (int x = area.Left; x <= area.Right; x++) {
+				bool boundary = x < area.Right
+					&& IsTransitionWallCell(manifest, x, y)
+					&& IsTransitionWallCell(manifest, x, y + 1)
+					&& Main.tile[x, y].WallType != Main.tile[x, y + 1].WallType;
+				if (boundary && runStart < 0) {
+					runStart = x;
+				}
+				if (boundary) {
+					continue;
+				}
+				if (runStart >= 0 && x - runStart > 22) {
+					for (int notchX = runStart + 11, notch = 0; notchX < x - 2; notchX += 13, notch++) {
+						bool pushDown = ((notch + seed + y) & 1) == 0;
+						int targetY = pushDown ? y + 1 : y;
+						ushort wall = Main.tile[notchX, pushDown ? y : y + 1].WallType;
+						for (int offset = 0; offset < 2; offset++) {
+							if (IsTransitionWallCell(manifest, notchX + offset, targetY)) {
+								TileEditor.SetWall(notchX + offset, targetY, wall);
+							}
+						}
+					}
+				}
+				runStart = -1;
+			}
+		}
 	}
 
 	private static bool IsTransitionWallCell(GenerationManifest manifest, int x, int y)

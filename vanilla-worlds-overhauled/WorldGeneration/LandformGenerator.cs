@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
 using Terraria.WorldBuilding;
@@ -161,6 +162,126 @@ internal static class LandformGenerator
 				}
 			}
 		}
+	}
+
+	public static void RepairMountainMaterialSeams(WorldPlan plan, GenerationManifest manifest)
+	{
+		foreach (MountainRangePlan mountain in plan.Mountains) {
+			WorldRegion region = plan.Regions[mountain.RegionId];
+			int top = Math.Max(45, Enumerable.Range(region.Left, region.Width).Min(plan.SurfaceAt));
+			int bottom = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 70);
+			Rectangle area = new(region.Left, top, region.Width, bottom - top);
+			BreakResidualMountainMaterialSeams(plan, manifest, area, mountain.FeatureSeed);
+			BreakResidualMountainMaterialSeams(plan, manifest, area, mountain.FeatureSeed ^ 0x5345_414D);
+			TileEditor.Frame(area, border: 2);
+		}
+	}
+
+	private static void BreakResidualMountainMaterialSeams(
+		WorldPlan plan,
+		GenerationManifest manifest,
+		Rectangle area,
+		int seed)
+	{
+		for (int x = area.Left + 2; x < area.Right - 2; x++) {
+			int runStart = -1;
+			for (int y = area.Top + 2; y <= area.Bottom - 2; y++) {
+				bool boundary = y < area.Bottom - 2
+					&& IsMutableMountainMaterial(plan, manifest, x, y)
+					&& IsMutableMountainMaterial(plan, manifest, x + 1, y)
+					&& MountainMaterialFamily(Main.tile[x, y].TileType)
+						!= MountainMaterialFamily(Main.tile[x + 1, y].TileType);
+				if (boundary && runStart < 0) {
+					runStart = y;
+				}
+				if (boundary) {
+					continue;
+				}
+				if (runStart >= 0 && y - runStart > 22) {
+					for (int notchY = runStart + 11, notch = 0; notchY < y - 2; notchY += 13, notch++) {
+						bool pushRight = ((notch + seed + x) & 1) == 0;
+						int targetX = pushRight ? x + 1 : x;
+						int sourceX = pushRight ? x : x + 1;
+						for (int offset = 0; offset < 2; offset++) {
+							int targetY = notchY + offset;
+							if (IsMutableMountainMaterial(plan, manifest, targetX, targetY)
+								&& IsMutableMountainMaterial(plan, manifest, sourceX, targetY)) {
+								SetMountainMaterial(targetX, targetY, Main.tile[sourceX, targetY].TileType);
+							}
+						}
+					}
+				}
+				runStart = -1;
+			}
+		}
+
+		for (int y = area.Top + 2; y < area.Bottom - 2; y++) {
+			int runStart = -1;
+			for (int x = area.Left + 2; x <= area.Right - 2; x++) {
+				bool boundary = x < area.Right - 2
+					&& IsMutableMountainMaterial(plan, manifest, x, y)
+					&& IsMutableMountainMaterial(plan, manifest, x, y + 1)
+					&& MountainMaterialFamily(Main.tile[x, y].TileType)
+						!= MountainMaterialFamily(Main.tile[x, y + 1].TileType);
+				if (boundary && runStart < 0) {
+					runStart = x;
+				}
+				if (boundary) {
+					continue;
+				}
+				if (runStart >= 0 && x - runStart > 22) {
+					for (int notchX = runStart + 11, notch = 0; notchX < x - 2; notchX += 13, notch++) {
+						bool pushDown = ((notch + seed + y) & 1) == 0;
+						int targetY = pushDown ? y + 1 : y;
+						int sourceY = pushDown ? y : y + 1;
+						for (int offset = 0; offset < 2; offset++) {
+							int targetX = notchX + offset;
+							if (IsMutableMountainMaterial(plan, manifest, targetX, targetY)
+								&& IsMutableMountainMaterial(plan, manifest, targetX, sourceY)) {
+								SetMountainMaterial(targetX, targetY, Main.tile[targetX, sourceY].TileType);
+							}
+						}
+					}
+				}
+				runStart = -1;
+			}
+		}
+	}
+
+	private static bool IsMutableMountainMaterial(WorldPlan plan, GenerationManifest manifest, int x, int y)
+	{
+		Tile tile = Main.tile[x, y];
+		return y > plan.SurfaceAt(x)
+			&& !IsFinalFeatureOwned(manifest, x, y)
+			&& !TileEditor.IsProtectedTile(tile)
+			&& MountainMaterialFamily(tile.TileType) != 0;
+	}
+
+	private static int MountainMaterialFamily(ushort tileType) => tileType switch {
+		TileID.Grass or TileID.Dirt => 1,
+		TileID.Stone => 2,
+		TileID.SnowBlock => 3,
+		TileID.IceBlock or TileID.BreakableIce => 4,
+		TileID.Sand => 5,
+		TileID.HardenedSand => 6,
+		TileID.Sandstone or TileID.DesertFossil => 7,
+		TileID.Mud or TileID.JungleGrass or TileID.CorruptJungleGrass or TileID.CrimsonJungleGrass => 8,
+		TileID.CorruptGrass or TileID.Ebonstone or TileID.Ebonsand
+			or TileID.CorruptHardenedSand or TileID.CorruptSandstone => 9,
+		TileID.CrimsonGrass or TileID.Crimstone or TileID.Crimsand
+			or TileID.CrimsonHardenedSand or TileID.CrimsonSandstone => 10,
+		_ => 0
+	};
+
+	private static void SetMountainMaterial(int x, int y, ushort tileType)
+	{
+		Tile tile = Main.tile[x, y];
+		SlopeType slope = tile.Slope;
+		bool halfBlock = tile.IsHalfBlock;
+		TileEditor.SetTerrain(x, y, tileType);
+		Tile replacement = Main.tile[x, y];
+		replacement.Slope = slope;
+		replacement.IsHalfBlock = halfBlock;
 	}
 
 	private static bool IsFinalFeatureOwned(GenerationManifest manifest, int x, int y)

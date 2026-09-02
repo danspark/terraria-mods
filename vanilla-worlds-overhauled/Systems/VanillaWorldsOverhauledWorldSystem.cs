@@ -244,7 +244,10 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 				saved.GetInt("supportTiles"),
 				saved.GetInt("furniture"),
 				saved.GetInt("requiredRoutes"),
-				saved.GetInt("connectedRoutes"));
+				saved.GetInt("connectedRoutes"),
+				saved.ContainsKey("kind") ? (MinePlanKind)saved.GetInt("kind") : MinePlanKind.Complete,
+				saved.ContainsKey("detouredRoutes") ? saved.GetInt("detouredRoutes") : 0,
+				saved.ContainsKey("brokenRoutes") ? saved.GetInt("brokenRoutes") : 0);
 		}
 		if (tag.ContainsKey("torchGodTemple")) {
 			TagCompound saved = tag.GetCompound("torchGodTemple");
@@ -278,6 +281,9 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 			+ $"bridges={manifest.Bridges.Count}; forestLakeBridges={manifest.ForestLakeBridges.Count}; "
 			+ $"mountainWaters={manifest.MountainWaters.Count}; skyHighlands={manifest.SkyHighlands.Count}; "
 			+ $"mine={(manifest.SurfaceMine is null ? "missing" : "present")}; "
+			+ $"mineKind={manifest.SurfaceMine?.Kind.ToString() ?? "missing"}; "
+			+ $"mineDetours={manifest.SurfaceMine?.DetouredRouteCount ?? -1}; "
+			+ $"mineBrokenRoutes={manifest.SurfaceMine?.BrokenRouteCount ?? -1}; "
 			+ $"torchGodTemple={(manifest.TorchGodTemple is null ? "missing" : "present")}; "
 			+ $"torchGodTempleTorches={loadedTorchTempleTorches}; "
 			+ $"torchGodTempleChestTorches={loadedTorchTempleChestTorches}; "
@@ -364,6 +370,17 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 	{
 		progress.Message = "Planning a guaranteed connected surface mine";
 		_surfaceMinePlan = SurfaceMineGenerator.PlanAndReserve(RequirePlan(), RequireManifest());
+		Mod.Logger.Info(
+			$"Vanilla Worlds Overhauled reserved a {RequireMinePlan().Kind} surface mine with "
+			+ $"{RequireMinePlan().DetouredRouteCount} obstacle detour(s), "
+			+ $"{RequireMinePlan().BrokenRouteCount} broken branch(es), "
+			+ $"{RequireMinePlan().Sections.Count} district(s), and {RequireMinePlan().Routes.Count} rail edge(s).");
+		Mod.Logger.Info(
+			"Vanilla Worlds Overhauled mine routes: "
+			+ string.Join("; ", RequireMinePlan().Routes.Select((route, index) =>
+				$"{index}:{route.Start}->{route.End}/cells={route.Centerline.Count}"
+				+ (route.HasJumpTransfer ? $"/jump={route.JumpStartIndex}+{route.JumpGapLength}" : string.Empty)
+				+ (route.HasGravityTransfer ? $"/drop={route.DropStartIndex}+{route.DropGapLength}x{route.DropDepth}" : string.Empty))));
 		progress.Set(1d);
 	}
 
@@ -532,6 +549,38 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 		LandmarkGenerator.RepairFinalGeometry(RequireManifest());
 		MountainBiomeGenerator.RepairGraveyardBridges(RequirePlan(), RequireManifest());
 		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
+		// Converge the overlapping late repairs before recording or validating the
+		// world. Each operation respects final feature ownership, and the order
+		// leaves traversal and decoration repairs after material normalization.
+		SkyHighlandGenerator.RepairAuthoredBodyMaterials(RequirePlan(), RequireManifest());
+		LandformGenerator.FinishMountainMaterials(RequirePlan(), RequireManifest());
+		LandformGenerator.RepairMountainMaterialSeams(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.FinishInteriorWalls(RequirePlan(), RequireManifest());
+		BiomeTransitionGenerator.Repair(RequirePlan(), RequireManifest());
+		SkyHighlandGenerator.RepairOrganicMaterialSeams(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RepairBridgePortals(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RepairInteriorDecorations(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RepairNaturalVineRoots(RequirePlan(), RequireManifest());
+		ForestWaterBridgeGenerator.RepairAndRefill(RequireManifest());
+		MountainBiomeGenerator.RefillInteriorWaters(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RefillValleyLiquids(RequireManifest());
+		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
+		MountainBiomeGenerator.RepairBridgePortals(RequirePlan(), RequireManifest());
+		LandformGenerator.FinishMountainMaterials(RequirePlan(), RequireManifest());
+		LandformGenerator.RepairMountainMaterialSeams(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.FinishInteriorWalls(RequirePlan(), RequireManifest());
+		BiomeTransitionGenerator.Repair(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RepairInteriorDecorations(RequirePlan(), RequireManifest());
+		ForestWaterBridgeGenerator.RepairAndRefill(RequireManifest());
+		MountainBiomeGenerator.RefillInteriorWaters(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RefillValleyLiquids(RequireManifest());
+		foreach (MountainWaterRecord water in RequireManifest().MountainWaters.Where(water => water.WaterCells < 80)) {
+			Mod.Logger.Warn(
+				$"Vanilla Worlds Overhauled retained a constrained {water.Style} in mountain {water.RegionId}: "
+				+ $"area={water.Area}; waterline={water.WaterlineY}; depth={water.Depth}; cells={water.WaterCells}.");
+		}
+		MountainBiomeGenerator.RepairNaturalVineRoots(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RecordFinalState(RequirePlan(), RequireManifest());
 		progress.Set(1d);
 	}
@@ -689,7 +738,10 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 		["supportTiles"] = mine.SupportTiles,
 		["furniture"] = mine.FurnitureCount,
 		["requiredRoutes"] = mine.RequiredRouteCount,
-		["connectedRoutes"] = mine.ConnectedRouteCount
+		["connectedRoutes"] = mine.ConnectedRouteCount,
+		["kind"] = (int)mine.Kind,
+		["detouredRoutes"] = mine.DetouredRouteCount,
+		["brokenRoutes"] = mine.BrokenRouteCount
 	});
 
 	private static TagCompound SerializeTorchGodTemple(TorchGodTempleRecord temple) => WithRectangle(temple.Area, new TagCompound {

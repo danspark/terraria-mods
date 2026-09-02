@@ -158,6 +158,38 @@ internal static class SkyHighlandGenerator
 		}
 	}
 
+	public static void RepairAuthoredBodyMaterials(WorldPlan worldPlan, GenerationManifest manifest)
+	{
+		for (int index = 0; index < worldPlan.SkyHighlands.Count; index++) {
+			SkyHighlandPlan plan = worldPlan.SkyHighlands[index];
+			UnifiedRandom random = new(MixSeed(worldPlan.GenerationSeed, SkySeedSalt, index));
+			int left = Math.Clamp(plan.CenterX - plan.Width / 2, 55, Main.maxTilesX - plan.Width - 55);
+			int right = left + plan.Width - 1;
+			int[] surface = BuildSurfaceProfile(plan, random, left, right);
+			int bottom = Math.Min((int)Main.worldSurface - 12, plan.SurfaceY + plan.Depth);
+			for (int x = left; x <= right; x++) {
+				int surfaceY = surface[x - left];
+				int columnBottom = SkyBodyBottom(plan, left, x, surfaceY, bottom);
+				for (int y = surfaceY; y <= columnBottom; y++) {
+					Tile tile = Main.tile[x, y];
+					if (!tile.HasUnactuatedTile || tile.TileType != TileID.Stone
+						|| TileEditor.IsProtectedTile(tile) || IsVerticalRouteExcluded(manifest, x, y)) {
+						continue;
+					}
+					int depth = y - surfaceY;
+					ushort replacement = depth < 5
+						? TileID.Dirt
+						: depth < 11 ? TileID.Sunplate
+						: SampleSkyNoise(x, y, plan.CenterX ^ 0x534B_5952) < 0.24d
+							? TileID.RainCloud
+							: TileID.Cloud;
+					SetHighlandMaterial(x, y, replacement);
+				}
+			}
+			TileEditor.Frame(new Rectangle(left, Math.Max(45, plan.SurfaceY - 8), plan.Width, plan.Depth + 40), border: 2);
+		}
+	}
+
 	private static void BreakLongMaterialSeams(Rectangle area, GenerationManifest manifest, int seed)
 	{
 		for (int x = area.Left + 2; x < area.Right - 3; x++) {

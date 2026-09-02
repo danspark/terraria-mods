@@ -12,6 +12,8 @@ world_mode="classic"
 world_size="large"
 world_seed="VanillaWorldsOverhauled-Playtest-001"
 expected_evil=""
+build_mod=1
+reload_world=1
 
 while (( $# > 0 )); do
 	case "$1" in
@@ -35,8 +37,16 @@ while (( $# > 0 )); do
 			expected_evil="${2:-}"
 			shift 2
 			;;
+		--skip-build)
+			build_mod=0
+			shift
+			;;
+		--generation-only)
+			reload_world=0
+			shift
+			;;
 		--help|-h)
-			printf 'Usage: %s [--classic|--journey] [--size small|medium|large] [--seed value] [--expect-evil Corruption|Crimson]\n' "$0"
+			printf 'Usage: %s [--classic|--journey] [--size small|medium|large] [--seed value] [--expect-evil Corruption|Crimson] [--skip-build] [--generation-only]\n' "$0"
 			exit 0
 			;;
 		*)
@@ -93,7 +103,12 @@ world_dir="$playtest_dir/Worlds"
 world_file="$world_dir/$world_basename.wld"
 console_log="$playtest_dir/generation-console-$world_size-$world_mode-$safe_seed.log"
 
-"$script_dir/build-mod.sh"
+if (( build_mod )); then
+	"$script_dir/build-mod.sh"
+elif [[ ! -s "$source_package" ]]; then
+	printf 'The built mod package is missing: %s\n' "$source_package" >&2
+	exit 2
+fi
 
 mkdir -p "$playtest_dir/Mods" "$world_dir" "$playtest_dir/Logs"
 rm -f -- "$playtest_dir/Mods/RicherBiomes.tmod"
@@ -179,6 +194,12 @@ if [[ -n "$expected_evil" ]] && ! grep -q "Generation of $expected_dimensions $e
 	exit 1
 fi
 
+if (( ! reload_world )); then
+	printf 'Validated creation of %s %s world: %s\n' "$world_mode" "$world_size" "$world_file"
+	printf 'Validation log: %s\n' "$generation_log"
+	exit 0
+fi
+
 reload_console="$playtest_dir/reload-console-$world_size-$world_mode-$safe_seed.log"
 printf -v reload_command '%q ' \
 	dotnet ./tModLoader.dll \
@@ -204,7 +225,7 @@ if ! grep -Eq "Loading World: .*Width: $expected_width, Height: $expected_height
 	printf 'The saved world did not reload with the requested size and mode.\n' >&2
 	exit 1
 fi
-if ! grep -Eq 'Loaded Vanilla Worlds Overhauled manifest v8: landmarks=11; mountains=[1-9][0-9]*; bridges=[1-9][0-9]*; forestLakeBridges=[0-9]+; mountainWaters=[1-9][0-9]*; skyHighlands=[1-9][0-9]*; mine=present; torchGodTemple=present; torchGodTempleTorches=100; torchGodTempleChestTorches=1; validation=valid=True' "$reload_log"; then
+if ! grep -Eq 'Loaded Vanilla Worlds Overhauled manifest v9: landmarks=11; mountains=[1-9][0-9]*; bridges=[1-9][0-9]*; forestLakeBridges=[0-9]+; mountainWaters=[1-9][0-9]*; skyHighlands=[1-9][0-9]*; mine=present; mineKind=(Complete|Rerouted|Shortened); mineDetours=[0-9]+; mineBrokenRoutes=[0-9]+; torchGodTemple=present; torchGodTempleTorches=100; torchGodTempleChestTorches=1; validation=valid=True' "$reload_log"; then
 	printf 'The first reload did not recover the complete Vanilla Worlds Overhauled feature manifest.\n' >&2
 	exit 1
 fi
@@ -222,7 +243,7 @@ fi
 
 persistence_log="$playtest_dir/Logs/server-$world_size-$world_mode-$safe_seed-persistence.log"
 cp "$server_log" "$persistence_log"
-if ! grep -Eq 'Loaded Vanilla Worlds Overhauled manifest v8: landmarks=11; mountains=[1-9][0-9]*; bridges=[1-9][0-9]*; forestLakeBridges=[0-9]+; mountainWaters=[1-9][0-9]*; skyHighlands=[1-9][0-9]*; mine=present; torchGodTemple=present; torchGodTempleTorches=100; torchGodTempleChestTorches=1; validation=valid=True' "$persistence_log"; then
+if ! grep -Eq 'Loaded Vanilla Worlds Overhauled manifest v9: landmarks=11; mountains=[1-9][0-9]*; bridges=[1-9][0-9]*; forestLakeBridges=[0-9]+; mountainWaters=[1-9][0-9]*; skyHighlands=[1-9][0-9]*; mine=present; mineKind=(Complete|Rerouted|Shortened); mineDetours=[0-9]+; mineBrokenRoutes=[0-9]+; torchGodTemple=present; torchGodTempleTorches=100; torchGodTempleChestTorches=1; validation=valid=True' "$persistence_log"; then
 	printf 'The Vanilla Worlds Overhauled feature manifest did not survive the reload/save/reload cycle.\n' >&2
 	exit 1
 fi

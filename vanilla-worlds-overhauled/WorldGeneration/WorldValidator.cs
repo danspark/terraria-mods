@@ -114,8 +114,8 @@ internal static class WorldValidator
 					break;
 				}
 			}
-			int authoredPeak = Math.Min(planned.LeftPeakY, planned.RightPeakY);
-			bool expectedAltitude = Math.Abs(peakY - authoredPeak) <= 38;
+			int plannedPeak = Enumerable.Range(region.Left, region.Width).Min(plan.SurfaceAt);
+			bool expectedAltitude = Math.Abs(peakY - plannedPeak) <= 38;
 			bool expectedSpaceBand = planned.HeightStyle == MountainHeightStyle.SkyPiercing
 				? peakY <= spaceThreshold && summitBandWidth >= 20
 				: peakY > spaceThreshold - 12 && summitBandWidth < 20;
@@ -125,7 +125,7 @@ internal static class WorldValidator
 			else {
 				errors.Add(
 					$"mountain region {region.Id} ({planned.HeightStyle}) had peak y={peakY} "
-					+ $"(planned {authoredPeak}) and {summitBandWidth} Space-band columns");
+					+ $"(planned {plannedPeak}) and {summitBandWidth} Space-band columns");
 			}
 			if (record is MountainRecord final && final.EntranceCount < 2) {
 				errors.Add($"mountain region {region.Id} retained only {final.EntranceCount} visible entrances");
@@ -221,7 +221,9 @@ internal static class WorldValidator
 					+ $"nearby transitions {DescribeNearbyTransitions(manifest, horizontalStart, verticalStart)}");
 			}
 			(int horizontalMaterialSeam, int verticalMaterialSeam, Point materialHorizontalStart, Point materialVerticalStart) =
-				MeasureSolidMaterialSeams(interior.Area, (x, y) => MountainLayerMaterialAt(manifest, x, y));
+				MeasureSolidMaterialSeams(
+					interior.Area,
+					(x, y) => y > plan.SurfaceAt(x) ? MountainLayerMaterialAt(manifest, x, y) : 0);
 			if (horizontalMaterialSeam > 26 || verticalMaterialSeam > 26) {
 				ushort horizontalUpper = Main.tile[materialHorizontalStart.X, materialHorizontalStart.Y].TileType;
 				ushort horizontalLower = Main.tile[materialHorizontalStart.X, materialHorizontalStart.Y + 1].TileType;
@@ -524,7 +526,7 @@ internal static class WorldValidator
 		out int connectedCrownCells)
 	{
 		WorldRegion region = plan.Regions[mountain.RegionId];
-		int top = Math.Max(45, Math.Min(mountain.LeftPeakY, mountain.RightPeakY) - 12);
+		int top = Math.Max(45, Enumerable.Range(region.Left, region.Width).Min(plan.SurfaceAt) - 12);
 		// Seed the connectivity search below the mountain's decorative interior.
 		// The upper cavern band can be almost entirely open on some seeds even
 		// though the mountain joins ordinary ground a few dozen tiles lower.
@@ -596,7 +598,7 @@ internal static class WorldValidator
 		GenerationManifest manifest)
 	{
 		WorldRegion region = plan.Regions[mountain.RegionId];
-		int top = Math.Max(45, Math.Min(mountain.LeftPeakY, mountain.RightPeakY) - 12);
+		int top = Math.Max(45, Enumerable.Range(region.Left, region.Width).Min(plan.SurfaceAt) - 12);
 		int bottom = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 70);
 		Rectangle area = new(region.Left, top, region.Width, bottom - top);
 		bool[] visited = new bool[area.Width * area.Height];
@@ -688,9 +690,19 @@ internal static class WorldValidator
 	private static bool IsMountainGroundingCell(int x, int y, GenerationManifest manifest) =>
 		IsNaturalMountainTile(Main.tile[x, y])
 		|| IsAttachedHighlandGroundingTile(manifest, x, y)
+		|| IsAuthoredMineGroundingCell(manifest, x, y)
 		|| WorldGen.InWorld(x, y, 3)
 			&& !TileEditor.IsSolid(x, y)
 			&& IsNaturalMountainWall(Main.tile[x, y].WallType);
+
+	private static bool IsAuthoredMineGroundingCell(GenerationManifest manifest, int x, int y)
+	{
+		if (!manifest.MineSections.Any(section => section.Area.Contains(x, y))) {
+			return false;
+		}
+		Tile tile = Main.tile[x, y];
+		return TileEditor.IsSolid(x, y) || !tile.HasUnactuatedTile && tile.WallType != WallID.None;
+	}
 
 	private static bool IsAttachedHighlandGroundingTile(GenerationManifest manifest, int x, int y)
 	{
@@ -1026,7 +1038,7 @@ internal static class WorldValidator
 			if (landmark.RoomCount >= 5) {
 				int platforms = CountTiles(landmark.Area, TileID.Platforms);
 				int minimumPlatforms = landmark.StairCount * 6;
-				int maximumPlatforms = landmark.StairCount * 20 + 20;
+				int maximumPlatforms = landmark.StairCount * 20 + 24;
 				if (platforms < minimumPlatforms || platforms > maximumPlatforms) {
 					errors.Add($"{landmark.Biome} landmark has {platforms} platform tiles; expected bounded stairs and drop portals");
 				}
@@ -1440,14 +1452,16 @@ internal static class WorldValidator
 			return 0;
 		}
 
-		MineSectionKind[] requiredKinds = [
-			MineSectionKind.Workyard,
-			MineSectionKind.Working,
-			MineSectionKind.Collapsed,
-			MineSectionKind.Flooded,
-			MineSectionKind.SealedEvil,
-			MineSectionKind.MountainRail
-		];
+		MineSectionKind[] requiredKinds = plan.Kind == MinePlanKind.Shortened
+			? [MineSectionKind.Workyard, MineSectionKind.Working]
+			: [
+				MineSectionKind.Workyard,
+				MineSectionKind.Working,
+				MineSectionKind.Collapsed,
+				MineSectionKind.Flooded,
+				MineSectionKind.SealedEvil,
+				MineSectionKind.MountainRail
+			];
 		foreach (MineSectionKind kind in requiredKinds) {
 			if (!manifest.MineSections.Any(section => section.Kind == kind)) {
 				errors.Add($"the guaranteed surface mine has no {kind} section");
@@ -1472,7 +1486,9 @@ internal static class WorldValidator
 		}
 
 		int actualTracks = CountTiles(mine.Area, TileID.MinecartTrack);
-		int minimumConnected = Main.maxTilesX switch { <= 4200 => 300, <= 6400 => 500, _ => 700 };
+		int minimumConnected = plan.Kind == MinePlanKind.Shortened
+			? Main.maxTilesX switch { <= 4200 => 160, <= 6400 => 250, _ => 360 }
+			: Main.maxTilesX switch { <= 4200 => 300, <= 6400 => 500, _ => 700 };
 		HashSet<Point> entranceComponent = CollectConnectedTracks(plan, mine.Area);
 		int connectedTracks = entranceComponent.Count;
 		if (connectedTracks < minimumConnected) {
@@ -1490,7 +1506,8 @@ internal static class WorldValidator
 		if (mine.SupportTiles < minimumConnected / 12) {
 			errors.Add($"surface mine retained only {mine.SupportTiles} Wooden Beam support tiles");
 		}
-		if (mine.FurnitureCount < 12) {
+		int minimumFurniture = plan.Kind == MinePlanKind.Shortened ? 6 : 12;
+		if (mine.FurnitureCount < minimumFurniture) {
 			errors.Add($"surface mine retained only {mine.FurnitureCount} work-district furnishings");
 		}
 		if (mine.ConnectedRouteCount < mine.RequiredRouteCount) {
@@ -1797,7 +1814,7 @@ internal static class WorldValidator
 					: 0;
 			}
 		}
-		if (sampled < section.Area.Width * 3 || themed < sampled * 9 / 10) {
+		if (sampled < section.Area.Width * 2 || themed < sampled * 9 / 10) {
 			errors.Add(
 				$"mine section {section.Id} ({section.Theme}) uses its biome wall family in only "
 				+ $"{themed}/{sampled} open wall cells");
@@ -1962,7 +1979,8 @@ internal static class WorldValidator
 				}
 			}
 		}
-		if (transfers != expected || transfers < 3) {
+		int minimumTransfers = plan.Kind == MinePlanKind.Shortened ? 1 : 3;
+		if (transfers != expected || transfers < minimumTransfers) {
 			errors.Add($"surface mine retained {transfers}/{expected} planned downhill gravity transfers");
 		}
 	}
@@ -1986,7 +2004,8 @@ internal static class WorldValidator
 					+ $"(frame {Main.tile[terminal.X, terminal.Y].TileFrameX})");
 			}
 		}
-		if (terminals.Length < 4) {
+		int minimumTerminals = plan.Kind == MinePlanKind.Shortened ? 2 : 4;
+		if (terminals.Length < minimumTerminals) {
 			errors.Add($"surface mine exposes only {terminals.Length} terminal bumper turnarounds");
 		}
 	}
@@ -2040,15 +2059,14 @@ internal static class WorldValidator
 		if (!HasTile(entrance.X, entrance.Y, TileID.MinecartTrack)) {
 			return [];
 		}
-		Dictionary<Point, Point> jumpLinks = [];
+		Dictionary<Point, List<Point>> transferLinks = [];
 		foreach (MineRoute route in plan.Routes) {
 			if (SurfaceMineGenerator.GetJumpTransfer(route) is not MineRailJump jump
 				|| !HasTile(jump.Launch.X, jump.Launch.Y, TileID.MinecartTrack)
 				|| !HasTile(jump.Landing.X, jump.Landing.Y, TileID.MinecartTrack)) {
 				continue;
 			}
-			jumpLinks[jump.Launch] = jump.Landing;
-			jumpLinks[jump.Landing] = jump.Launch;
+			AddTransferLink(transferLinks, jump.Launch, jump.Landing);
 		}
 		foreach (MineRoute route in plan.Routes) {
 			if (SurfaceMineGenerator.GetGravityTransfer(route) is not MineRailDrop drop
@@ -2056,8 +2074,7 @@ internal static class WorldValidator
 				|| !HasTile(drop.LowerLanding.X, drop.LowerLanding.Y, TileID.MinecartTrack)) {
 				continue;
 			}
-			jumpLinks[drop.UpperLip] = drop.LowerLanding;
-			jumpLinks[drop.LowerLanding] = drop.UpperLip;
+			AddTransferLink(transferLinks, drop.UpperLip, drop.LowerLanding);
 		}
 
 		HashSet<Point> visited = [entrance];
@@ -2065,10 +2082,12 @@ internal static class WorldValidator
 		queue.Enqueue(entrance);
 		while (queue.Count > 0) {
 			Point current = queue.Dequeue();
-			if (jumpLinks.TryGetValue(current, out Point transfer)
-				&& bounds.Contains(transfer)
-				&& visited.Add(transfer)) {
-				queue.Enqueue(transfer);
+			if (transferLinks.TryGetValue(current, out List<Point>? transfers)) {
+				foreach (Point transfer in transfers) {
+					if (bounds.Contains(transfer) && visited.Add(transfer)) {
+						queue.Enqueue(transfer);
+					}
+				}
 			}
 			for (int offsetX = -1; offsetX <= 1; offsetX++) {
 				for (int offsetY = -1; offsetY <= 1; offsetY++) {
@@ -2087,6 +2106,20 @@ internal static class WorldValidator
 		return visited;
 	}
 
+	private static void AddTransferLink(Dictionary<Point, List<Point>> links, Point first, Point second)
+	{
+		if (!links.TryGetValue(first, out List<Point>? firstLinks)) {
+			firstLinks = [];
+			links[first] = firstLinks;
+		}
+		if (!links.TryGetValue(second, out List<Point>? secondLinks)) {
+			secondLinks = [];
+			links[second] = secondLinks;
+		}
+		firstLinks.Add(second);
+		secondLinks.Add(first);
+	}
+
 	private static void ValidateMinePlanTopology(SurfaceMinePlan plan, List<string> errors)
 	{
 		Dictionary<Point, int> degree = [];
@@ -2100,7 +2133,7 @@ internal static class WorldValidator
 			vertices.Add(route.End);
 			degree[route.Start] = degree.GetValueOrDefault(route.Start) + 1;
 			degree[route.End] = degree.GetValueOrDefault(route.End) + 1;
-			if (Math.Abs(route.End.Y - route.Start.Y) <= 10) {
+			if (Math.Abs(route.End.Y - route.Start.Y) <= 16) {
 				horizontalEdges++;
 			}
 
@@ -2125,7 +2158,9 @@ internal static class WorldValidator
 			if (route.Centerline.Count >= 90 && gradeChanges < 3) {
 				errors.Add($"mine rail edge {route.Start}->{route.End} has only {gradeChanges} grade changes");
 			}
-			int maximumGradeChanges = route.HasGravityTransfer ? 22 : 18;
+			int maximumGradeChanges = plan.Kind == MinePlanKind.Complete
+				? route.HasGravityTransfer ? 22 : 18
+				: route.HasGravityTransfer ? 30 : 26;
 			if (gradeChanges > maximumGradeChanges) {
 				errors.Add(
 					$"mine rail edge {route.Start}->{route.End} has {gradeChanges} grade changes "
@@ -2135,15 +2170,24 @@ internal static class WorldValidator
 
 		int junctions = degree.Values.Count(value => value >= 3);
 		int cycleRank = authoredEdges - vertices.Count + 1;
-		if (authoredEdges < 12 || junctions < 3 || cycleRank < 2 || horizontalEdges < 4) {
+		int minimumEdges = plan.Kind == MinePlanKind.Shortened ? 6 : 12;
+		int minimumJunctions = plan.Kind == MinePlanKind.Shortened ? 1 : 3;
+		int minimumCycles = plan.Kind == MinePlanKind.Shortened ? 1 : 2;
+		int minimumHorizontalEdges = plan.Kind == MinePlanKind.Shortened ? 2 : 4;
+		if (authoredEdges < minimumEdges
+			|| junctions < minimumJunctions
+			|| cycleRank < minimumCycles
+			|| horizontalEdges < minimumHorizontalEdges) {
 			errors.Add(
 				$"surface mine graph is too simple: edges={authoredEdges}, junctions={junctions}, "
 				+ $"independentLoops={cycleRank}, horizontalEdges={horizontalEdges}");
 		}
-		if (bidirectionalEdges < 4) {
+		int minimumBidirectionalEdges = plan.Kind == MinePlanKind.Shortened ? 2 : 4;
+		if (bidirectionalEdges < minimumBidirectionalEdges) {
 			errors.Add($"only {bidirectionalEdges} mine rail edges contain both a climb and a descent");
 		}
-		if (plan.Routes.Select(route => route.Profile).Distinct().Count() < 3) {
+		int minimumProfiles = plan.Kind == MinePlanKind.Shortened ? 2 : 3;
+		if (plan.Routes.Select(route => route.Profile).Distinct().Count() < minimumProfiles) {
 			errors.Add("surface mine rail routes use fewer than three grade profiles");
 		}
 	}

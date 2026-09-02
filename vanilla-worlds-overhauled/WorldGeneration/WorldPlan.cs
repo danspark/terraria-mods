@@ -131,6 +131,13 @@ internal enum MineRailProfile
 	LaunchTransfer
 }
 
+internal enum MinePlanKind
+{
+	Complete,
+	Rerouted,
+	Shortened
+}
+
 internal enum TorchTempleLayout
 {
 	SunkenBasilica,
@@ -235,7 +242,10 @@ internal sealed record SurfaceMinePlan(
 	Point Entrance,
 	IReadOnlyList<MineSection> Sections,
 	IReadOnlyList<MineRoute> Routes,
-	IReadOnlyDictionary<Point, BiomeKind> RouteThemes)
+	IReadOnlyDictionary<Point, BiomeKind> RouteThemes,
+	MinePlanKind Kind,
+	int DetouredRouteCount,
+	int BrokenRouteCount)
 {
 	public BiomeKind ThemeAt(Point point) =>
 		RouteThemes.TryGetValue(point, out BiomeKind theme) ? theme : BiomeKind.Cavern;
@@ -365,7 +375,10 @@ internal readonly record struct SurfaceMineRecord(
 	int SupportTiles,
 	int FurnitureCount,
 	int RequiredRouteCount,
-	int ConnectedRouteCount);
+	int ConnectedRouteCount,
+	MinePlanKind Kind,
+	int DetouredRouteCount,
+	int BrokenRouteCount);
 
 internal readonly record struct TorchGodTempleRecord(
 	Rectangle Area,
@@ -381,7 +394,7 @@ internal readonly record struct TorchGodTempleRecord(
 
 internal sealed class GenerationManifest
 {
-	public const int CurrentVersion = 8;
+	public const int CurrentVersion = 9;
 
 	public int GenerationSeed { get; init; }
 	public List<BuildTerrace> Terraces { get; } = [];

@@ -441,6 +441,56 @@ internal static class LandmarkGenerator
 			&& TryCreateEmbeddedCandidate(request, layout, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate embeddedBiomeFallback)) {
 			best = embeddedBiomeFallback;
 		}
+		if (best is null && request.Required) {
+			foreach (LandmarkLayout compact in Enumerable.Range(0, 6)
+				.Select(variant => ResolveLayout(request.Biome, variant))
+				.OrderBy(candidate => candidate.Width)) {
+				LandmarkCandidate fallback;
+				bool found;
+				if (request.Biome is BiomeKind.Evil or BiomeKind.Mushroom or BiomeKind.Cavern or BiomeKind.Underworld) {
+					found = TryCreateEmbeddedCandidate(
+						request,
+						compact,
+						plan,
+						spawnX,
+						surfaceMine,
+						manifest,
+						out fallback,
+						allowTransitionOverlap: true,
+						relaxedLandmarkSpacing: true);
+					if (!found && request.Biome == BiomeKind.Evil) {
+						found = TryCreatePreparedSurfaceCandidate(
+							request,
+							compact,
+							plan,
+							spawnX,
+							surfaceMine,
+							manifest,
+							out fallback,
+							allowTransitionOverlap: true,
+							relaxedBiomeMatch: true,
+							relaxedLandmarkSpacing: true);
+					}
+				}
+				else {
+					found = TryCreatePreparedSurfaceCandidate(
+						request,
+						compact,
+						plan,
+						spawnX,
+						surfaceMine,
+						manifest,
+						out fallback,
+						allowTransitionOverlap: true,
+						relaxedBiomeMatch: true,
+						relaxedLandmarkSpacing: true);
+				}
+				if (found) {
+					best = fallback;
+					break;
+				}
+			}
+		}
 
 		if (best is null) {
 			return false;
@@ -480,7 +530,9 @@ internal static class LandmarkGenerator
 		SurfaceMinePlan surfaceMine,
 		GenerationManifest manifest,
 		out LandmarkCandidate candidate,
-		bool allowTransitionOverlap = false)
+		bool allowTransitionOverlap = false,
+		bool relaxedBiomeMatch = false,
+		bool relaxedLandmarkSpacing = false)
 	{
 		LandmarkCandidate? best = null;
 		int firstCenter = request.LeftX + layout.Width / 2;
@@ -510,7 +562,10 @@ internal static class LandmarkGenerator
 			}
 
 			int relief = maximumGround - minimumGround;
-			if (matchingSupports < (request.Biome == BiomeKind.Ocean ? layout.Width * 3 / 5 : layout.Width * 4 / 5)
+			int minimumMatchingSupports = request.Biome == BiomeKind.Ocean
+				? layout.Width * 3 / 5
+				: relaxedBiomeMatch ? Math.Max(1, layout.Width / 8) : layout.Width * 4 / 5;
+			if (matchingSupports < minimumMatchingSupports
 				|| minimumGround == int.MaxValue
 				|| request.Biome == BiomeKind.Ocean && maximumGround < Main.worldSurface * 0.55d
 				|| relief > (request.Biome == BiomeKind.Ocean ? 44 : 20)) {
@@ -522,9 +577,9 @@ internal static class LandmarkGenerator
 			// the highest nearby ground so the roof cannot remain buried in a slope.
 			int top = Math.Min(maximumGround - layout.AboveGroundHeight, minimumGround - 6);
 			Rectangle area = new(left, top, layout.Width, maximumGround + layout.BelowGroundDepth - top);
-			if (Inflated(surfaceMine.Area, 8).Intersects(area)
+			if (IntersectsMineFeature(surfaceMine, area, padding: 8)
 					|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
-					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
+					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, relaxedLandmarkSpacing ? 18 : 50).Intersects(area))
 					|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
 					|| manifest.MountainWaters.Any(water => Inflated(water.Area, 12).Intersects(area))
 					|| !allowTransitionOverlap
@@ -552,7 +607,9 @@ internal static class LandmarkGenerator
 		int spawnX,
 		SurfaceMinePlan surfaceMine,
 		GenerationManifest manifest,
-		out LandmarkCandidate candidate)
+		out LandmarkCandidate candidate,
+		bool allowTransitionOverlap = false,
+		bool relaxedLandmarkSpacing = false)
 	{
 		int top = request.Biome == BiomeKind.Underworld
 			? Main.UnderworldLayer + 20
@@ -575,12 +632,13 @@ internal static class LandmarkGenerator
 					layout.Width,
 					layout.AboveGroundHeight + layout.BelowGroundDepth);
 				if (!TileEditor.IsSafeForTerrainFeature(area)
-					|| Inflated(surfaceMine.Area, 8).Intersects(area)
+					|| IntersectsMineFeature(surfaceMine, area, padding: 8)
 					|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
-					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
+					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, relaxedLandmarkSpacing ? 18 : 50).Intersects(area))
 					|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
 					|| manifest.MountainWaters.Any(water => Inflated(water.Area, 12).Intersects(area))
-					|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
+					|| !allowTransitionOverlap
+						&& manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
 					|| MountainBiomeGenerator.IntersectsBridgePassage(plan, area)) {
 					continue;
 				}
@@ -651,7 +709,7 @@ internal static class LandmarkGenerator
 			maximumGround - layout.AboveGroundHeight,
 			layout.Width,
 			layout.AboveGroundHeight + layout.BelowGroundDepth);
-		if (Inflated(surfaceMine.Area, 8).Intersects(area)
+		if (IntersectsMineFeature(surfaceMine, area, padding: 8)
 				|| manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area))
 				|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
 				|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
@@ -749,7 +807,7 @@ internal static class LandmarkGenerator
 				top,
 				layout.Width,
 				maximumGround + layout.BelowGroundDepth - top);
-			bool mineCollision = Inflated(surfaceMine.Area, 8).Intersects(area);
+			bool mineCollision = IntersectsMineFeature(surfaceMine, area, padding: 8);
 			bool terraceCollision = manifest.Terraces.Any(terrace => Inflated(terrace.Area, 24).Intersects(area));
 			bool landmarkCollision = manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area));
 			bool transitionCollision = manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area));
@@ -1940,6 +1998,18 @@ internal static class LandmarkGenerator
 	{
 		Tile tile = Main.tile[x, y];
 		return tile.HasTile && tile.TileType == type;
+	}
+
+	private static bool IntersectsMineFeature(SurfaceMinePlan mine, Rectangle area, int padding)
+	{
+		Rectangle clearance = Inflated(area, padding + 9);
+		if (mine.Sections.Any(section => Inflated(section.Area, padding).Intersects(area))) {
+			return true;
+		}
+		return mine.Routes
+			.Where(route => route.HasTrack)
+			.SelectMany(SurfaceMineGenerator.RasterizeCenterline)
+			.Any(clearance.Contains);
 	}
 
 	private static Rectangle Inflated(Rectangle rectangle, int amount)

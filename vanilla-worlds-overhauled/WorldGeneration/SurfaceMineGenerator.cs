@@ -43,6 +43,7 @@ internal static class SurfaceMineGenerator
 				halfWidth,
 				tier,
 				includeDenseScan: tier > 0,
+				allowShortening: tier == halfWidths.Length - 1,
 				rejected,
 				out SurfaceMinePlan accepted)) {
 				return accepted;
@@ -62,6 +63,7 @@ internal static class SurfaceMineGenerator
 		int halfWidth,
 		int tier,
 		bool includeDenseScan,
+		bool allowShortening,
 		Dictionary<string, int> rejected,
 		out SurfaceMinePlan accepted)
 	{
@@ -99,7 +101,17 @@ internal static class SurfaceMineGenerator
 
 			int layoutAttempts = includeDenseScan ? 2 : 1;
 			for (int layoutAttempt = 0; layoutAttempt < layoutAttempts; layoutAttempt++) {
-				SurfaceMinePlan candidate = CreatePlan(worldPlan, centerX, halfWidth, random.Next());
+				SurfaceMinePlan template = CreatePlan(worldPlan, centerX, halfWidth, random.Next());
+				if (!TryNavigateAroundObstacles(
+					template,
+					worldPlan,
+					manifest,
+					allowShortening,
+					out SurfaceMinePlan candidate,
+					out string navigationReason)) {
+					rejected[navigationReason] = rejected.GetValueOrDefault(navigationReason) + 1;
+					continue;
+				}
 				if (!CanPlace(candidate, worldPlan, manifest, out string reason)) {
 					rejected[reason] = rejected.GetValueOrDefault(reason) + 1;
 					continue;
@@ -113,6 +125,817 @@ internal static class SurfaceMineGenerator
 
 		accepted = null!;
 		return false;
+	}
+
+	private static bool TryNavigateAroundObstacles(
+		SurfaceMinePlan template,
+		WorldPlan worldPlan,
+		GenerationManifest manifest,
+		bool allowShortening,
+		out SurfaceMinePlan accepted,
+		out string reason)
+	{
+		List<MineSection> sections = [];
+		Dictionary<Point, Point> movedSectionCenters = [];
+		HashSet<Point> omittedSectionCenters = [];
+		bool geometryChanged = false;
+
+		foreach (MineSection section in template.Sections.OrderBy(section => section.Id)) {
+			if (TryFitSection(
+				section,
+				worldPlan,
+				manifest,
+				sections,
+				allowShortening,
+				template.FeatureSeed,
+				out MineSection fitted)) {
+				sections.Add(fitted);
+				movedSectionCenters[section.Center] = fitted.Center;
+				geometryChanged |= fitted.Area != section.Area || fitted.Center != section.Center;
+				continue;
+			}
+
+			if (!allowShortening || section.Kind == MineSectionKind.Workyard) {
+				accepted = null!;
+				reason = $"section {section.Id} obstacle exhaustion";
+				return false;
+			}
+			omittedSectionCenters.Add(section.Center);
+			geometryChanged = true;
+		}
+
+		if (sections.Count(section => section.Kind == MineSectionKind.Working) < 1
+			|| sections.Count < 4) {
+			accepted = null!;
+			reason = "shortened district exhaustion";
+			return false;
+		}
+
+		Rectangle navigationBounds = template.Area;
+		foreach (MineSection section in sections) {
+			navigationBounds = Rectangle.Union(navigationBounds, section.Area);
+		}
+		navigationBounds.Inflate(190, 230);
+		navigationBounds = ClampToWorld(navigationBounds, 24);
+		MineObstacleField obstacles = new(navigationBounds, worldPlan, manifest, sections);
+
+		Dictionary<Point, Point> movedNodes = new(movedSectionCenters);
+		foreach (Point node in template.Routes
+			.SelectMany(route => new[] { route.Start, route.End })
+			.Distinct()) {
+			if (movedNodes.ContainsKey(node)) {
+				continue;
+			}
+			if (!TryFitRouteNode(node, obstacles, out Point fittedNode)) {
+				if (allowShortening && omittedSectionCenters.Contains(node)) {
+					continue;
+				}
+				accepted = null!;
+				reason = "rail node obstacle exhaustion";
+				return false;
+			}
+			movedNodes[node] = fittedNode;
+			geometryChanged |= fittedNode != node;
+		}
+
+		List<MineRoute> routes = [];
+		int detouredRoutes = 0;
+		int brokenRoutes = 0;
+		HashSet<Point> disconnectedSectionCenters = [];
+		for (int routeIndex = 0; routeIndex < template.Routes.Count; routeIndex++) {
+			MineRoute routeTemplate = template.Routes[routeIndex];
+			if (!movedNodes.TryGetValue(routeTemplate.Start, out Point start)
+				|| !movedNodes.TryGetValue(routeTemplate.End, out Point end)) {
+				if (allowShortening && !routeTemplate.Required) {
+					disconnectedSectionCenters.Add(routeTemplate.End);
+					continue;
+				}
+				accepted = null!;
+				reason = "rail endpoint obstacle exhaustion";
+				return false;
+			}
+
+			IReadOnlyList<Rectangle> routeExclusions = BuildRouteExclusions(
+				routeIndex,
+				start,
+				end,
+				sections,
+				manifest);
+			if (TryBuildNavigatedRoute(
+				routeTemplate,
+				start,
+				end,
+				obstacles,
+				routeExclusions,
+				out MineRoute route,
+				out bool detoured)) {
+				routes.Add(route);
+				detouredRoutes += detoured ? 1 : 0;
+				geometryChanged |= detoured || start != routeTemplate.Start || end != routeTemplate.End;
+				continue;
+			}
+
+			if (routeTemplate.Required || !allowShortening
+				|| !TryBuildBrokenRoute(
+					routeTemplate,
+					start,
+					end,
+					obstacles,
+					routeExclusions,
+					out MineRoute brokenRoute)) {
+				accepted = null!;
+				reason = routeTemplate.Required
+					? "required rail obstacle exhaustion"
+					: "optional rail obstacle exhaustion";
+				return false;
+			}
+
+			routes.Add(brokenRoute);
+			brokenRoutes++;
+			disconnectedSectionCenters.Add(routeTemplate.End);
+			geometryChanged = true;
+		}
+
+		sections.RemoveAll(section => disconnectedSectionCenters.Contains(
+			template.Sections.First(original => original.Id == section.Id).Center));
+		int gravityTransfers = routes.Count(route => route.HasGravityTransfer);
+		int launchTransfers = routes.Count(route => route.HasJumpTransfer);
+		if ((!allowShortening && (gravityTransfers < 3 || launchTransfers < 1))
+			|| allowShortening && (gravityTransfers < 1 || launchTransfers < 1)) {
+			accepted = null!;
+			reason = "rail transfer obstacle exhaustion";
+			return false;
+		}
+
+		Rectangle area = MineArea(sections, routes);
+		MinePlanKind kind = brokenRoutes > 0 || sections.Count < template.Sections.Count
+			? MinePlanKind.Shortened
+			: geometryChanged ? MinePlanKind.Rerouted : MinePlanKind.Complete;
+		Point entrance = movedNodes[template.Entrance];
+		accepted = new SurfaceMinePlan(
+			template.FeatureSeed,
+			area,
+			entrance,
+			sections,
+			routes,
+			CaptureRouteThemes(routes),
+			kind,
+			detouredRoutes,
+			brokenRoutes);
+		reason = string.Empty;
+		return true;
+	}
+
+	private static bool TryFitSection(
+		MineSection template,
+		WorldPlan worldPlan,
+		GenerationManifest manifest,
+		IReadOnlyList<MineSection> acceptedSections,
+		bool allowShortening,
+		int featureSeed,
+		out MineSection accepted)
+	{
+		ReadOnlySpan<int> scales = allowShortening ? [100, 90, 82] : [100, 94, 88];
+		int horizontalSign = Noise(featureSeed, template.Id, 0x5345_4358) % 2 == 0 ? 1 : -1;
+		int verticalSign = Noise(featureSeed, template.Id, 0x5345_4359) % 2 == 0 ? 1 : -1;
+		foreach (int scale in scales) {
+			int width = Math.Max(68, template.Area.Width * scale / 100);
+			int height = Math.Max(34, template.Area.Height * scale / 100);
+			int maximumRing = template.Kind == MineSectionKind.Workyard ? 0 : allowShortening ? 7 : 5;
+			for (int ring = 0; ring <= maximumRing; ring++) {
+				for (int gridY = -ring; gridY <= ring; gridY++) {
+					for (int gridX = -ring; gridX <= ring; gridX++) {
+						if (Math.Max(Math.Abs(gridX), Math.Abs(gridY)) != ring) {
+							continue;
+						}
+						int offsetX = gridX * 22 * horizontalSign;
+						int offsetY = gridY * 16 * verticalSign;
+						Point center = template.Center + new Point(offsetX, offsetY);
+						Rectangle area = template.Kind == MineSectionKind.Workyard
+							? new Rectangle(template.Area.X, template.Area.Y, width, height)
+							: Centered(center.X, center.Y, width, height);
+						MineSection candidate = CreateSection(template.Id, template.Kind, area, center);
+						if (IsSectionPlacementSafe(candidate, worldPlan, manifest, acceptedSections)) {
+							accepted = candidate;
+							return true;
+						}
+					}
+				}
+			}
+		}
+
+		accepted = default;
+		return false;
+	}
+
+	private static bool IsSectionPlacementSafe(
+		MineSection section,
+		WorldPlan worldPlan,
+		GenerationManifest manifest,
+		IReadOnlyList<MineSection> acceptedSections)
+	{
+		Rectangle spacing = section.Area;
+		spacing.Inflate(10, 8);
+		if (acceptedSections.Any(other => spacing.Intersects(other.Area))
+			|| !TileEditor.IsSafeForTerrainFeature(section.Area)
+			|| !TileEditor.IsClearOfTempleAndDungeon(section.Area, margin: 36)
+			|| MountainBiomeGenerator.IntersectsBridgePassage(worldPlan, section.Area)) {
+			return false;
+		}
+
+		if (manifest.ForestLakeBridges.Any(bridge => bridge.Area.Intersects(section.Area))) {
+			return false;
+		}
+		if (manifest.MountainWaters.Any(water => {
+			Rectangle clearance = water.Area;
+			clearance.Inflate(5, CorridorHeadroom + 5);
+			return clearance.Intersects(section.Area);
+		})) {
+			return false;
+		}
+
+		if (section.Kind != MineSectionKind.Workyard) {
+			return true;
+		}
+		Rectangle workyardBuffer = section.Area;
+		workyardBuffer.Inflate(24, 12);
+		return !manifest.BiomeTransitions.Any(transition => transition.Area.Intersects(workyardBuffer))
+			&& !manifest.Terraces.Any(terrace => {
+				Rectangle terraceBuffer = terrace.Area;
+				terraceBuffer.Inflate(12, 10);
+				return terraceBuffer.Intersects(workyardBuffer);
+			});
+	}
+
+	private static bool TryFitRouteNode(Point desired, MineObstacleField obstacles, out Point accepted)
+	{
+		for (int ring = 0; ring <= 8; ring++) {
+			for (int gridY = -ring; gridY <= ring; gridY++) {
+				for (int gridX = -ring; gridX <= ring; gridX++) {
+					if (Math.Max(Math.Abs(gridX), Math.Abs(gridY)) != ring) {
+						continue;
+					}
+					Point candidate = desired + new Point(gridX * 8, gridY * 8);
+					if (obstacles.IsRouteCenterSafe(candidate, [])) {
+						accepted = candidate;
+						return true;
+					}
+				}
+			}
+		}
+
+		accepted = default;
+		return false;
+	}
+
+	private static IReadOnlyList<Rectangle> BuildRouteExclusions(
+		int routeIndex,
+		Point start,
+		Point end,
+		IReadOnlyList<MineSection> sections,
+		GenerationManifest manifest)
+	{
+		List<Rectangle> exclusions = [];
+		MineSection? quarantine = sections
+			.Where(section => section.Kind == MineSectionKind.SealedEvil)
+			.Select<MineSection, MineSection?>(section => section)
+			.FirstOrDefault();
+		if (quarantine is MineSection sealedSection
+			&& start != sealedSection.Center
+			&& end != sealedSection.Center) {
+			Rectangle clearance = sealedSection.Area;
+			clearance.Inflate(3, 3);
+			exclusions.Add(clearance);
+		}
+		if (routeIndex == 0) {
+			foreach (BuildTerrace terrace in manifest.Terraces) {
+				Rectangle clearance = terrace.Area;
+				clearance.Inflate(12, 10);
+				exclusions.Add(clearance);
+			}
+		}
+		return exclusions;
+	}
+
+	private static bool TryBuildNavigatedRoute(
+		MineRoute template,
+		Point start,
+		Point end,
+		MineObstacleField obstacles,
+		IReadOnlyList<Rectangle> exclusions,
+		out MineRoute accepted,
+		out bool detoured)
+	{
+		if (!TryCreateRouteShape(template, start, end, includeTransfers: true, out MineRoute nominal)) {
+			accepted = default;
+			detoured = false;
+			return false;
+		}
+		if (HasValidTrackGrade(nominal.Centerline)
+			&& obstacles.IsRouteSafe(nominal.Centerline, exclusions)) {
+			accepted = nominal;
+			detoured = start != template.Start || end != template.End;
+			return true;
+		}
+
+		if (!TryCreateRouteShape(template, start, end, includeTransfers: false, out MineRoute baseRoute)
+			|| !TryFindObstacleAwarePath(baseRoute.Centerline, obstacles, exclusions, out IReadOnlyList<Point> path)) {
+			accepted = default;
+			detoured = false;
+			return false;
+		}
+
+		int jumpStart = -1;
+		int jumpGap = 0;
+		int dropStart = -1;
+		int dropGap = 0;
+		int dropDepth = 0;
+		if (template.HasJumpTransfer) {
+			if (!TryInstallLaunchTransfer(
+				path,
+				ScaleRouteIndex(template.JumpStartIndex, template.Centerline.Count, path.Count),
+				template.JumpGapLength,
+				obstacles,
+				exclusions,
+				out path,
+				out jumpStart)) {
+				accepted = default;
+				detoured = false;
+				return false;
+			}
+			jumpGap = template.JumpGapLength;
+		}
+		else if (template.HasGravityTransfer
+			&& TryInstallGravityTransfer(
+				path,
+				ScaleRouteIndex(template.DropStartIndex, template.Centerline.Count, path.Count),
+				template.DropGapLength,
+				template.DropDepth,
+				obstacles,
+				exclusions,
+				out IReadOnlyList<Point> gravityPath,
+				out int installedDropStart)) {
+			path = gravityPath;
+			dropStart = installedDropStart;
+			dropGap = template.DropGapLength;
+			dropDepth = template.DropDepth;
+		}
+
+		accepted = new MineRoute(
+			start,
+			end,
+			true,
+			template.Required,
+			template.Profile,
+			template.VariationSeed,
+			path,
+			jumpStart,
+			jumpGap,
+			dropStart,
+			dropGap,
+			dropDepth);
+		detoured = true;
+		return true;
+	}
+
+	private static bool TryCreateRouteShape(
+		MineRoute template,
+		Point start,
+		Point end,
+		bool includeTransfers,
+		out MineRoute route)
+	{
+		int steps = Math.Abs(end.X - start.X);
+		if (steps < 2 || Math.Abs(end.Y - start.Y) > steps) {
+			route = default;
+			return false;
+		}
+		int jumpGap = includeTransfers && template.HasJumpTransfer ? template.JumpGapLength : 0;
+		int jumpStart = jumpGap > 0
+			? Math.Clamp(ScaleRouteIndex(template.JumpStartIndex, template.Centerline.Count, steps + 1), 24, steps - jumpGap - 24)
+			: -1;
+		int dropGap = includeTransfers && template.HasGravityTransfer ? template.DropGapLength : 0;
+		int dropDepth = dropGap > 0 ? template.DropDepth : 0;
+		int dropStart = dropGap > 0
+			? Math.Clamp(ScaleRouteIndex(template.DropStartIndex, template.Centerline.Count, steps + 1), 18, steps - dropGap - 20)
+			: -1;
+		try {
+			IReadOnlyList<Point> centerline = BuildRouteCenterline(
+				start,
+				end,
+				template.Profile,
+				template.VariationSeed,
+				jumpStart,
+				jumpGap,
+				dropStart,
+				dropGap,
+				dropDepth);
+			route = new MineRoute(
+				start,
+				end,
+				true,
+				template.Required,
+				template.Profile,
+				template.VariationSeed,
+				centerline,
+				jumpStart,
+				jumpGap,
+				dropStart,
+				dropGap,
+				dropDepth);
+			return true;
+		}
+		catch (InvalidOperationException) {
+			route = default;
+			return false;
+		}
+	}
+
+	private static int ScaleRouteIndex(int index, int oldCount, int newCount) =>
+		index < 0 ? -1 : Math.Clamp(index * Math.Max(1, newCount - 1) / Math.Max(1, oldCount - 1), 0, newCount - 1);
+
+	private static bool TryFindObstacleAwarePath(
+		IReadOnlyList<Point> nominal,
+		MineObstacleField obstacles,
+		IReadOnlyList<Rectangle> exclusions,
+		out IReadOnlyList<Point> accepted)
+	{
+		if (TryFindObstacleAwarePath(nominal, obstacles, exclusions, maximumDetour: 96, out accepted)) {
+			return true;
+		}
+		return TryFindObstacleAwarePath(nominal, obstacles, exclusions, maximumDetour: 180, out accepted);
+	}
+
+	private static bool TryFindObstacleAwarePath(
+		IReadOnlyList<Point> nominal,
+		MineObstacleField obstacles,
+		IReadOnlyList<Rectangle> exclusions,
+		int maximumDetour,
+		out IReadOnlyList<Point> accepted)
+	{
+		Point start = nominal[0];
+		Point end = nominal[^1];
+		int steps = nominal.Count - 1;
+		int top = Math.Max(obstacles.Bounds.Top + CorridorHeadroom + 3, nominal.Min(point => point.Y) - maximumDetour);
+		int bottom = Math.Min(obstacles.Bounds.Bottom - 5, nominal.Max(point => point.Y) + maximumDetour);
+		if (start.Y < top || start.Y > bottom || end.Y < top || end.Y > bottom) {
+			accepted = [];
+			return false;
+		}
+
+		const int gradeStates = 3;
+		const int unreachable = int.MaxValue / 8;
+		int height = bottom - top + 1;
+		int stateCount = height * gradeStates;
+		int[] previousCosts = new int[stateCount];
+		int[] currentCosts = new int[stateCount];
+		Array.Fill(previousCosts, unreachable);
+		sbyte[] previousGrades = new sbyte[(steps + 1) * stateCount];
+		Array.Fill(previousGrades, (sbyte)-1);
+		previousCosts[(start.Y - top) * gradeStates + 1] = 0;
+
+		int direction = Math.Sign(end.X - start.X);
+		for (int step = 1; step <= steps; step++) {
+			Array.Fill(currentCosts, unreachable);
+			int x = start.X + direction * step;
+			int minimumReachableY = Math.Max(top, end.Y - (steps - step));
+			int maximumReachableY = Math.Min(bottom, end.Y + (steps - step));
+			for (int y = minimumReachableY; y <= maximumReachableY; y++) {
+				Point candidate = new(x, y);
+				if ((step != steps || candidate != end)
+					&& !obstacles.IsRouteCenterSafe(candidate, exclusions)) {
+					continue;
+				}
+				if (step == steps && candidate != end) {
+					continue;
+				}
+
+				for (int gradeIndex = 0; gradeIndex < gradeStates; gradeIndex++) {
+					int grade = gradeIndex - 1;
+					int priorY = y - grade;
+					if (priorY < top || priorY > bottom) {
+						continue;
+					}
+					int bestCost = unreachable;
+					int bestPriorGrade = -1;
+					for (int priorGradeIndex = 0; priorGradeIndex < gradeStates; priorGradeIndex++) {
+						int priorCost = previousCosts[(priorY - top) * gradeStates + priorGradeIndex];
+						if (priorCost >= unreachable) {
+							continue;
+						}
+						int priorGrade = priorGradeIndex - 1;
+						int turnCost = priorGrade == grade ? 0 : priorGrade == -grade ? 44 : 16;
+						int cost = priorCost + turnCost;
+						if (cost < bestCost) {
+							bestCost = cost;
+							bestPriorGrade = priorGradeIndex;
+						}
+					}
+					if (bestPriorGrade < 0) {
+						continue;
+					}
+					int deviation = Math.Abs(y - nominal[step].Y);
+					int state = (y - top) * gradeStates + gradeIndex;
+					currentCosts[state] = bestCost + deviation * 5 + (grade == 0 ? 0 : 2);
+					previousGrades[step * stateCount + state] = (sbyte)bestPriorGrade;
+				}
+			}
+			(previousCosts, currentCosts) = (currentCosts, previousCosts);
+		}
+
+		int endStateBase = (end.Y - top) * gradeStates;
+		int finalGrade = -1;
+		int finalCost = unreachable;
+		for (int gradeIndex = 0; gradeIndex < gradeStates; gradeIndex++) {
+			if (previousCosts[endStateBase + gradeIndex] < finalCost) {
+				finalCost = previousCosts[endStateBase + gradeIndex];
+				finalGrade = gradeIndex;
+			}
+		}
+		if (finalGrade < 0) {
+			accepted = [];
+			return false;
+		}
+
+		Point[] path = new Point[steps + 1];
+		int currentY = end.Y;
+		int currentGrade = finalGrade;
+		for (int step = steps; step >= 1; step--) {
+			path[step] = new Point(start.X + direction * step, currentY);
+			int state = (currentY - top) * gradeStates + currentGrade;
+			int priorGrade = previousGrades[step * stateCount + state];
+			if (priorGrade < 0) {
+				accepted = [];
+				return false;
+			}
+			currentY -= currentGrade - 1;
+			currentGrade = priorGrade;
+		}
+		path[0] = start;
+		accepted = path;
+		return obstacles.IsRouteSafe(path, exclusions);
+	}
+
+	private static bool TryInstallLaunchTransfer(
+		IReadOnlyList<Point> path,
+		int preferredStart,
+		int gapLength,
+		MineObstacleField obstacles,
+		IReadOnlyList<Rectangle> exclusions,
+		out IReadOnlyList<Point> accepted,
+		out int acceptedStart)
+	{
+		foreach (int start in TransferCandidateIndexes(path.Count, preferredStart, 24, gapLength + 25)) {
+			List<Point> candidate = path.ToList();
+			try {
+				ApplyLaunchTransfer(candidate, start, gapLength);
+			}
+			catch (InvalidOperationException) {
+				continue;
+			}
+			if (HasValidTrackGrade(candidate) && obstacles.IsRouteSafe(candidate, exclusions)) {
+				accepted = candidate;
+				acceptedStart = start;
+				return true;
+			}
+		}
+
+		accepted = [];
+		acceptedStart = -1;
+		return false;
+	}
+
+	private static bool TryInstallGravityTransfer(
+		IReadOnlyList<Point> path,
+		int preferredStart,
+		int gapLength,
+		int dropDepth,
+		MineObstacleField obstacles,
+		IReadOnlyList<Rectangle> exclusions,
+		out IReadOnlyList<Point> accepted,
+		out int acceptedStart)
+	{
+		foreach (int start in TransferCandidateIndexes(path.Count, preferredStart, 18, gapLength + 21)) {
+			List<Point> candidate = path.ToList();
+			try {
+				ApplyGravityTransfer(candidate, start, gapLength, dropDepth);
+			}
+			catch (InvalidOperationException) {
+				continue;
+			}
+			if (HasValidTrackGrade(candidate) && obstacles.IsRouteSafe(candidate, exclusions)) {
+				accepted = candidate;
+				acceptedStart = start;
+				return true;
+			}
+		}
+
+		accepted = [];
+		acceptedStart = -1;
+		return false;
+	}
+
+	private static IEnumerable<int> TransferCandidateIndexes(
+		int pathCount,
+		int preferred,
+		int minimum,
+		int trailingClearance)
+	{
+		int maximum = pathCount - trailingClearance - 1;
+		if (maximum < minimum) {
+			yield break;
+		}
+		preferred = Math.Clamp(preferred, minimum, maximum);
+		yield return preferred;
+		for (int distance = 12; distance <= Math.Max(preferred - minimum, maximum - preferred); distance += 12) {
+			if (preferred - distance >= minimum) {
+				yield return preferred - distance;
+			}
+			if (preferred + distance <= maximum) {
+				yield return preferred + distance;
+			}
+		}
+	}
+
+	private static bool HasValidTrackGrade(IReadOnlyList<Point> path)
+	{
+		for (int index = 1; index < path.Count; index++) {
+			if (Math.Abs(path[index].X - path[index - 1].X) != 1
+				|| Math.Abs(path[index].Y - path[index - 1].Y) > 1) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static bool TryBuildBrokenRoute(
+		MineRoute template,
+		Point start,
+		Point end,
+		MineObstacleField obstacles,
+		IReadOnlyList<Rectangle> exclusions,
+		out MineRoute accepted)
+	{
+		if (!TryCreateRouteShape(template, start, end, includeTransfers: false, out MineRoute nominal)) {
+			accepted = default;
+			return false;
+		}
+		List<Point> prefix = [];
+		foreach (Point point in nominal.Centerline) {
+			if (!obstacles.IsRouteCenterSafe(point, exclusions)) {
+				break;
+			}
+			prefix.Add(point);
+		}
+		if (prefix.Count < 36) {
+			accepted = default;
+			return false;
+		}
+
+		Point brokenEnd = prefix[^1];
+		accepted = new MineRoute(
+			start,
+			brokenEnd,
+			true,
+			Required: false,
+			MineRailProfile.RollingGrades,
+			template.VariationSeed,
+			prefix,
+			JumpStartIndex: -1,
+			JumpGapLength: 0,
+			DropStartIndex: -1,
+			DropGapLength: 0,
+			DropDepth: 0);
+		return true;
+	}
+
+	private static Rectangle MineArea(IReadOnlyList<MineSection> sections, IReadOnlyList<MineRoute> routes)
+	{
+		int left = Math.Max(30, Math.Min(sections.Min(section => section.Area.Left), routes.Min(route => route.Centerline.Min(point => point.X))) - 20);
+		int right = Math.Min(Main.maxTilesX - 31, Math.Max(sections.Max(section => section.Area.Right), routes.Max(route => route.Centerline.Max(point => point.X) + 1)) + 20);
+		int top = Math.Max(40, Math.Min(sections.Min(section => section.Area.Top), routes.Min(route => route.Centerline.Min(point => point.Y))) - 20);
+		int bottom = Math.Min(Main.UnderworldLayer - 80, Math.Max(sections.Max(section => section.Area.Bottom), routes.Max(route => route.Centerline.Max(point => point.Y) + 1)) + 24);
+		return new Rectangle(left, top, right - left, bottom - top);
+	}
+
+	private static Rectangle ClampToWorld(Rectangle area, int padding)
+	{
+		int left = Math.Max(padding, area.Left);
+		int top = Math.Max(padding, area.Top);
+		int right = Math.Min(Main.maxTilesX - padding, area.Right);
+		int bottom = Math.Min(Main.maxTilesY - padding, area.Bottom);
+		return new Rectangle(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+	}
+
+	private sealed class MineObstacleField
+	{
+		private readonly WorldPlan _worldPlan;
+		private readonly int _stride;
+		private readonly int[] _unsafePrefix;
+		private readonly int[] _templeDungeonPrefix;
+		private readonly IReadOnlyList<Rectangle> _commonExclusions;
+
+		public Rectangle Bounds { get; }
+
+		public MineObstacleField(
+			Rectangle bounds,
+			WorldPlan worldPlan,
+			GenerationManifest manifest,
+			IReadOnlyList<MineSection> mineSections)
+		{
+			Bounds = bounds;
+			_worldPlan = worldPlan;
+			_stride = bounds.Width + 1;
+			_unsafePrefix = new int[(bounds.Width + 1) * (bounds.Height + 1)];
+			_templeDungeonPrefix = new int[_unsafePrefix.Length];
+			for (int localY = 1; localY <= bounds.Height; localY++) {
+				int unsafeRow = 0;
+				int templeRow = 0;
+				int worldY = bounds.Top + localY - 1;
+				for (int localX = 1; localX <= bounds.Width; localX++) {
+					int worldX = bounds.Left + localX - 1;
+					Tile tile = Main.tile[worldX, worldY];
+					bool ownedSection = mineSections.Any(section => section.Area.Contains(worldX, worldY));
+					bool wired = tile.RedWire || tile.BlueWire || tile.GreenWire || tile.YellowWire || tile.HasActuator;
+					bool unsafeTile = TileEditor.IsProgressionTile(tile)
+						|| wired
+						|| !ownedSection && tile.HasTile && Main.tileFrameImportant[tile.TileType];
+					bool templeDungeon = TileEditor.IsTempleOrDungeonCell(tile);
+					unsafeRow += unsafeTile ? 1 : 0;
+					templeRow += templeDungeon ? 1 : 0;
+					int index = localY * _stride + localX;
+					_unsafePrefix[index] = _unsafePrefix[index - _stride] + unsafeRow;
+					_templeDungeonPrefix[index] = _templeDungeonPrefix[index - _stride] + templeRow;
+				}
+			}
+
+			List<Rectangle> exclusions = manifest.ForestLakeBridges
+				.Select(bridge => bridge.Area)
+				.ToList();
+			foreach (MountainWaterRecord water in manifest.MountainWaters) {
+				Rectangle clearance = water.Area;
+				clearance.Inflate(5, CorridorHeadroom + 5);
+				exclusions.Add(clearance);
+			}
+			if (GenVars.tRight > GenVars.tLeft && GenVars.tBottom > GenVars.tTop) {
+				exclusions.Add(new Rectangle(
+					GenVars.tLeft - 28,
+					GenVars.tTop - 28,
+					GenVars.tRight - GenVars.tLeft + 57,
+					GenVars.tBottom - GenVars.tTop + 57));
+			}
+			_commonExclusions = exclusions;
+		}
+
+		public bool IsRouteSafe(IReadOnlyList<Point> path, IReadOnlyList<Rectangle> exclusions)
+		{
+			foreach (Point point in path) {
+				if (!IsRouteCenterSafe(point, exclusions)) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		public bool IsRouteCenterSafe(Point center, IReadOnlyList<Rectangle> exclusions)
+		{
+			Rectangle corridor = new(
+				center.X - 3,
+				center.Y - CorridorHeadroom - 2,
+				7,
+				CorridorHeadroom + 6);
+			if (!Bounds.Contains(corridor.Left, corridor.Top)
+				|| !Bounds.Contains(corridor.Right - 1, corridor.Bottom - 1)
+				|| Count(_unsafePrefix, corridor) > 0) {
+				return false;
+			}
+
+			Rectangle broadTempleCheck = corridor;
+			broadTempleCheck.Inflate(28, 28);
+			if (Count(_templeDungeonPrefix, broadTempleCheck) > 0
+				|| _commonExclusions.Any(area => area.Intersects(corridor))
+				|| exclusions.Any(area => area.Intersects(corridor))
+				|| MountainBiomeGenerator.IntersectsBridgePassage(_worldPlan, corridor)) {
+				return false;
+			}
+			return true;
+		}
+
+		private int Count(int[] prefix, Rectangle worldArea)
+		{
+			Rectangle clipped = Rectangle.Intersect(worldArea, Bounds);
+			if (clipped.Width <= 0 || clipped.Height <= 0) {
+				return 0;
+			}
+			int left = clipped.Left - Bounds.Left;
+			int right = clipped.Right - Bounds.Left;
+			int top = clipped.Top - Bounds.Top;
+			int bottom = clipped.Bottom - Bounds.Top;
+			return prefix[bottom * _stride + right]
+				- prefix[top * _stride + right]
+				- prefix[bottom * _stride + left]
+				+ prefix[top * _stride + left];
+		}
 	}
 
 	public static void Excavate(
@@ -194,7 +1017,10 @@ internal static class SurfaceMineGenerator
 			supportTiles,
 			furnitureCount,
 			plan.Routes.Count(route => route.Required),
-			connectedRoutes);
+			connectedRoutes,
+			plan.Kind,
+			plan.DetouredRouteCount,
+			plan.BrokenRouteCount);
 	}
 
 	public static void RepairTrackGraph(SurfaceMinePlan plan, GenerationManifest manifest)
@@ -357,7 +1183,16 @@ internal static class SurfaceMineGenerator
 		int top = Math.Max(40, Math.Min(sections.Min(section => section.Area.Top), routes.Min(route => route.Centerline.Min(point => point.Y))) - 20);
 		int bottom = Math.Min(Main.UnderworldLayer - 80, Math.Max(sections.Max(section => section.Area.Bottom), routes.Max(route => route.Centerline.Max(point => point.Y) + 1)) + 24);
 		Rectangle area = new(left, top, right - left, bottom - top);
-		return new SurfaceMinePlan(featureSeed, area, p0, sections, routes, CaptureRouteThemes(routes));
+		return new SurfaceMinePlan(
+			featureSeed,
+			area,
+			p0,
+			sections,
+			routes,
+			CaptureRouteThemes(routes),
+			MinePlanKind.Complete,
+			DetouredRouteCount: 0,
+			BrokenRouteCount: 0);
 	}
 
 	private static MineSection CreateSection(int id, MineSectionKind kind, Rectangle area, Point center) =>
@@ -454,7 +1289,7 @@ internal static class SurfaceMineGenerator
 			desiredControls[step] = baseline + sign * amplitude + fineJitter;
 		}
 
-		if (profile == MineRailProfile.LaunchTransfer) {
+		if (profile == MineRailProfile.LaunchTransfer && jumpStartIndex >= 0 && jumpGapLength > 0) {
 			int landingIndex = jumpStartIndex + jumpGapLength + 1;
 			int launchY = InterpolateY(start.Y, end.Y, jumpStartIndex, steps)
 				- 4 - Noise(variationSeed, jumpStartIndex, 0x4A55_4D50) % 3;
@@ -511,7 +1346,7 @@ internal static class SurfaceMineGenerator
 					from.Y + verticalDirection * verticalProgress));
 			}
 		}
-		if (profile == MineRailProfile.LaunchTransfer) {
+		if (profile == MineRailProfile.LaunchTransfer && jumpStartIndex >= 0 && jumpGapLength > 0) {
 			ApplyLaunchTransfer(path, jumpStartIndex, jumpGapLength);
 		}
 		else if (dropStartIndex >= 0) {
@@ -710,15 +1545,20 @@ internal static class SurfaceMineGenerator
 			reason = "mountain bridge gallery";
 			return false;
 		}
-		MineSection quarantine = plan.Sections.First(section => section.Kind == MineSectionKind.SealedEvil);
-		Rectangle quarantineClearance = quarantine.Area;
-		quarantineClearance.Inflate(3, 3);
-		if (plan.Routes
-			.Where(route => route.Start != quarantine.Center && route.End != quarantine.Center)
-			.SelectMany(RasterizeCenterline)
-			.Any(quarantineClearance.Contains)) {
-			reason = "evil annex route overlap";
-			return false;
+		MineSection? quarantine = plan.Sections
+			.Where(section => section.Kind == MineSectionKind.SealedEvil)
+			.Select<MineSection, MineSection?>(section => section)
+			.FirstOrDefault();
+		if (quarantine is MineSection sealedSection) {
+			Rectangle quarantineClearance = sealedSection.Area;
+			quarantineClearance.Inflate(3, 3);
+			if (plan.Routes
+				.Where(route => route.Start != sealedSection.Center && route.End != sealedSection.Center)
+				.SelectMany(RasterizeCenterline)
+				.Any(quarantineClearance.Contains)) {
+				reason = "evil annex route overlap";
+				return false;
+			}
 		}
 		foreach (MineRoute route in plan.Routes) {
 			int sampleIndex = 0;
