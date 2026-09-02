@@ -10,6 +10,10 @@ The export keeps any existing vanilla files intact. If a file with the same name
 
 Steam Cloud tModLoader worlds are supported as sources. The destination is always vanilla Terraria's local `Worlds` folder, so the exported world appears as a local world in vanilla Terraria.
 
+## Vanilla Worlds Overhauled
+
+[Vanilla Worlds Overhauled](../vanilla-worlds-overhauled/README.md) generates new worlds entirely from vanilla Terraria content. Export Worlds to Vanilla provides its direct migration path after generation. Worlds made with other content mods may still contain custom data that vanilla Terraria cannot load.
+
 ## Build and install
 
 Run:

@@ -1,0 +1,25 @@
+[h1]Vanilla Worlds Overhauled[/h1]
+
+[b]Overhauled worlds. 100% vanilla content.[/b]
+
+Vanilla Worlds Overhauled changes only new-world generation. It adds no custom items, tiles, walls, enemies, NPCs, bosses, recipes, or progression systems.
+
+[h2]World features[/h2]
+[list]
+[*]Tall mountain ranges with caves, chambers, climbing routes, ponds, vines, valleys, clouds, and bridges that enter real passages
+[*]Large floating highlands with several terrain grammars and only occasional mountain contact
+[*]Biome-specific multi-room landmarks, including buried ice igloos, deliberately unsuitable for NPC housing
+[*]Occasional forest lakes crossed by terrain-integrated bridges
+[*]Organic, multi-scale transitions between terrain, walls, structures, and neighboring biomes
+[*]One guaranteed surface mine feeding an interconnected rail district into the Cavern layer
+[/list]
+
+[h2]Before playing[/h2]
+Vanilla Worlds Overhauled affects world creation. Generate a new world after enabling the mod; existing worlds are not retrofitted.
+
+Secret world seeds are currently left unchanged because their generation and progression rules need dedicated support.
+
+The mod does not add special loot or replace the Dungeon, Jungle Temple, Aether, chests, wiring, or vanilla progression structures.
+
+[h2]Continue in vanilla Terraria[/h2]
+The optional [url=https://github.com/danspark/terraria-mods/tree/main/world-to-vanilla]Export Worlds to Vanilla[/url] utility copies a completed .wld into vanilla Terraria directly from the tModLoader World Select screen. It exports the generated world, not .twld data or content introduced by other mods.

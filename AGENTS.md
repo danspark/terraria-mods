@@ -12,20 +12,20 @@
 - Monitor the captured output while generating a world. On the first world-generation or load failure, preserve `tModLoader-Logs/server.log`, send a newline through the pseudo-terminal so `Console.ReadKey` can return, and let a bounded timeout stop a stuck process.
 - Diagnose the earliest exception in `server.log`. Treat the `Cannot read keys` exception as a secondary harness failure, never as the world-generation root cause.
 
-## Richer Biomes installed package
+## Vanilla Worlds Overhauled installed package
 
-- After every successful Richer Biomes build, synchronize `.playtest/build-save/Mods/RicherBiomes.tmod` to `$TML_SAVE_DIRECTORY/Mods/RicherBiomes.tmod`. When `TML_SAVE_DIRECTORY` is unset, use `$HOME/.local/share/Terraria/tModLoader`.
-- Use `richer-biomes/scripts/build-mod.sh` as the canonical build command. The script installs the completed package and fails if the installed bytes do not match the build artifact.
+- After every successful Vanilla Worlds Overhauled build, synchronize `.playtest/build-save/Mods/VanillaWorldsOverhauled.tmod` to `$TML_SAVE_DIRECTORY/Mods/VanillaWorldsOverhauled.tmod`. When `TML_SAVE_DIRECTORY` is unset, use `$HOME/.local/share/Terraria/tModLoader`.
+- Use `vanilla-worlds-overhauled/scripts/build-mod.sh` as the canonical build command. The script installs the completed package and fails if the installed bytes do not match the build artifact.
 - Before reporting world-generation work as complete, compare the build artifact and the installed package with `cmp` or `sha256sum`. Do not leave a previously loaded or intermediate package in the local `Mods` directory.
-- Updating the file does not reload a running tModLoader client. State that a mod reload or game restart is required, and do not claim that the running client loaded the new version until `tModLoader-Logs/client.log` records the expected Richer Biomes version.
+- Updating the file does not reload a running tModLoader client. State that a mod reload or game restart is required, and do not claim that the running client loaded the new version until `tModLoader-Logs/client.log` records the expected Vanilla Worlds Overhauled version.
 
-## Richer Biomes source installation
+## Vanilla Worlds Overhauled source installation
 
-- Keep the development source at `${TML_SAVE_DIRECTORY:-$HOME/.local/share/Terraria/tModLoader}/ModSources/RicherBiomes` as a symbolic link to this repository's `richer-biomes` directory. This places Richer Biomes beside locally created mods such as `testmod` without maintaining a second, stale source copy.
-- Use `richer-biomes/scripts/install-mod-source.sh` to create or verify the link. The canonical build script runs it automatically.
-- Never replace an unrelated file, directory, or link already named `RicherBiomes` in `ModSources`. Stop and report the conflict instead.
+- Keep the development source at `${TML_SAVE_DIRECTORY:-$HOME/.local/share/Terraria/tModLoader}/ModSources/VanillaWorldsOverhauled` as a symbolic link to this repository's `vanilla-worlds-overhauled` directory. This places Vanilla Worlds Overhauled beside locally created mods such as `testmod` without maintaining a second, stale source copy.
+- Use `vanilla-worlds-overhauled/scripts/install-mod-source.sh` to create or verify the link. The canonical build script runs it automatically.
+- Never replace an unrelated file, directory, or link already named `VanillaWorldsOverhauled` in `ModSources`. Stop and report the conflict instead.
 
-## Richer Biomes organic boundaries
+## Vanilla Worlds Overhauled organic boundaries
 
 - Do not generate a custom biome, mountain, natural wall field, terrain layer, structure-to-ground join, or material transition from a constant row, constant column, rectangular fill edge, or independent per-tile randomness. Use deterministic correlated variation at more than one scale, with enough amplitude to remain visible on the map.
 - Before modeling a terrain-integrated structure, sample the finished terrain, walls, liquids, and biome materials across its complete padded footprint. Derive the foundation depth, approaches, supports, shoreline, basin walls, and exterior material blend from those samples. Do not clear a rectangle and disguise its edge afterward.
@@ -34,6 +34,6 @@
 - A late repair pass must reapply the same seeded boundary function as the original owner. It must not restore a feature with a simpler axis-aligned approximation.
 - Validate the finished tile and wall grid for long exact-axis material seams, rectangular clearance scars, abrupt host-material changes, and unsupported structure edges. Planned jitter or a noisy placement mask does not count if later passes leave a straight boundary in the saved world.
 
-## Richer Biomes custom construction
+## Vanilla Worlds Overhauled custom construction
 
 - Build custom structure shells, roofs, floors, towers, abutments, and load-bearing supports from visually substantial multi-tile masses. Never model a custom building as a one-tile-wide outline; reserve one-tile elements for deliberately thin details such as platforms, rails, rope, trim, and wiring.

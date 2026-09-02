@@ -1,0 +1,9 @@
+author = Daniel Reis
+displayName = Vanilla Worlds Overhauled
+version = 0.3.4
+homepage = https://github.com/danspark/terraria-mods/tree/main/vanilla-worlds-overhauled
+side = Both
+includeSource = true
+hideCode = false
+hideResources = false
+buildIgnore = *.csproj, *.user, bin\*, obj\*, .playtest\*, concept-art\*, docs\*, release-assets\*, terraria-scenes\*, scripts\*, MOD_DESIGN.md, README.md, WORLDGEN_IDEAS.md, WORLDGEN_FUTURE_WORK.md, WORLDGEN_RESEARCH.md

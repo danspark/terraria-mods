@@ -1,1 +1,0 @@
-Builds varied vanilla-material worlds with explorable mountain ranges, floating highlands, biome landmarks, organic transitions, lakes and bridges, connected caves, and a guaranteed surface-to-Cavern rail mine. Preserves vanilla loot and progression.
