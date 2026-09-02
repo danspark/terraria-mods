@@ -174,12 +174,23 @@ internal static class MountainBiomeGenerator
 	public static void RepairBridgePortals(WorldPlan plan)
 	{
 		foreach (MountainRangePlan mountain in plan.Mountains) {
+			MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
+			int firstBridgeRoute = layout.Routes.Count - layout.BridgeRoutes.Count;
+			for (int routeIndex = 0; routeIndex < layout.BridgeRoutes.Count; routeIndex++) {
+				CarveRoute(
+					plan,
+					mountain,
+					layout.BridgeRoutes[routeIndex],
+					firstBridgeRoute + routeIndex,
+					protectSensitiveTiles: true);
+			}
+
 			int leftX = (mountain.LeftPeakX + mountain.SaddleX) / 2;
 			int rightX = (mountain.SaddleX + mountain.RightPeakX) / 2;
 			int leftDeckY = plan.SurfaceAt(leftX) - 2;
 			int rightDeckY = plan.SurfaceAt(rightX) - 2;
-			BuildBridgeApproach(leftX, leftDeckY, direction: -1, style: mountain.BridgeStyle);
-			BuildBridgeApproach(rightX, rightDeckY, direction: 1, style: mountain.BridgeStyle);
+			BuildBridgeApproach(mountain, leftX, leftDeckY, direction: -1, style: mountain.BridgeStyle);
+			BuildBridgeApproach(mountain, rightX, rightDeckY, direction: 1, style: mountain.BridgeStyle);
 			ActuateBridgeTowerPassage(leftX, leftDeckY, mountain.BridgeStyle);
 			ActuateBridgeTowerPassage(rightX, rightDeckY, mountain.BridgeStyle);
 			RepairBridgeEndpointCorridor(leftX, leftDeckY, mountain.BridgeStyle);
@@ -806,7 +817,52 @@ internal static class MountainBiomeGenerator
 			}
 		}
 
-		return new MountainInteriorLayout(routes, chambers, shafts, [leftEntrance, rightEntrance], wallClimb);
+		List<Point[]> bridgeRoutes = BuildBridgeConnectionRoutes(plan, mountain, leftUpper, rightUpper);
+		routes.AddRange(bridgeRoutes);
+		return new MountainInteriorLayout(routes, bridgeRoutes, chambers, shafts, [leftEntrance, rightEntrance], wallClimb);
+	}
+
+	private static List<Point[]> BuildBridgeConnectionRoutes(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		Point leftUpper,
+		Point rightUpper)
+	{
+		int leftX = (mountain.LeftPeakX + mountain.SaddleX) / 2;
+		int rightX = (mountain.SaddleX + mountain.RightPeakX) / 2;
+		return [
+			BuildBridgeConnectionRoute(plan, mountain, leftX, direction: -1, target: leftUpper),
+			BuildBridgeConnectionRoute(plan, mountain, rightX, direction: 1, target: rightUpper)
+		];
+	}
+
+	private static Point[] BuildBridgeConnectionRoute(
+		WorldPlan plan,
+		MountainRangePlan mountain,
+		int endpointX,
+		int direction,
+		Point target)
+	{
+		int deckY = plan.SurfaceAt(endpointX) - 2;
+		Point mouth = new(endpointX + direction * 4, deckY - 3);
+		int approachLength = BridgeApproachLength(mountain, endpointX);
+		Point galleryExit = new(endpointX + direction * (approachLength + 2), deckY - 3);
+		int reach = approachLength + 18 + HashNoise(endpointX, mountain.FeatureSeed ^ 0x4252_5448) % 13;
+		int throatX = endpointX + direction * reach;
+		int descent = 8 + HashNoise(endpointX, mountain.FeatureSeed ^ 0x4252_5444) % 9;
+		Point throat = Inside(plan, throatX, deckY + descent);
+		int turnX = (throat.X + target.X) / 2
+			+ direction * (4 + HashNoise(endpointX, mountain.FeatureSeed ^ 0x4252_5458) % 8);
+		int turnY = (throat.Y + target.Y) / 2
+			+ OrganicBoundary.Profile(
+				turnX,
+				mountain.FeatureSeed ^ 0x4252_5459,
+				31,
+				9,
+				7,
+				3);
+		Point turn = Inside(plan, turnX, turnY);
+		return [mouth, galleryExit, throat, turn, target];
 	}
 
 	private static Point Inside(WorldPlan plan, int x, int desiredY)
@@ -1137,6 +1193,7 @@ internal static class MountainBiomeGenerator
 			if (!WorldGen.InWorld(area.Left, area.Top, 12)
 				|| !WorldGen.InWorld(area.Right - 1, area.Bottom - 1, 12)
 				|| IntersectsCriticalWaterFeature(manifest, area)
+				|| IntersectsBridgePassage(plan, area)
 				|| ContainsMineRailEnvelope(area)) {
 				continue;
 			}
@@ -1736,6 +1793,35 @@ internal static class MountainBiomeGenerator
 		}
 	}
 
+	internal static bool IntersectsBridgePassage(WorldPlan plan, Rectangle area)
+	{
+		Rectangle padded = area;
+		padded.Inflate(MinimumRouteRadius + 16, MinimumRouteRadius + 16);
+		foreach (MountainRangePlan mountain in plan.Mountains) {
+			MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
+			foreach (Point[] route in layout.BridgeRoutes) {
+				for (int segment = 1; segment < route.Length; segment++) {
+					Point start = route[segment - 1];
+					Point end = route[segment];
+					int steps = Math.Max(Math.Abs(end.X - start.X), Math.Abs(end.Y - start.Y));
+					for (int step = 0; step <= steps; step += 4) {
+						double amount = steps == 0 ? 0d : (double)step / steps;
+						Point sample = new(
+							(int)Math.Round(start.X + (end.X - start.X) * amount),
+							(int)Math.Round(start.Y + (end.Y - start.Y) * amount));
+						if (padded.Contains(sample)) {
+							return true;
+						}
+					}
+					if (padded.Contains(end)) {
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	}
+
 	private static ValleyRecord BuildValley(WorldPlan plan, MountainRangePlan mountain)
 	{
 		int halfWidth = Math.Clamp((mountain.RightPeakX - mountain.LeftPeakX) / 5, 24, 42);
@@ -1894,8 +1980,15 @@ internal static class MountainBiomeGenerator
 
 			if ((x - leftX) % 14 == 0) {
 				int supportBottom = Math.Min(bottom - 1, deckY + 14 + HashNoise(x, mountain.RegionId) % 6);
-				for (int y = deckY + 3; y <= supportBottom; y++) {
-					TileEditor.SetTerrain(x, y, mountain.BridgeStyle == BridgeStyle.StoneArch ? TileID.StoneSlab : TileID.WoodenBeam);
+				int supportLeft = mountain.BridgeStyle == BridgeStyle.StoneArch ? x - 1 : x;
+				int supportRight = x + 1;
+				for (int supportX = supportLeft; supportX <= supportRight; supportX++) {
+					for (int y = deckY + 3; y <= supportBottom; y++) {
+						TileEditor.SetTerrain(
+							supportX,
+							y,
+							mountain.BridgeStyle == BridgeStyle.StoneArch ? TileID.StoneSlab : TileID.WoodenBeam);
+					}
 				}
 				TileEditor.TryPlaceTorch(x + 1, deckY - 3);
 			}
@@ -1904,8 +1997,8 @@ internal static class MountainBiomeGenerator
 		BuildBridgeTower(leftX, leftDeckY, top, mountain.BridgeStyle);
 		BuildBridgeTower(rightX, rightDeckY, top, mountain.BridgeStyle);
 		TileEditor.Frame(area);
-		BuildBridgeApproach(leftX, leftDeckY, direction: -1, style: mountain.BridgeStyle);
-		BuildBridgeApproach(rightX, rightDeckY, direction: 1, style: mountain.BridgeStyle);
+		BuildBridgeApproach(mountain, leftX, leftDeckY, direction: -1, style: mountain.BridgeStyle);
+		BuildBridgeApproach(mountain, rightX, rightDeckY, direction: 1, style: mountain.BridgeStyle);
 		return new BridgeRecord(mountain.BridgeStyle, area, deckTiles);
 	}
 
@@ -1956,22 +2049,62 @@ internal static class MountainBiomeGenerator
 		}
 	}
 
-	private static void BuildBridgeApproach(int endpointX, int deckY, int direction, BridgeStyle style)
+	private static void BuildBridgeApproach(
+		MountainRangePlan mountain,
+		int endpointX,
+		int deckY,
+		int direction,
+		BridgeStyle style)
 	{
 		ushort material = style == BridgeStyle.StoneArch ? TileID.GrayBrick : TileID.LivingWood;
+		ushort coreMaterial = style == BridgeStyle.StoneArch ? TileID.StoneSlab : TileID.WoodenBeam;
 		ushort wall = style == BridgeStyle.StoneArch ? WallID.GrayBrick : WallID.Planked;
-		for (int step = 0; step <= 11; step++) {
+		int length = BridgeApproachLength(mountain, endpointX);
+		for (int step = 0; step <= length; step++) {
 			int x = endpointX + direction * step;
 			for (int y = deckY - 6; y < deckY; y++) {
-				if (IsMineRailEnvelope(x, y)) {
+				if (IsMineRailEnvelope(x, y) || TileEditor.IsProtectedTile(Main.tile[x, y])) {
 					continue;
 				}
 				TileEditor.ClearTerrain(x, y);
 				TileEditor.SetWall(x, y, wall);
 			}
-			for (int depth = 0; depth < 3; depth++) {
-				if (!IsMineRailEnvelope(x, deckY + depth)) {
-					TileEditor.SetTerrain(x, deckY + depth, depth == 1 ? TileID.StoneSlab : material);
+
+			int floorDepth = 4 + Math.Max(0, OrganicBoundary.Profile(
+				x,
+				mountain.FeatureSeed ^ 0x4142_464C,
+				19,
+				7,
+				2,
+				1));
+			for (int depth = 0; depth < floorDepth; depth++) {
+				if (!IsMineRailEnvelope(x, deckY + depth)
+					&& !TileEditor.IsProtectedTile(Main.tile[x, deckY + depth])) {
+					ushort floorMaterial = depth is 1 or 2 && OrganicBoundary.Field(
+						x,
+						deckY + depth,
+						mountain.FeatureSeed ^ 0x4142_464D,
+						17,
+						5) > 0.43d
+						? coreMaterial
+						: material;
+					TileEditor.SetTerrain(x, deckY + depth, floorMaterial);
+				}
+			}
+
+			if (step >= 5) {
+				int roofThickness = 3 + Math.Max(0, OrganicBoundary.Profile(
+					x,
+					mountain.FeatureSeed ^ 0x4142_5246,
+					17,
+					5,
+					2,
+					1));
+				for (int depth = 0; depth < roofThickness; depth++) {
+					int y = deckY - 7 - depth;
+					if (!IsMineRailEnvelope(x, y) && !TileEditor.IsProtectedTile(Main.tile[x, y])) {
+						TileEditor.SetTerrain(x, y, depth == 1 ? coreMaterial : material);
+					}
 				}
 			}
 		}
@@ -1985,6 +2118,105 @@ internal static class MountainBiomeGenerator
 				}
 			}
 		}
+		TileEditor.Frame(new Rectangle(
+			Math.Min(endpointX, endpointX + direction * length) - 3,
+			deckY - 13,
+			length + 7,
+			22), border: 2);
+	}
+
+	private static int BridgeApproachLength(MountainRangePlan mountain, int endpointX) =>
+		18 + HashNoise(endpointX, mountain.FeatureSeed ^ 0x4142_5554) % 7;
+
+	internal static bool HasConnectedBridgePortals(WorldPlan plan, MountainRangePlan mountain, out string reason)
+	{
+		MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
+		for (int index = 0; index < layout.BridgeRoutes.Count; index++) {
+			int direction = index == 0 ? -1 : 1;
+			if (!HasConnectedBridgePortal(layout.BridgeRoutes[index], direction, out string failure)) {
+				reason = $"{(direction < 0 ? "left" : "right")} endpoint {failure}";
+				return false;
+			}
+		}
+		reason = string.Empty;
+		return true;
+	}
+
+	private static bool HasConnectedBridgePortal(IReadOnlyList<Point> route, int direction, out string reason)
+	{
+		int left = Math.Max(3, route.Min(point => point.X) - 20);
+		int right = Math.Min(Main.maxTilesX - 4, route.Max(point => point.X) + 20);
+		int top = Math.Max(3, route.Min(point => point.Y) - 20);
+		int bottom = Math.Min(Main.maxTilesY - 4, route.Max(point => point.Y) + 20);
+		int width = right - left + 1;
+		int height = bottom - top + 1;
+		bool[] visited = new bool[width * height];
+		Queue<Point> frontier = new();
+		Point mouth = route[0];
+		Point? start = null;
+		int bestDistance = int.MaxValue;
+		for (int offsetX = -7; offsetX <= 7; offsetX++) {
+			for (int offsetY = -7; offsetY <= 7; offsetY++) {
+				int x = mouth.X + offsetX;
+				int y = mouth.Y + offsetY;
+				if (x < left || x > right || y < top || y > bottom || TileEditor.IsSolid(x, y)) {
+					continue;
+				}
+				int distance = offsetX * offsetX + offsetY * offsetY;
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					start = new Point(x, y);
+				}
+			}
+		}
+		if (start is not Point startPoint) {
+			reason = "has no open portal mouth";
+			return false;
+		}
+		visited[(startPoint.X - left) + (startPoint.Y - top) * width] = true;
+		frontier.Enqueue(startPoint);
+
+		Point target = route[^1];
+		int connectedCells = 0;
+		int wallBackedCells = 0;
+		int furthestX = mouth.X;
+		int[] connectedCellsByColumn = new int[width];
+		bool reachedTarget = false;
+		ReadOnlySpan<Point> neighbors = [new Point(-1, 0), new Point(1, 0), new Point(0, -1), new Point(0, 1)];
+		while (frontier.Count > 0) {
+			Point current = frontier.Dequeue();
+			connectedCells++;
+			connectedCellsByColumn[current.X - left]++;
+			wallBackedCells += Main.tile[current.X, current.Y].WallType != WallID.None ? 1 : 0;
+			furthestX = direction < 0 ? Math.Min(furthestX, current.X) : Math.Max(furthestX, current.X);
+			int deltaX = current.X - target.X;
+			int deltaY = current.Y - target.Y;
+			reachedTarget |= deltaX * deltaX + deltaY * deltaY <= 64;
+			foreach (Point offset in neighbors) {
+				int x = current.X + offset.X;
+				int y = current.Y + offset.Y;
+				if (x < left || x > right || y < top || y > bottom || TileEditor.IsSolid(x, y)) {
+					continue;
+				}
+				int cell = (x - left) + (y - top) * width;
+				if (visited[cell]) {
+					continue;
+				}
+				visited[cell] = true;
+				frontier.Enqueue(new Point(x, y));
+			}
+		}
+
+		int wideColumns = connectedCellsByColumn.Count(count => count >= 6);
+		int outwardReach = Math.Abs(furthestX - mouth.X);
+		if (!reachedTarget || connectedCells < 320 || wallBackedCells < 220 || wideColumns < 24 || outwardReach < 28) {
+			reason = $"does not reach a substantial cavern passage "
+				+ $"(target={reachedTarget}, component={connectedCells}, wall-backed={wallBackedCells}, "
+				+ $"wide-columns={wideColumns}, outward-reach={outwardReach})";
+			return false;
+		}
+		reason = string.Empty;
+		return true;
 	}
 
 	private static int HashNoise(int x, int salt)
@@ -2031,6 +2263,7 @@ internal static class MountainBiomeGenerator
 
 	private sealed record MountainInteriorLayout(
 		IReadOnlyList<Point[]> Routes,
+		IReadOnlyList<Point[]> BridgeRoutes,
 		IReadOnlyList<MountainChamber> Chambers,
 		IReadOnlyList<MountainShaft> Shafts,
 		IReadOnlyList<Point> Entrances,

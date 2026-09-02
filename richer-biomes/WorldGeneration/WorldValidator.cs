@@ -1153,6 +1153,9 @@ internal static class WorldValidator
 					errors.Add($"{mountain.BridgeStyle} bridge endpoint at x={endpointX} retained {blockers} solid passage blockers");
 				}
 			}
+			if (!MountainBiomeGenerator.HasConnectedBridgePortals(plan, mountain, out string bridgeConnectionFailure)) {
+				errors.Add($"{mountain.BridgeStyle} bridge {bridgeConnectionFailure}");
+			}
 		}
 
 		foreach (ValleyRecord valley in manifest.Valleys) {

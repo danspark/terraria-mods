@@ -22,7 +22,7 @@ internal static class LandmarkGenerator
 		for (int index = 0; index < requests.Count; index++) {
 			LandmarkRequest request = requests[index];
 			UnifiedRandom random = new(MixSeed(plan.GenerationSeed, LandmarkSeedSalt, index));
-			if (!TryPlaceBest(request, plan.SpawnX, surfaceMine, manifest, random) && request.Required) {
+			if (!TryPlaceBest(request, plan, plan.SpawnX, surfaceMine, manifest, random) && request.Required) {
 				string diagnostic = request.Biome == BiomeKind.Ocean
 					? $" {DescribeOceanSite(request, surfaceMine, manifest)}"
 					: string.Empty;
@@ -266,6 +266,7 @@ internal static class LandmarkGenerator
 
 	private static bool TryPlaceBest(
 		LandmarkRequest request,
+		WorldPlan plan,
 		int spawnX,
 		SurfaceMinePlan surfaceMine,
 		GenerationManifest manifest,
@@ -282,7 +283,7 @@ internal static class LandmarkGenerator
 		LandmarkCandidate? best = null;
 		for (int attempt = 0; attempt < CandidateBudget; attempt++) {
 			int x = random.Next(request.LeftX, request.RightX + 1);
-			if (!TryCreateCandidate(request.Biome, layout, x, spawnX, surfaceMine, manifest, out LandmarkCandidate candidate)) {
+			if (!TryCreateCandidate(request.Biome, layout, x, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate candidate)) {
 				continue;
 			}
 
@@ -292,7 +293,7 @@ internal static class LandmarkGenerator
 		}
 		if (best is null && request.Required) {
 			for (int x = request.LeftX; x <= request.RightX; x += 4) {
-				if (!TryCreateCandidate(request.Biome, layout, x, spawnX, surfaceMine, manifest, out LandmarkCandidate candidate)) {
+				if (!TryCreateCandidate(request.Biome, layout, x, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate candidate)) {
 					continue;
 				}
 				if (best is null || candidate.Score > best.Value.Score) {
@@ -301,29 +302,29 @@ internal static class LandmarkGenerator
 			}
 		}
 		if (best is null && request.Biome is (BiomeKind.Evil or BiomeKind.Mushroom or BiomeKind.Cavern or BiomeKind.Underworld)
-			&& TryCreateEmbeddedCandidate(request, layout, spawnX, surfaceMine, manifest, out LandmarkCandidate embeddedFallback)) {
+			&& TryCreateEmbeddedCandidate(request, layout, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate embeddedFallback)) {
 			best = embeddedFallback;
 		}
 		if (best is null && request.Biome is (BiomeKind.Forest or BiomeKind.Snow or BiomeKind.Desert
 			or BiomeKind.Jungle or BiomeKind.Ocean or BiomeKind.Sky)
-			&& TryCreatePreparedSurfaceCandidate(request, layout, spawnX, surfaceMine, manifest, out LandmarkCandidate surfaceFallback)) {
+			&& TryCreatePreparedSurfaceCandidate(request, layout, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate surfaceFallback)) {
 			best = surfaceFallback;
 		}
 		if (best is null && request.Biome == BiomeKind.Ocean) {
 			LandmarkLayout compact = ResolveLayout(BiomeKind.Ocean, variant: 0);
 			for (int x = request.LeftX; x <= request.RightX; x += 2) {
-				if (TryCreateCandidate(request.Biome, compact, x, spawnX, surfaceMine, manifest, out LandmarkCandidate coastalCandidate)
+				if (TryCreateCandidate(request.Biome, compact, x, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate coastalCandidate)
 					&& (best is null || coastalCandidate.Score > best.Value.Score)) {
 					best = coastalCandidate;
 				}
 			}
 			if (best is null
-				&& TryCreatePreparedSurfaceCandidate(request, compact, spawnX, surfaceMine, manifest, out LandmarkCandidate compactFallback)) {
+				&& TryCreatePreparedSurfaceCandidate(request, compact, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate compactFallback)) {
 				best = compactFallback;
 			}
 		}
 		if (best is null && request.Biome is (BiomeKind.Forest or BiomeKind.Snow or BiomeKind.Desert or BiomeKind.Jungle)
-			&& TryCreateEmbeddedCandidate(request, layout, spawnX, surfaceMine, manifest, out LandmarkCandidate embeddedBiomeFallback)) {
+			&& TryCreateEmbeddedCandidate(request, layout, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate embeddedBiomeFallback)) {
 			best = embeddedBiomeFallback;
 		}
 
@@ -357,6 +358,7 @@ internal static class LandmarkGenerator
 	private static bool TryCreatePreparedSurfaceCandidate(
 		LandmarkRequest request,
 		LandmarkLayout layout,
+		WorldPlan plan,
 		int spawnX,
 		SurfaceMinePlan surfaceMine,
 		GenerationManifest manifest,
@@ -411,7 +413,8 @@ internal static class LandmarkGenerator
 					|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
 					|| manifest.MountainWaters.Any(water => Inflated(water.Area, 12).Intersects(area))
 					|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
-				|| !TileEditor.IsSafeForTerrainFeature(area)) {
+					|| MountainBiomeGenerator.IntersectsBridgePassage(plan, area)
+					|| !TileEditor.IsSafeForTerrainFeature(area)) {
 				continue;
 			}
 
@@ -429,6 +432,7 @@ internal static class LandmarkGenerator
 	private static bool TryCreateEmbeddedCandidate(
 		LandmarkRequest request,
 		LandmarkLayout layout,
+		WorldPlan plan,
 		int spawnX,
 		SurfaceMinePlan surfaceMine,
 		GenerationManifest manifest,
@@ -460,7 +464,8 @@ internal static class LandmarkGenerator
 					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
 					|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
 					|| manifest.MountainWaters.Any(water => Inflated(water.Area, 12).Intersects(area))
-					|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))) {
+					|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
+					|| MountainBiomeGenerator.IntersectsBridgePassage(plan, area)) {
 					continue;
 				}
 
@@ -483,6 +488,7 @@ internal static class LandmarkGenerator
 		BiomeKind biome,
 		LandmarkLayout layout,
 		int anchorX,
+		WorldPlan plan,
 		int spawnX,
 		SurfaceMinePlan surfaceMine,
 		GenerationManifest manifest,
@@ -537,7 +543,8 @@ internal static class LandmarkGenerator
 				|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
 				|| manifest.MountainWaters.Any(water => Inflated(water.Area, 12).Intersects(area))
 				|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
-			|| !TileEditor.IsSafeForTerrainFeature(area)) {
+				|| MountainBiomeGenerator.IntersectsBridgePassage(plan, area)
+				|| !TileEditor.IsSafeForTerrainFeature(area)) {
 			candidate = default;
 			return false;
 		}

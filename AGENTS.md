@@ -22,3 +22,7 @@
 - A settled liquid surface may be level, but its shore, bed, spill lip, retaining material, and structure approaches must follow correlated contours and blend into the host biome. The same rule applies to a straight bridge deck: its abutments, supports, banks, and background field must not expose the generator footprint.
 - A late repair pass must reapply the same seeded boundary function as the original owner. It must not restore a feature with a simpler axis-aligned approximation.
 - Validate the finished tile and wall grid for long exact-axis material seams, rectangular clearance scars, abrupt host-material changes, and unsupported structure edges. Planned jitter or a noisy placement mask does not count if later passes leave a straight boundary in the saved world.
+
+## Richer Biomes custom construction
+
+- Build custom structure shells, roofs, floors, towers, abutments, and load-bearing supports from visually substantial multi-tile masses. Never model a custom building as a one-tile-wide outline; reserve one-tile elements for deliberately thin details such as platforms, rails, rope, trim, and wiring.

@@ -469,6 +469,10 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		ForestWaterBridgeGenerator.RepairAndRefill(RequireManifest());
 		MountainBiomeGenerator.RefillInteriorWaters(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RefillValleyLiquids(RequireManifest());
+		// Liquids, grounding, transition blending, and traversal repair can all touch
+		// the mountain slopes after the first bridge repair. The bridge galleries own
+		// the final write so both abutments remain connected to their cave chambers.
+		MountainBiomeGenerator.RepairBridgePortals(RequirePlan());
 		MountainBiomeGenerator.RecordFinalState(RequirePlan(), RequireManifest());
 		progress.Set(1d);
 	}
