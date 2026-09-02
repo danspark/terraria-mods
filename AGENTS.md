@@ -1,5 +1,10 @@
 # Repository instructions
 
+## tModLoader release artwork
+
+- Before reporting a tModLoader mod as ready for release, make sure its root contains an original, reviewed `icon.png` in 80×80 RGBA format. Create or update the icon when it is missing or no longer represents the mod.
+- Inspect the icon at its native 80×80 size and confirm the canonical build packages it. If the current tModLoader toolchain accepts a custom `icon_small.png`, derive it from the same artwork at 30×30 and inspect that file at native size too.
+
 ## Headless tModLoader runs
 
 - Never launch `dotnet tModLoader.dll -server` with the tModLoader process reading stdin directly from a pipe, FIFO, `/dev/null`, or another redirected stream. In tModLoader 2026.06.3.6, a startup or world-generation failure enters an error path that calls `Console.ReadKey`. Redirected input makes that error handler throw `InvalidOperationException: Cannot read keys when either application does not have a console or when console input has been redirected`, which hides the first exception and can open a fatal-error dialog.

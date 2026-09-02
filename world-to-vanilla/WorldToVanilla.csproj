@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TML_INSTALL Condition="'$(TML_INSTALL)' == '' and '$(HOME)' != ''">$(HOME)/.local/share/Steam/steamapps/common/tModLoader</TML_INSTALL>
+  </PropertyGroup>
+
+  <Import Project="$(TML_INSTALL)/tMLMod.targets" />
+
+  <PropertyGroup>
+    <AssemblyName>WorldToVanilla</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>WorldToVanilla</RootNamespace>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="tests/**/*.cs" />
+  </ItemGroup>
+</Project>

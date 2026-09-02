@@ -1,0 +1,1 @@
+Adds an export button to every world in tModLoader's world selection menu. The button copies the vanilla-compatible .wld file into vanilla Terraria's local Worlds folder without overwriting a different world.

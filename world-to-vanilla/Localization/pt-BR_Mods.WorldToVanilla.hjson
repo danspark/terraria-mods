@@ -1,0 +1,10 @@
+UI: {
+	Export: Exportar "{0}" para o Terraria original
+	UpToDate: A cópia no Terraria original está atualizada
+	Outdated: "Exporte novamente: o mundo do tModLoader tem alterações mais recentes"
+	VanillaNewer: "A cópia no Terraria original tem alterações mais recentes; exportar criará outra cópia"
+	StatusUnavailable: Exportar para o Terraria original (não foi possível verificar a cópia)
+	Exported: Copiado para o Terraria original como "{0}"
+	AlreadyExported: Já está atualizado como "{0}"
+	ExportFailed: "Não foi possível exportar: {0}"
+}

@@ -1,0 +1,10 @@
+UI: {
+	Export: Export "{0}" to vanilla Terraria
+	UpToDate: Vanilla copy is up to date
+	Outdated: "Export again: tModLoader has newer changes"
+	VanillaNewer: "Vanilla has newer changes; exporting creates a separate copy"
+	StatusUnavailable: Export to vanilla Terraria (copy status unavailable)
+	Exported: Copied to vanilla Terraria as "{0}"
+	AlreadyExported: Already up to date as "{0}"
+	ExportFailed: "Couldn't export: {0}"
+}

@@ -1,0 +1,5 @@
+.build-save/
+bin/
+obj/
+tests/bin/
+tests/obj/

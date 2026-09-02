@@ -1,0 +1,8 @@
+author = Daniel Reis
+displayName = World to Vanilla
+version = 0.2.1
+side = Client
+includeSource = true
+hideCode = false
+hideResources = false
+buildIgnore = .gitignore, *.csproj, *.user, bin\*, obj\*, .build-save\*, scripts\*, tests\*, README.md
