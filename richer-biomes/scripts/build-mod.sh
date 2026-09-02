@@ -14,6 +14,8 @@ if [[ ! -f "$tml_install/tMLMod.targets" || ! -f "$tml_install/tModLoader.dll" ]
 	exit 1
 fi
 
+"$script_dir/install-mod-source.sh"
+
 stage_dir="$(mktemp -d)"
 trap 'rm -rf "$stage_dir"' EXIT
 ln -s "$mod_dir" "$stage_dir/RicherBiomes"

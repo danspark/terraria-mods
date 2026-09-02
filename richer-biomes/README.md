@@ -1,80 +1,84 @@
+<p align="center">
+  <img src="icon.png" width="160" height="160" alt="Richer Biomes icon: two biome-layered mountains joined by a bridge">
+</p>
+
 # Richer Biomes
 
-Richer Biomes 0.3.4 turns ordinary Terraria worlds into connected exploration regions while retaining vanilla materials, biomes, loot, and progression. It creates height-varied mountain ranges, floating highland biomes, biome-specific multi-room landmarks, occasional forest lake crossings, protected building terraces, cave routes, and one guaranteed surface-to-Cavern mine district.
+Richer Biomes turns Terraria world generation into a network of large, varied places to explore. It uses vanilla tiles, walls, furniture, liquids, and loot while giving each region a stronger silhouette and internal structure.
 
-The mod targets Terraria 1.4.4.9 on tModLoader 2026.07.3.0. Secret seeds stop before terrain mutation because their layer and progression rules need separate plans.
+The current release targets Terraria 1.4.4.9 on tModLoader 2026.07.3.0.
 
-## World contract
+> Richer Biomes works during world creation. Enable it before generating a new world; it does not retrofit existing worlds. Secret seeds are currently left unchanged.
 
-Every supported world receives the following features:
+![A generated Richer Biomes mountain range with two peaks, a bridge, cave routes, biome seams, and mountain water](docs/images/worldgen-showcase.png)
 
-- Correlated full-world terrain with quiet lowlands, hills, plateaus, basins, valleys, and size-aware mountain ranges. A shared multi-scale boundary field breaks up terrain layers, walls, structure foundations, and biome joins without adding per-tile static.
-- Ground-connected mountain ranges selected from Highland, Alpine, and Sky-piercing altitude families. Only Sky-piercing ranges enter Space and grow cloud belts. Every range inherits the material family beneath each part of its body, including Snow, Jungle, Desert, Corruption, or Crimson; has two foothill entrances and one of four cave grammars; and contains wall-backed chambers, open-background pockets, suspended natural ledges, dense vine curtains, at least two protected ponds or lakes, climbing aids, furnished vignettes, pots, rubble, a themed valley, and a bridge between its peaks.
-- One floating highland on small worlds and up to two on medium and large worlds. A highland is approximately 280×90, 360×110, or 440×140 tiles before its satellites and uses a Terraced Meadow, Cloud Basin, or Broken Archipelago grammar. At most one highland may touch an Alpine or Sky-piercing mountain; attachment is attempted in one fifth of plans, so detached highlands are normal.
-- A guaranteed visible surface mine with a headframe and eleven required rail edges from the Surface into the deep Cavern layer. The graph includes multiple junctions, cycles, horizontal work lines, rolling and terraced grades, climbs followed by descents, and a collapsed spur with a clear minecart jump. Corridors inherit a continuous unsafe wall family from the biome they cross—Ice and Snow in Snow, Jungle walls in Jungle, matching evil walls in Corruption or Crimson, and equivalent regional palettes elsewhere. Timber bents, masonry foundations, lighting, work furniture, platform drop bays, and flooded, collapsed, mountain-rail, and sealed world-evil districts give the network an industrial identity without flattening its biome identity.
-- A styled, connected exploration landmark for Forest, Snow, Desert, Jungle, world evil, Sky, Glowing Mushroom, Cavern, and Underworld, plus separate left and right Ocean landmarks. Thirty biome-specific archetypes combine six or seven rooms, two or three floors, five room-graph families, multiple roof silhouettes, independent stairs for separated towers, themed furniture, and organic foundations and approaches. Snow can select a buried igloo whose lower rooms descend below the surface. All landmarks remain traversable while deliberately failing NPC housing checks.
-- Optional Forest lake crossings selected independently of the required landmark. Their level bridge decks remain readable, while correlated beds, shorelines, retaining materials, supports, abutments, and approaches blend the scene into the finished Forest instead of exposing a rectangular generator footprint.
-- Wide forest, snow, desert, jungle, and world-evil transition bands whose stepped, wavy material boundaries vary with depth instead of following a vertical line. Only seams still visible after later feature ownership are retained in the final manifest.
-- Protected flat ground at spawn and additional building terraces, connected regional cave routes, and contextual accents that leave quiet construction space.
+The showcase world used the seed `RicherBiomes-Overhaul-Large-01` (`882350129`). The exact result is deterministic for the same mod and tModLoader versions.
 
-No generated landmark or mine section contains special loot. Richer Biomes does not duplicate progression rewards or overwrite the Dungeon, Jungle Temple, Aether, chests, wiring, or other protected content.
+## What it generates
 
-## Validation guarantees
+- Ground-connected mountain ranges with varied heights, broad chambers, open-background caves, ledges, climbing aids, vines, ponds, furnished vignettes, and two surface entrances. Bridges enter traversable mountain passages instead of terminating against solid rock.
+- Large floating highlands with terraced meadow, cloud basin, or broken archipelago forms. Mountain attachment is occasional, not the default.
+- Biome-specific landmarks with multiple rooms, floors, stairs, roof shapes, furniture sets, and blended foundations. Snow landmarks can become buried igloos. Every landmark deliberately fails NPC housing checks so it cannot bypass progression.
+- Occasional forest lakes and terrain-integrated bridges with irregular shores, beds, supports, and approaches.
+- Broad, correlated biome and material transitions. Natural terrain, walls, foundations, and structure joins avoid straight rectangular generator seams.
+- One guaranteed visible surface mine leading into an interconnected Cavern rail district with junctions, cycles, work lines, timber supports, furniture, flooded areas, collapses, mountain routes, and sealed world-evil sections.
+- Protected spawn ground, building terraces, regional cave routes, and quieter construction space between major landmarks.
 
-Generation fails instead of accepting a partial world when the finished tile grid violates the contract. The validator checks actual tiles after vanilla cleanup, including:
+Richer Biomes does not add progression loot or overwrite the Dungeon, Jungle Temple, Aether, chests, wiring, or other protected vanilla content.
 
-- every mountain surface matching its planned Highland, Alpine, or Sky-piercing altitude family, two visible entrances, and a cloud belt only where the plan is Sky-piercing;
-- substantial wall-backed mountain cave area, organically bounded natural-wall fields, open-background cave pockets, suspended natural ledges, dense long vine curtains, at least two organic water bodies, wide chambers, pots, and rope or platform climbing aids in every range, plus different altitude and interior families when a world has multiple ranges;
-- a three-tile structural bridge with background panels, platform drop bays, clear headroom, actuated mountain portals, and no solid endpoint-corridor blockers, plus a valley payload for every mountain range;
-- a connected floating-highland component spanning at least three quarters of its target width and two thirds of its target depth, with varied styles and no more than one mountain attachment;
-- all eleven landmarks with six or seven connected rooms, two or three physical floors, complete stair connectivity, biome-characteristic materials and silhouettes, mixed interior walls, thick foundations, retained multitile furniture, open approaches, no exterior wall leakage, no doors, and failed real NPC-housing queries;
-- every planned Forest lake crossing with a continuous clear bridge, complete supports, a broad retained water body, an irregular bed, and Forest material at both approaches;
-- at least two or three visible organic biome seams by world size, each measured across many depth samples with broad lateral movement and repeated direction changes;
-- no long exact-axis material seams in natural mountain blocks or walls, highland layers, biome-transition walls, landmark wall panels, or mine-section wall fields;
-- a minecart-track component reachable from the surface entrance with at least 300, 500, or 700 tiles on small, medium, or large worlds;
-- every authored mine route tile and all eleven required mine edges in that entrance component, with at least six tiles of clear headroom, a measured mix of tighter and cavernous ceilings, local-biome walls along the rail envelope, timber support bents, several route profiles, repeated climb-and-descent edges, and a four-to-six-tile launch transfer with a clear flight path;
-- preserved vanilla progression structures, world evil, and Shimmer.
+## Install for local play
 
-The version 6 world manifest stores landmark archetypes, room/floor/stair counts, Forest lake crossings, protected mountain water records, mountain interior and decoration measurements, valleys, bridges, highland style and attachment state, surviving transition seams, mine sections, and validation records. The playtest harness verifies that this metadata survives generation, reload, save, and a second reload.
-
-## Build
-
-Run from `richer-biomes`:
+Build and install the package with:
 
 ```bash
 ./scripts/build-mod.sh
 ```
 
-The canonical build writes `.playtest/build-save/Mods/RicherBiomes.tmod`, installs the same bytes into `${TML_SAVE_DIRECTORY:-$HOME/.local/share/Terraria/tModLoader}/Mods/RicherBiomes.tmod`, and fails if the two packages differ. A running client does not load changed package bytes automatically; reload mods or restart tModLoader.
+The script places identical package bytes at:
 
-## Generate a playtest world
+- `.playtest/build-save/Mods/RicherBiomes.tmod`
+- `${TML_SAVE_DIRECTORY:-$HOME/.local/share/Terraria/tModLoader}/Mods/RicherBiomes.tmod`
 
-Choose a mode, size, and unique seed:
+Reload mods or restart tModLoader after installing a new build.
+
+## Install as a mod source
+
+To expose this checkout in tModLoader's **Develop Mods** screen, run:
 
 ```bash
-./scripts/generate-playtest-world.sh --classic --size small --seed Majesty-Matrix-Small-001
-./scripts/generate-playtest-world.sh --journey --size medium --seed Majesty-Matrix-Medium-001
-./scripts/generate-playtest-world.sh --classic --size large --seed Majesty-Matrix-Large-001
+./scripts/install-mod-source.sh
 ```
 
-The harness builds and installs the mod, gives the dedicated server a pseudo-terminal, monitors the first world-generation exception, requires the strict validation report, reloads the `.wld` and `.twld`, saves them, and reloads again to verify manifest persistence. It preserves logs under `.playtest/Logs` and refuses to overwrite an existing world.
+It creates `${TML_SAVE_DIRECTORY:-$HOME/.local/share/Terraria/tModLoader}/ModSources/RicherBiomes` as a symbolic link to this directory. Normal builds verify that link automatically and refuse to overwrite an unrelated path.
 
-Run the full size/mode matrix with:
+## Verify world generation
+
+Generate a deterministic playtest world by choosing a mode, size, and unique seed:
+
+```bash
+./scripts/generate-playtest-world.sh --classic --size small --seed Majesty-Small-001
+./scripts/generate-playtest-world.sh --journey --size medium --seed Majesty-Medium-001
+./scripts/generate-playtest-world.sh --classic --size large --seed Majesty-Large-001
+```
+
+The harness builds and installs the mod, runs tModLoader in a pseudo-terminal, requires strict validation, reloads and saves the world, and verifies the saved generation manifest after another reload. It preserves diagnostic logs under `.playtest/Logs` and refuses to overwrite an existing world.
+
+Run the complete size and difficulty matrix with:
 
 ```bash
 ./scripts/validate-worldgen-matrix.sh
 ```
 
-The matrix uses a new temporary save directory and prints its location before generation.
-
-## Install a generated world
-
-Use the same mode, size, and seed used for generation:
+Install a generated world into the regular tModLoader save with the same mode, size, and seed:
 
 ```bash
-./scripts/install-playtest.sh --classic --size large --seed Majesty-Matrix-Large-001
+./scripts/install-playtest.sh --classic --size large --seed Majesty-Large-001
 ```
 
-The installer copies the selected world and mod into the regular tModLoader save folders. It does not alter the enabled-mod list or overwrite an existing world.
+## Design and implementation notes
 
-See [MOD_DESIGN.md](MOD_DESIGN.md) for implementation ownership, [WORLDGEN_IDEAS.md](WORLDGEN_IDEAS.md) for the broader design catalog, [WORLDGEN_FUTURE_WORK.md](WORLDGEN_FUTURE_WORK.md) for implementation coverage and gaps, and [WORLDGEN_RESEARCH.md](WORLDGEN_RESEARCH.md) for the reference-world audit and research record.
+- [MOD_DESIGN.md](MOD_DESIGN.md) owns the current generation grammar, pass ordering, compatibility boundary, and validation contract.
+- [WORLDGEN_IDEAS.md](WORLDGEN_IDEAS.md) is the broader design catalog.
+- [WORLDGEN_FUTURE_WORK.md](WORLDGEN_FUTURE_WORK.md) maps implemented, partial, and untouched world-generation areas.
+- [WORLDGEN_RESEARCH.md](WORLDGEN_RESEARCH.md) records reference-world research and verification results.
+- [release-assets/README.md](release-assets/README.md) records the release artwork source and reproducible icon brief.

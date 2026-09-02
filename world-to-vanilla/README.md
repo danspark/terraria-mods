@@ -1,6 +1,8 @@
-# World to Vanilla
+# Export Worlds to Vanilla
 
-World to Vanilla adds a folder button to each row in tModLoader's world selection menu. Click it to copy that world's `.wld` file into vanilla Terraria's local `Worlds` folder.
+One click. No file hunting.
+
+Export Worlds to Vanilla adds a folder button to each row in tModLoader's world selection menu. Click it to copy that world's `.wld` file into vanilla Terraria's local `Worlds` folder.
 
 The copied `.wld` contains the world state that Terraria can read. tModLoader keeps mod-owned data in a separate `.twld` file, so modded tiles, items, and other mod data are not available in vanilla Terraria.
 

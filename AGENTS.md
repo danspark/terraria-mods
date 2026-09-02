@@ -19,6 +19,12 @@
 - Before reporting world-generation work as complete, compare the build artifact and the installed package with `cmp` or `sha256sum`. Do not leave a previously loaded or intermediate package in the local `Mods` directory.
 - Updating the file does not reload a running tModLoader client. State that a mod reload or game restart is required, and do not claim that the running client loaded the new version until `tModLoader-Logs/client.log` records the expected Richer Biomes version.
 
+## Richer Biomes source installation
+
+- Keep the development source at `${TML_SAVE_DIRECTORY:-$HOME/.local/share/Terraria/tModLoader}/ModSources/RicherBiomes` as a symbolic link to this repository's `richer-biomes` directory. This places Richer Biomes beside locally created mods such as `testmod` without maintaining a second, stale source copy.
+- Use `richer-biomes/scripts/install-mod-source.sh` to create or verify the link. The canonical build script runs it automatically.
+- Never replace an unrelated file, directory, or link already named `RicherBiomes` in `ModSources`. Stop and report the conflict instead.
+
 ## Richer Biomes organic boundaries
 
 - Do not generate a custom biome, mountain, natural wall field, terrain layer, structure-to-ground join, or material transition from a constant row, constant column, rectangular fill edge, or independent per-tile randomness. Use deterministic correlated variation at more than one scale, with enough amplitude to remain visible on the map.
