@@ -11,6 +11,7 @@ internal static class TerraceGenerator
 {
 	private const int SearchStep = 24;
 	private const int CandidateBudget = 9;
+	private const int CoastalLandmarkSetback = 500;
 
 	public static int MinimumRequiredCount => Math.Clamp(Main.maxTilesX / 2400 + 1, 2, 4);
 
@@ -211,7 +212,9 @@ internal static class TerraceGenerator
 			int[] numerators = [1, 2, 3];
 			foreach (int numerator in numerators) {
 				int centerX = region.Left + region.Width * numerator / 4;
-				if (Math.Abs(centerX - plan.SpawnX) < 180
+				if (centerX < plan.CoastMargin + CoastalLandmarkSetback
+					|| centerX > Main.maxTilesX - plan.CoastMargin - CoastalLandmarkSetback - 1
+					|| Math.Abs(centerX - plan.SpawnX) < 180
 					|| manifest.Terraces.Any(terrace => Math.Abs(terrace.Area.Center.X - centerX) < 220)) {
 					continue;
 				}

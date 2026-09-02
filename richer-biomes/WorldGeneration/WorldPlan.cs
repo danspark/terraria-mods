@@ -51,6 +51,13 @@ internal enum MountainInteriorStyle
 	OpenFault
 }
 
+internal enum MountainHeightStyle
+{
+	Highland,
+	Alpine,
+	SkyPiercing
+}
+
 internal enum SkyHighlandStyle
 {
 	TerracedMeadow,
@@ -99,6 +106,7 @@ internal readonly record struct MountainRangePlan(
 	int SaddleY,
 	int RightPeakX,
 	int RightPeakY,
+	MountainHeightStyle HeightStyle,
 	ValleyTheme ValleyTheme,
 	BridgeStyle BridgeStyle,
 	MountainInteriorStyle InteriorStyle,
@@ -120,14 +128,20 @@ internal readonly record struct MineSection(
 	int Id,
 	MineSectionKind Kind,
 	Rectangle Area,
-	Point Center);
+	Point Center,
+	BiomeKind Theme);
 
 internal sealed record SurfaceMinePlan(
 	int FeatureSeed,
 	Rectangle Area,
 	Point Entrance,
 	IReadOnlyList<MineSection> Sections,
-	IReadOnlyList<MineRoute> Routes);
+	IReadOnlyList<MineRoute> Routes,
+	IReadOnlyDictionary<Point, BiomeKind> RouteThemes)
+{
+	public BiomeKind ThemeAt(Point point) =>
+		RouteThemes.TryGetValue(point, out BiomeKind theme) ? theme : BiomeKind.Cavern;
+}
 
 internal sealed record WorldPlan(
 	int GenerationSeed,
@@ -211,7 +225,7 @@ internal readonly record struct SurfaceMineRecord(
 
 internal sealed class GenerationManifest
 {
-	public const int CurrentVersion = 4;
+	public const int CurrentVersion = 5;
 
 	public int GenerationSeed { get; init; }
 	public List<BuildTerrace> Terraces { get; } = [];

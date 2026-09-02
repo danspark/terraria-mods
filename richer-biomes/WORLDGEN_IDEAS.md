@@ -4,14 +4,14 @@ Richer Biomes reshapes Terraria's existing biomes without replacing their materi
 
 This document defines the intended player experience. It records design rules and candidate terrain families, not an implementation. Ideas marked as experiments need prototypes before they become requirements.
 
-## Implemented majestic-world foundation in 0.3.0
+## Implemented majestic-world foundation in 0.3.1
 
 The first complete implementation now covers the strongest ideas in this brief:
 
-- ground-connected twin-peak mountains enter Space and select from four two-sided interior cave grammars with wide chambers, summit climbs, pots, rubble, vines, cloud belts, themed saddle valleys, and suspension, arch, or rail bridges;
+- ground-connected twin-peak mountains vary between Highland, Alpine, and Sky-piercing families, inherit the biome beneath each column, and select from four two-sided interior cave grammars with wide chambers, open-background pockets, suspended natural ledges, vine curtains, summit climbs, pots, rubble, themed saddle valleys, and suspension, arch, or rail bridges;
 - floating islands are replaced by 280–440 tile-wide Terraced Meadow, Cloud Basin, or Broken Archipelago masses with surface, interior, and underside routes, satellites, cloud keels, and optional lakes; at most one may touch a mountain, and detached placement is normal;
-- every vanilla biome category receives a large, distinct, multi-room, walled, lit, and furnished exploration landmark, including separate structures at both oceans; open arches, unsafe walls, and no authored doors keep them invalid as NPC housing;
-- every world receives a visible surface mine with an eleven-edge, looped and branching rail graph into deep Caverns plus working, mountain, flooded, collapsed, and sealed world-evil districts;
+- every vanilla biome category receives a connected, multi-room exploration landmark with two-tile structural posts, filled and sloped gables, diagonal platform stairs, themed vanilla furniture, strict interior wall fields, and separate structures at both oceans; open arches, unsafe walls, and no authored doors keep them invalid as NPC housing;
+- every world receives a visible surface mine with an eleven-edge, looped and branching rail graph, variably cavernous excavation, and routes into deep Caverns plus working, mountain, flooded, collapsed, and sealed world-evil districts;
 - adjacent surface biomes receive wide, depth-varying material seams instead of vertical palette lines, with final visibility checks after feature ownership;
 - authored walkways use thick solid floors for structure and bounded platform bays for stairs, landings, and downward traversal; bridges add custom wall or truss backgrounds and actuated mountain portals;
 - floating-highland materials form broad Cloud, Rain Cloud, and Sunplate clusters without ordinary Stone or repeated horizontal bands, while organic basins and quarantine shells use bounded edge jitter;

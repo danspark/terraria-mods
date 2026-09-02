@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Terraria;
 using Terraria.ID;
 
@@ -22,9 +23,12 @@ internal static class BiomeClassifier
 	}
 
 	public static bool TryFindGroundSupport(int x, out int surfaceY)
+		=> TryFindGroundSupport(x, minimumY: 45, out surfaceY);
+
+	public static bool TryFindGroundSupport(int x, int minimumY, out int surfaceY)
 	{
 		int bottom = System.Math.Min(Main.maxTilesY - 45, (int)Main.worldSurface + 240);
-		for (int y = 45; y < bottom; y++) {
+		for (int y = System.Math.Max(45, minimumY); y < bottom; y++) {
 			Tile tile = Main.tile[x, y];
 			if (tile.HasUnactuatedTile && Main.tileSolid[tile.TileType]
 				&& !Main.tileSolidTop[tile.TileType] && IsNaturalSupport(tile.TileType)
@@ -71,6 +75,39 @@ internal static class BiomeClassifier
 			return BiomeKind.Cavern;
 		}
 		return BiomeKind.Forest;
+	}
+
+	public static BiomeKind ClassifyAreaTheme(int centerX, int centerY)
+	{
+		Dictionary<BiomeKind, int> scores = [];
+		for (int x = centerX - 24; x <= centerX + 24; x += 4) {
+			for (int y = centerY - 18; y <= centerY + 18; y += 3) {
+				if (!WorldGen.InWorld(x, y, 12)) {
+					continue;
+				}
+				Tile tile = Main.tile[x, y];
+				if (!tile.HasUnactuatedTile || !IsNaturalSupport(tile.TileType)) {
+					continue;
+				}
+				BiomeKind biome = ClassifySupport(tile.TileType, x, y);
+				if (biome is BiomeKind.Sky or BiomeKind.Ocean) {
+					continue;
+				}
+				int weight = biome is BiomeKind.Forest or BiomeKind.Cavern ? 1 : 4;
+				scores[biome] = scores.GetValueOrDefault(biome) + weight;
+			}
+		}
+
+		BiomeKind fallback = centerY > Main.rockLayer ? BiomeKind.Cavern : BiomeKind.Forest;
+		BiomeKind best = fallback;
+		int bestScore = -1;
+		foreach ((BiomeKind biome, int score) in scores) {
+			if (score > bestScore || score == bestScore && biome < best) {
+				best = biome;
+				bestScore = score;
+			}
+		}
+		return best;
 	}
 
 	private static bool IsNaturalSupport(ushort type) =>

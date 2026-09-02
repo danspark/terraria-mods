@@ -48,9 +48,9 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		InsertAfter(tasks, "Richer Biomes: reopen regional cave routes", new RicherBiomesPass("Richer Biomes: reopen mountain crossings", 18d, RepairMountainCrossings), ref totalWeight);
 		InsertAfter(tasks, "Richer Biomes: reopen mountain crossings", new RicherBiomesPass("Richer Biomes: blend surface biome seams", 18d, BlendBiomeTransitions), ref totalWeight);
 		InsertAfter(tasks, "Shimmer", new RicherBiomesPass("Richer Biomes: reserve building terraces", 8d, ReserveTerraces), ref totalWeight);
-		InsertAfter(tasks, "Richer Biomes: reserve building terraces", new RicherBiomesPass("Richer Biomes: reserve surface mine", 8d, ReserveSurfaceMine), ref totalWeight);
 		InsertAfter(tasks, "Hives", new RicherBiomesPass("Richer Biomes: form mountain valleys", 18d, BuildMountainValleys), ref totalWeight);
-		InsertAfter(tasks, "Richer Biomes: form mountain valleys", new RicherBiomesPass("Richer Biomes: excavate surface mine", 42d, ExcavateSurfaceMine), ref totalWeight);
+		InsertAfter(tasks, "Richer Biomes: form mountain valleys", new RicherBiomesPass("Richer Biomes: reserve surface mine", 8d, ReserveSurfaceMine), ref totalWeight);
+		InsertAfter(tasks, "Richer Biomes: reserve surface mine", new RicherBiomesPass("Richer Biomes: excavate surface mine", 42d, ExcavateSurfaceMine), ref totalWeight);
 		InsertAfter(tasks, "Smooth World", new RicherBiomesPass("Richer Biomes: stabilize routes and terraces", 26d, StabilizeRoutesAndTerraces), ref totalWeight);
 		InsertAfter(tasks, "Micro Biomes", new RicherBiomesPass("Richer Biomes: stabilize summit buttresses", 22d, StabilizeMountainSummits), ref totalWeight);
 		InsertAfter(tasks, "Richer Biomes: stabilize summit buttresses", new RicherBiomesPass("Richer Biomes: reopen late regional routes", 18d, RepairLateCaves), ref totalWeight);
@@ -179,11 +179,12 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		}
 		foreach (TagCompound saved in tag.GetList<TagCompound>("mineSections")) {
 			Microsoft.Xna.Framework.Rectangle area = DeserializeRectangle(saved);
-			manifest.MineSections.Add(new MineSection(
-				saved.GetInt("id"),
-				(MineSectionKind)saved.GetInt("kind"),
-				area,
-				new Microsoft.Xna.Framework.Point(saved.GetInt("centerX"), saved.GetInt("centerY"))));
+				manifest.MineSections.Add(new MineSection(
+					saved.GetInt("id"),
+					(MineSectionKind)saved.GetInt("kind"),
+					area,
+					new Microsoft.Xna.Framework.Point(saved.GetInt("centerX"), saved.GetInt("centerY")),
+					saved.ContainsKey("theme") ? (BiomeKind)saved.GetInt("theme") : BiomeKind.Cavern));
 		}
 		if (tag.ContainsKey("surfaceMine")) {
 			TagCompound saved = tag.GetCompound("surfaceMine");
@@ -222,6 +223,11 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		progress.Message = "Planning the world-scale landform and route network";
 		_plan = WorldPlanner.Create();
 		_manifest = new GenerationManifest { GenerationSeed = _plan.GenerationSeed };
+		Mod.Logger.Info(
+			"Richer Biomes mountain plan: "
+			+ string.Join(", ", _plan.Mountains.Select(mountain =>
+				$"region {mountain.RegionId}={mountain.HeightStyle} "
+				+ $"peaks {mountain.LeftPeakY}/{mountain.RightPeakY} interior {mountain.InteriorStyle}")));
 	}
 
 	private void ShapeTerrain(GenerationProgress progress, GameConfiguration _)
@@ -347,7 +353,7 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 
 	private void StabilizeMountainSummits(GenerationProgress progress, GameConfiguration _)
 	{
-		progress.Message = "Stabilizing ground-connected Space-height summit buttresses";
+		progress.Message = "Stabilizing ground-connected mountain summit buttresses";
 		LandformGenerator.StabilizeSummits(RequirePlan(), progress);
 	}
 
@@ -382,21 +388,31 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		// first sky repair. Reapply the three-tile keel at the final ownership boundary
 		// so a highland remains one biome-scale body instead of isolated shelves.
 		SkyHighlandGenerator.RepairKeels(RequirePlan());
+		SkyHighlandGenerator.RepairVerticalRoutes(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RepairBridgePortals(RequirePlan());
+		LandformGenerator.FinishMountainMaterials(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan());
+		MountainBiomeGenerator.RepairEntrances(RequirePlan(), RequireManifest());
 		RegionalCaveGenerator.RepairRequiredRoutes(
 			RequirePlan(),
 			progress,
 			respectStructureMap: false,
 			naturalTilesOnly: true);
+		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
 		TerraceGenerator.RepairReserved(RequireManifest());
 		BiomeTransitionGenerator.Repair(RequirePlan(), RequireManifest());
 		int occludedTransitions = BiomeTransitionGenerator.RetainObservable(RequirePlan(), RequireManifest());
 		if (occludedTransitions > 0) {
 			Mod.Logger.Info($"Richer Biomes omitted {occludedTransitions} surface seams occluded by final feature ownership.");
 		}
+		MountainBiomeGenerator.FinishInteriorWalls(RequirePlan(), RequireManifest());
 		LandmarkGenerator.RepairTraversal(RequireManifest());
-		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
+		int lateOccludedTransitions = BiomeTransitionGenerator.RetainObservable(RequirePlan(), RequireManifest());
+		if (lateOccludedTransitions > 0) {
+			Mod.Logger.Info($"Richer Biomes omitted {lateOccludedTransitions} surface seams after final traversal repair.");
+		}
+		MountainBiomeGenerator.RepairInteriorDecorations(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RefillValleyLiquids(RequireManifest());
 		MountainBiomeGenerator.RecordFinalState(RequirePlan(), RequireManifest());
 		progress.Set(1d);
 	}
@@ -503,7 +519,8 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		["id"] = section.Id,
 		["kind"] = (int)section.Kind,
 		["centerX"] = section.Center.X,
-		["centerY"] = section.Center.Y
+		["centerY"] = section.Center.Y,
+		["theme"] = (int)section.Theme
 	});
 
 	private static TagCompound SerializeSurfaceMine(SurfaceMineRecord mine) => WithRectangle(mine.Area, new TagCompound {

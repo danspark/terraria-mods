@@ -91,6 +91,31 @@ internal static class TileEditor
 		return Main.tile[x, y].HasTile && Main.tile[x, y].TileType == TileID.Platforms;
 	}
 
+	public static bool TryPlaceSlopedPlatform(int x, int y, int style, SlopeType slope)
+	{
+		if (!TryPlacePlatformForced(x, y, style)) {
+			return false;
+		}
+
+		Tile tile = Main.tile[x, y];
+		tile.Slope = slope;
+		tile.IsHalfBlock = false;
+		WorldGen.SquareTileFrame(x, y, resetFrame: true);
+		return tile.HasTile && tile.TileType == TileID.Platforms && tile.Slope == slope;
+	}
+
+	public static void SetSlopedTerrain(int x, int y, ushort tileType, SlopeType slope)
+	{
+		SetTerrain(x, y, tileType);
+		if (!WorldGen.InWorld(x, y, 3)) {
+			return;
+		}
+
+		Tile tile = Main.tile[x, y];
+		tile.Slope = slope;
+		tile.IsHalfBlock = false;
+	}
+
 	public static bool TryPlaceTorch(int x, int y, int style = 0)
 	{
 		if (!WorldGen.InWorld(x, y, 3) || Main.tile[x, y].HasTile || Main.tile[x, y].LiquidAmount > 0) {
@@ -195,7 +220,7 @@ internal static class TileEditor
 		for (int x = area.Left; x < area.Right; x++) {
 			for (int y = area.Top; y < area.Bottom; y++) {
 				Tile tile = Main.tile[x, y];
-				if (IsProgressionTile(tile)
+				if (IsProgressionTile(tile) || IsTempleOrDungeonCell(tile)
 					|| tile.RedWire || tile.BlueWire || tile.GreenWire || tile.YellowWire
 					|| tile.HasActuator) {
 					return false;
@@ -206,6 +231,32 @@ internal static class TileEditor
 		foreach (Chest chest in Main.chest) {
 			if (chest is not null && area.Contains(chest.x, chest.y)) {
 				return false;
+			}
+		}
+		return true;
+	}
+
+	public static bool IsTempleOrDungeonCell(Tile tile) =>
+		tile.HasTile && tile.TileType is TileID.BlueDungeonBrick or TileID.GreenDungeonBrick or TileID.PinkDungeonBrick
+			or TileID.CrackedBlueDungeonBrick or TileID.CrackedGreenDungeonBrick or TileID.CrackedPinkDungeonBrick
+			or TileID.LihzahrdBrick or TileID.LihzahrdAltar
+		|| tile.WallType is WallID.BlueDungeonUnsafe or WallID.BlueDungeonSlabUnsafe or WallID.BlueDungeonTileUnsafe
+			or WallID.GreenDungeonUnsafe or WallID.GreenDungeonSlabUnsafe or WallID.GreenDungeonTileUnsafe
+			or WallID.PinkDungeonUnsafe or WallID.PinkDungeonSlabUnsafe or WallID.PinkDungeonTileUnsafe
+			or WallID.LihzahrdBrickUnsafe;
+
+	public static bool IsClearOfTempleAndDungeon(Rectangle area, int margin)
+	{
+		area.Inflate(margin, margin);
+		if (!WorldGen.InWorld(area.Left, area.Top, 12) || !WorldGen.InWorld(area.Right - 1, area.Bottom - 1, 12)) {
+			return false;
+		}
+
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = area.Top; y < area.Bottom; y++) {
+				if (IsTempleOrDungeonCell(Main.tile[x, y])) {
+					return false;
+				}
 			}
 		}
 		return true;

@@ -1,6 +1,6 @@
 # World-generation research record
 
-This record separates observations, design conclusions, implementation targets, and external references. It was prepared for the 0.3.0 majestic-world rewrite on 2026-08-31.
+This record separates observations, design conclusions, implementation targets, and external references. It began with the 0.3.0 majestic-world rewrite on 2026-08-31 and includes the 0.3.1 styling and block-state audit.
 
 ## Reference-world audit
 
@@ -45,9 +45,47 @@ The 2026-09-01 follow-up generated three small worlds plus medium and large worl
 - an upper rail branch could place its Living Wood support inside a lower branch's headroom, so supports now consult the complete planned graph before placement;
 - terraces, valleys, landmarks, and mine districts could hide an early biome seam, so only boundaries still observable in the finished world remain in the manifest;
 - measuring a transition at the nearest center crossing confused incidental material flecks with the authored boundary, so validation now samples the deterministic boundary at two-tile depth intervals;
-- a highland touching every mountain made the relationship look mandatory, so attachment is capped at one and is planned only one third of the time.
+- a highland touching every mountain made the relationship look mandatory, so attachment was first capped at one and planned only one third of the time. The later altitude audit reduced this to one fifth and excluded Highland ranges.
 
 The visual result established several useful scale rules. Mountain cave quality needs both total wall-backed air and horizontal distribution; raw air count alone can hide one large void. Sky biomes need style-level changes to satellite count, lake use, and route layout, not only a different outline. Landmark clearance is best expressed as a measured open arch rather than a door-placement result. Rail clearance must be owned by the union of the graph because branches can cross at different elevations.
+
+## Vanilla 1.4.4.9 styling and block-state audit
+
+The 0.3.1 audit decompiled the installed Terraria 1.4.4.9 assembly shipped with tModLoader 2026.07.3.0. The inspected owners were `Terraria.GameContent.Biomes.CaveHouse.HouseBuilder`, `WorldGen.IslandHouse`, and `WorldGen.HellFort`. This was an implementation study of the exact target binary; no source was copied.
+
+Vanilla cave houses establish a useful construction order: clear rooms, reserve the structure, place stairs and entrances, add platforms and beams, place priority objects, fill furniture, age the structure, add chests, then apply biome objects. The order matters because framing and later mutations can invalidate earlier visual state.
+
+The reusable findings are:
+
+- vanilla stair flights are diagonal individual platforms with alternating slope state and a four-platform landing, rather than horizontal platform strips;
+- Snow, Desert, Jungle, and Mushroom cabins choose coordinated platform, table, chair, work-bench, and bookcase styles instead of changing only the shell material;
+- a multitile object exists only when the placement API succeeds and its final tiles survive read-back; manually assigning frame coordinates does not establish a valid furniture object;
+- solid masks are authored before slopes and framing, and slope state is verified after the final owner runs;
+- background walls belong to room interiors and stop below the roof envelope;
+- bridge clearance is a final passability and actuator-state contract across the whole entry corridor, not a count of actuated tiles near a portal;
+- mountain walls read naturally when a continuous substrate is varied by coordinate-warped fields; cell grids and independent rectangular accents expose generator boundaries;
+- a mountain needs one host-biome material owner per column. Sampling inside the artificial body merely repeats its temporary Dirt and Stone; stable samples must come from beneath the body, and final repainting must preserve authored transition bands.
+
+These findings define current generation contracts in `MOD_DESIGN.md`; this section owns the underlying target-version research.
+
+## Roof, altitude, and cavern-envelope audit
+
+The 2026-09-01 screenshot follow-up compared four in-game crops with the generated tile state, then generated independent small, medium, and large worlds. It found six failures that earlier feature counts could not express:
+
+- the left and right gable slopes used Terraria's solid-corner names as if they described visual direction, reversing both roof faces;
+- the sloped roof line sat above a flat ceiling without a filled gable, exposing sky through a sawtooth gap;
+- Forest structures used Living Wood, which reads as a tree structure rather than an ordinary wooden forest building;
+- mine routes owned the same seven-tile excavation envelope at every rail cell, so an interconnected graph still looked like a uniform utility tube;
+- every planned mountain used one Space-height formula and every late summit repair forced Snow and Ice, erasing altitude and host-biome identity;
+- mountain chambers had wall-backed air and scattered decorations, but lacked deliberate open-background districts, suspended terrain, and clustered vine silhouettes.
+
+The Terraria slope names describe the solid half of a tile. A roof that rises from left to center therefore uses `SlopeDownRight`; the mirrored face uses `SlopeDownLeft`. The durable roof contract is physical rather than numeric: correctly oriented slope state, a second structural course, a filled background gable below the roof, no wall cells above it, and enough headroom through the room plan.
+
+Altitude is now a family choice rather than a universal target. Highland and Alpine plans are clamped below Space after all peak asymmetry is applied; Sky-piercing plans retain the dangerous Space route and are the only mountains that receive cloud belts. Adjacent ranges choose different altitude families. Floating-highland attachment is evaluated separately, occurs in one fifth of plans at most, and excludes Highland ranges.
+
+Mine cavern variation uses a correlated 29-cell ceiling field. Interpolating neighboring macro samples creates long rises and falls; occasional sinusoidal swells create larger chambers without changing rail grade. The final rail owner restores only the six-tile minimum, so it cannot erase the extra air. Validation independently measures the finished upward clearance distribution instead of reusing the generation profile.
+
+For mountain material, stable deep support is sampled below the temporary landform. A final natural-tile-only pass repaints the upper body and restores slope and half-block state. Feature bounds and transition bands retain ownership. Interior inclusions use the same palette, keep distance from planned routes, and provide material anchors for real Forest, Jungle, Corrupt, Crimson, Mushroom, or Ash vine curtains where those types fit.
 
 ## Design synthesis
 
@@ -110,12 +148,13 @@ Build the macro shape first, then add bounded jitter. Jitter should disturb a co
 
 All world sizes also require:
 
-- at least one ground-connected mountain with 32 Space-band columns;
-- two visible foothill entrances, 24 cloud-belt tiles, broad wall-backed caves, wide cavities, pots, vines, and climbing aids per mountain;
+- every mountain to retain its planned Highland, Alpine, or Sky-piercing surface band; Space columns and cloud belts are required only for Sky-piercing plans;
+- two visible foothill entrances, majority host-biome skin ownership, broad wall-backed caves, open-background pockets, suspended natural ledges, at least three vine curtains, wide cavities, pots, and climbing aids per mountain;
 - one valley and one bridge per mountain;
 - eleven furnished biome landmarks, including both oceans, with open side approaches, no authored doors, and failed NPC-housing queries;
 - at least two surviving organic transition seams on small worlds and three on medium or large worlds;
 - all eleven required mine edges and every authored rail cell connected to the surface entrance;
+- six tiles of minimum mine headroom, at least ten percent of rail cells with nine-tile headroom, and at least three tiles of measured ceiling-height range;
 - at least three degree-three mine junctions, two independent rail cycles, and four horizontal rail edges;
 - three-tile bridge decks with platform drop bays, custom background panels, clear headroom, and at least sixteen actuated portal cells;
 - at least two wall types, three furnishing families, framed windows, and a mostly two-layer foundation in every landmark;
@@ -140,7 +179,7 @@ All world sizes also require:
 - [Calamity Mod Public](https://github.com/CalamityTeam/CalamityModPublic) was used only as a high-level example of multi-biome worldgen organization. Its [license](https://github.com/CalamityTeam/CalamityModPublic/blob/1.4.4/LICENSE.md) is proprietary/source-available. No code or assets were copied.
 - Repositories without an explicit compatible license are idea-only references. Public visibility is not permission to copy.
 
-Richer Biomes 0.3.0 uses its own algorithms and vanilla Terraria tile IDs. External sources informed design and API use, not copied implementation.
+Richer Biomes uses its own algorithms and vanilla Terraria tile IDs. External sources and target-binary inspection informed design and API use, not copied implementation.
 
 ## 0.3.0 verification record
 
@@ -166,6 +205,45 @@ An independent tModLoader inspection loaded the final large `.wld`, scanned its 
 - the expected manifest and validation summary after the reload/save/reload cycle.
 
 The final build artifact and the package installed in the normal tModLoader Mods directory were compared byte-for-byte after the last build. The release handoff records the resulting SHA-256 outside the packaged research file so the digest does not change itself.
+
+## Pre-variance 0.3.1 styling verification record
+
+This historical run records the styling package before the altitude-family, roof, host-material, and mine-envelope follow-up. It is useful for comparing the defects that prompted the variance audit, but its universal Space-height mountain behavior is no longer the current contract. The package was tested on 2026-09-01 with tModLoader 2026.07.3.0. Classic small, Journey medium, and Classic large worlds each completed strict generation validation, first reload, save, and second reload.
+
+The final large-world inspection recorded:
+
+- two Space-height mountains with 79,746 and 56,228 wall-backed cave-air cells and wide cavities across 650 and 514 columns;
+- coherent snow-and-ice caps with no sand-family tiles in either summit envelope;
+- 192 and 140 pot tiles, 327 and 197 vine or vine-rope tiles, and 129 and 1,072 climbing-aid tiles across the mountain ranges;
+- two structural bridges whose complete planned endpoint corridors contained no solid blockers;
+- one attached and one detached highland, preserving attachment as an occurrence rather than a requirement;
+- eleven connected landmarks with three to five rooms, 18–44 retained furniture tiles, 13–26 platform tiles, sloped gable roofs, diagonal stairs, no doors, no exterior wall leakage, and failed housing checks;
+- a 2,946-tile entrance-connected mine network whose rebuilt work displays retained real furniture objects after final rail ownership;
+- organic mountain wall contours whose longest exact horizontal or vertical boundary run remained below the validator's 48-tile limit.
+
+Independent tile-grid crops were reviewed for every mountain, bridge, and representative landmark after validation. The map renderer exposes structure and slope state rather than Terraria's lit in-game textures, making it useful for detecting clearance, wall ownership, repeated geometry, and invalid tile state.
+
+## 0.3.1 variance verification record
+
+The altitude, host-material, roof, and cavern-envelope follow-up was tested on 2026-09-01 with tModLoader 2026.07.3.0. Each world completed strict generation validation, first reload, save, and second reload with manifest version 4 intact.
+
+| Mode and size | Seed | Evil | Regions | Mountains | Mine entrance component | Generation time |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| Classic small | `Majesty-Variance-Small-023` | Corruption | 7 | 1 | 2,046 tiles | 16.7 s |
+| Journey medium | `Majesty-Variance-Medium-031` | Crimson | 11 | 2 | 2,617 tiles | 29.6 s |
+| Classic large | `Majesty-Variance-Large-047` | Crimson | 13 | 2 | 2,918 tiles | 47.6 s |
+
+These runs exercised both one- and two-range plans, all three world sizes, both world evils across the current audit set, one- and two-highland layouts, final host-material repair, liquid refill, and correlated mine-ceiling validation. Failed intermediate runs were retained long enough to diagnose the earliest generation exception; no failed world artifact was accepted.
+
+The final uninterrupted release matrix used the repository's fixed seeds and the complete strengthened validator:
+
+| Mode and size | Seed | Mountain altitude families | Mine entrance component |
+| --- | --- | --- | ---: |
+| Classic small | `Majesty-Matrix-Small-001` | Alpine | 1,969 tiles |
+| Journey medium | `Majesty-Matrix-Medium-001` | Sky-piercing; Alpine | 2,442 tiles |
+| Classic large | `Majesty-Matrix-Large-001` | Sky-piercing; Highland | 2,946 tiles |
+
+All three rows generated, validated, reloaded, saved, and reloaded again. The installed package and canonical build artifact compared byte-for-byte after the final build; the release handoff reports the digest outside this packaged file.
 
 ## Future research queue
 

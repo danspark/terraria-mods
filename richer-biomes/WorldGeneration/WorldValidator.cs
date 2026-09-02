@@ -4,6 +4,7 @@ using System.Linq;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
+using Terraria.WorldBuilding;
 
 namespace RicherBiomes.WorldGeneration;
 
@@ -79,9 +80,10 @@ internal static class WorldValidator
 		int validMountains = 0;
 		int spaceThreshold = (int)Math.Floor(Main.worldSurface * 0.35d);
 		foreach (WorldRegion region in plan.Regions.Where(region => region.Landform == LandformKind.Mountain)) {
+			MountainRangePlan planned = plan.Mountains.First(mountain => mountain.RegionId == region.Id);
 			int peakY = int.MaxValue;
 			int summitBandWidth = 0;
-			int[] groundedSurface = MeasureGroundedMountainSurface(region);
+			int[] groundedSurface = MeasureGroundedMountainSurface(plan, region);
 			for (int x = region.Left; x <= region.Right; x++) {
 				int y = groundedSurface[x - region.Left];
 				if (y != int.MaxValue) {
@@ -99,18 +101,24 @@ internal static class WorldValidator
 					break;
 				}
 			}
-			if (peakY <= spaceThreshold && summitBandWidth >= 32) {
+			int authoredPeak = Math.Min(planned.LeftPeakY, planned.RightPeakY);
+			bool expectedAltitude = Math.Abs(peakY - authoredPeak) <= 38;
+			bool expectedSpaceBand = planned.HeightStyle == MountainHeightStyle.SkyPiercing
+				? peakY <= spaceThreshold && summitBandWidth >= 20
+				: peakY > spaceThreshold - 12 && summitBandWidth < 20;
+			if (expectedAltitude && expectedSpaceBand) {
 				validMountains++;
 			}
 			else {
 				errors.Add(
-					$"mountain region {region.Id} had ground peak y={peakY} and {summitBandWidth} Space-band columns; "
-					+ $"expected y<={spaceThreshold} across at least 32 columns");
+					$"mountain region {region.Id} ({planned.HeightStyle}) had peak y={peakY} "
+					+ $"(planned {authoredPeak}) and {summitBandWidth} Space-band columns");
 			}
 			if (record is MountainRecord final && final.EntranceCount < 2) {
 				errors.Add($"mountain region {region.Id} retained only {final.EntranceCount} visible entrances");
 			}
-			if (record is MountainRecord cloudRecord && cloudRecord.CloudTiles < 24) {
+			if (planned.HeightStyle == MountainHeightStyle.SkyPiercing
+				&& record is MountainRecord cloudRecord && cloudRecord.CloudTiles < 24) {
 				errors.Add($"mountain region {region.Id} retained only {cloudRecord.CloudTiles} cloud-belt tiles");
 			}
 			if (record is not MountainRecord interior) {
@@ -133,77 +141,160 @@ internal static class WorldValidator
 			if (interior.ClimbAidTiles < 18) {
 				errors.Add($"mountain region {region.Id} retained only {interior.ClimbAidTiles} rope or platform tiles");
 			}
+			if (!MountainBiomeGenerator.HasUsableWallClimb(plan, planned, out string wallClimbReason)) {
+				errors.Add($"mountain region {region.Id} lost its wall-only climb section: {wallClimbReason}");
+			}
+			int suspendedNaturalTiles = CountSuspendedNaturalTiles(plan, planned, interior.Area);
+			if (suspendedNaturalTiles < 12) {
+				errors.Add($"mountain region {region.Id} retained only {suspendedNaturalTiles} suspended natural ledge tiles");
+			}
+			int wallVoidCells = CountInteriorWallVoids(plan, interior.Area);
+			if (wallVoidCells < interior.Area.Width / 2) {
+				errors.Add($"mountain region {region.Id} retained only {wallVoidCells} open-background cave cells");
+			}
+			int longVineRuns = CountLongVineRuns(interior.Area);
+			if (longVineRuns < 3) {
+				errors.Add($"mountain region {region.Id} retained only {longVineRuns} distinct vine curtains");
+			}
+			(int matchingMaterial, int sampledMaterial) = MeasureMountainMaterialOwnership(plan, planned);
+			if (sampledMaterial < 20 || matchingMaterial < sampledMaterial * 3 / 5) {
+				errors.Add(
+					$"mountain region {region.Id} follows its underlying biome in only "
+					+ $"{matchingMaterial}/{sampledMaterial} sampled surface columns");
+			}
+			(int horizontalWallSeam, int verticalWallSeam, Point horizontalStart, Point verticalStart) =
+				MeasureNaturalWallSeams(interior.Area, manifest);
+			if (horizontalWallSeam > 48 || verticalWallSeam > 48) {
+				ushort verticalLeftWall = Main.tile[verticalStart.X, verticalStart.Y].WallType;
+				ushort verticalRightWall = Main.tile[verticalStart.X + 1, verticalStart.Y].WallType;
+				errors.Add(
+					$"mountain region {region.Id} retained axis-aligned natural-wall seams "
+					+ $"({horizontalWallSeam} horizontal near {horizontalStart}, "
+					+ $"{verticalWallSeam} vertical near {verticalStart}, walls {verticalLeftWall}/{verticalRightWall})");
+			}
 		}
 
 		if (plan.Mountains.Count > 1 && plan.Mountains.Select(mountain => mountain.InteriorStyle).Distinct().Count() < 2) {
 			errors.Add("all planned mountains use the same interior route style");
 		}
-
-		if (validMountains == 0) {
-			errors.Add("no planned mountain retained a Space-height summit");
+		if (plan.Mountains.Count > 1 && plan.Mountains.Select(mountain => mountain.HeightStyle).Distinct().Count() < 2) {
+			errors.Add("all planned mountains use the same altitude family");
 		}
 		return validMountains;
 	}
 
-	internal static int[] MeasureGroundedMountainSurface(WorldRegion region)
+	private static int CountSuspendedNaturalTiles(WorldPlan plan, MountainRangePlan mountain, Rectangle area)
 	{
-		int top = 40;
-		int bottom = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 75);
-		int width = region.Width;
-		int groundingBandTop = Math.Max(top, (int)Main.worldSurface + 45);
-		int height = bottom - top + 1;
-		bool[] connected = new bool[width * height];
-		Queue<Point> queue = new();
-		for (int x = region.Left; x <= region.Right; x++) {
-			for (int y = groundingBandTop; y <= bottom; y++) {
-				if (!IsMountainGround(x, y)) {
+		int count = 0;
+		for (int x = area.Left + 4; x < area.Right - 4; x++) {
+			for (int y = Math.Max(area.Top + 5, plan.SurfaceAt(x) + 18); y < area.Bottom - 14; y++) {
+				Tile tile = Main.tile[x, y];
+				if (!IsNaturalMountainTile(tile) || TileEditor.IsSolid(x, y - 1)) {
 					continue;
 				}
-				int index = x - region.Left + (y - top) * width;
-				if (!connected[index]) {
-					connected[index] = true;
-					queue.Enqueue(new Point(x, y));
+				bool airBelow = false;
+				for (int depth = 2; depth <= 12; depth++) {
+					if (!TileEditor.IsSolid(x, y + depth)) {
+						airBelow = true;
+						break;
+					}
 				}
+				count += airBelow ? 1 : 0;
 			}
 		}
-		ReadOnlySpan<Point> directions = [new(1, 0), new(-1, 0), new(0, 1), new(0, -1)];
-		while (queue.Count > 0) {
-			Point current = queue.Dequeue();
-			foreach (Point direction in directions) {
-				Point next = current + direction;
-				if (next.X < region.Left || next.X > region.Right || next.Y < top || next.Y > bottom
-					|| !IsMountainEnvelope(next.X, next.Y)) {
-					continue;
-				}
-				int index = next.X - region.Left + (next.Y - top) * width;
-				if (!connected[index]) {
-					connected[index] = true;
-					queue.Enqueue(next);
-				}
-			}
-		}
+		return count;
+	}
 
-		int[] surface = Enumerable.Repeat(int.MaxValue, width).ToArray();
+	private static int CountInteriorWallVoids(WorldPlan plan, Rectangle area)
+	{
+		int count = 0;
+		for (int x = area.Left + 4; x < area.Right - 4; x++) {
+			for (int y = Math.Max(area.Top + 5, plan.SurfaceAt(x) + 16); y < area.Bottom - 5; y++) {
+				Tile tile = Main.tile[x, y];
+				count += !TileEditor.IsSolid(x, y) && tile.WallType == WallID.None ? 1 : 0;
+			}
+		}
+		return count;
+	}
+
+	private static int CountLongVineRuns(Rectangle area)
+	{
+		int runs = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			int run = 0;
+			for (int y = area.Top; y < area.Bottom; y++) {
+				Tile tile = Main.tile[x, y];
+				bool vine = tile.HasTile && tile.TileType is TileID.Vines or TileID.JungleVines
+					or TileID.CrimsonVines or TileID.CorruptVines or TileID.MushroomVines or TileID.AshVines
+					or TileID.VineRope;
+				if (vine) {
+					run++;
+					continue;
+				}
+				runs += run >= 4 ? 1 : 0;
+				run = 0;
+			}
+			runs += run >= 4 ? 1 : 0;
+		}
+		return runs;
+	}
+
+	private static (int Matching, int Sampled) MeasureMountainMaterialOwnership(
+		WorldPlan plan,
+		MountainRangePlan mountain)
+	{
+		WorldRegion region = plan.Regions[mountain.RegionId];
+		int matching = 0;
+		int sampled = 0;
+		for (int x = region.Left + 8; x <= region.Right - 8; x += 3) {
+			int surfaceY = plan.SurfaceAt(x);
+			Tile actual = Main.tile[x, surfaceY];
+			if (!actual.HasUnactuatedTile || Main.tileFrameImportant[actual.TileType] || !IsNaturalMountainTile(actual)) {
+				continue;
+			}
+			ushort expected = LandformGenerator.MountainTerrainAt(x, surfaceY, 0);
+			sampled++;
+			matching += SameMountainMaterialFamily(actual.TileType, expected) ? 1 : 0;
+		}
+		return (matching, sampled);
+	}
+
+	private static bool SameMountainMaterialFamily(ushort left, ushort right) =>
+		MountainMaterialFamily(left) == MountainMaterialFamily(right);
+
+	private static int MountainMaterialFamily(ushort tile) => tile switch {
+		TileID.SnowBlock or TileID.IceBlock or TileID.BreakableIce => 1,
+		TileID.Mud or TileID.JungleGrass or TileID.CorruptJungleGrass or TileID.CrimsonJungleGrass => 2,
+		TileID.Sand or TileID.HardenedSand or TileID.Sandstone or TileID.DesertFossil => 3,
+		TileID.CorruptGrass or TileID.Ebonstone or TileID.Ebonsand
+			or TileID.CorruptHardenedSand or TileID.CorruptSandstone => 4,
+		TileID.CrimsonGrass or TileID.Crimstone or TileID.Crimsand
+			or TileID.CrimsonHardenedSand or TileID.CrimsonSandstone => 5,
+		_ => 0
+	};
+
+	private static bool IsNaturalMountainTile(Tile tile) => tile.HasUnactuatedTile && tile.TileType is
+		TileID.Grass or TileID.Dirt or TileID.Stone or TileID.SnowBlock or TileID.IceBlock or TileID.BreakableIce
+		or TileID.Mud or TileID.JungleGrass or TileID.CorruptJungleGrass or TileID.CrimsonJungleGrass
+		or TileID.Sand or TileID.HardenedSand or TileID.Sandstone or TileID.DesertFossil
+		or TileID.CorruptGrass or TileID.Ebonstone or TileID.Ebonsand or TileID.CorruptHardenedSand or TileID.CorruptSandstone
+		or TileID.CrimsonGrass or TileID.Crimstone or TileID.Crimsand or TileID.CrimsonHardenedSand or TileID.CrimsonSandstone;
+
+	internal static int[] MeasureGroundedMountainSurface(WorldPlan plan, WorldRegion region)
+	{
+		int[] surface = Enumerable.Repeat(int.MaxValue, region.Width).ToArray();
 		for (int x = region.Left; x <= region.Right; x++) {
+			int plannedY = plan.SurfaceAt(x);
+			int top = Math.Max(40, plannedY - 20);
+			int bottom = Math.Min(Main.maxTilesY - 50, plannedY + 32);
 			for (int y = top; y <= bottom; y++) {
-				int index = x - region.Left + (y - top) * width;
-				if (connected[index]) {
+				if (IsMountainGround(x, y)) {
 					surface[x - region.Left] = y;
 					break;
 				}
 			}
 		}
 		return surface;
-	}
-
-	private static bool IsMountainEnvelope(int x, int y)
-	{
-		if (IsMountainGround(x, y)) {
-			return true;
-		}
-		ushort wall = Main.tile[x, y].WallType;
-		return wall is WallID.DirtUnsafe or WallID.Stone or WallID.SnowWallUnsafe or WallID.JungleUnsafe
-			or WallID.Sandstone or WallID.EbonstoneUnsafe or WallID.CrimstoneUnsafe;
 	}
 
 	private static bool IsMountainGround(int x, int y)
@@ -386,6 +477,20 @@ internal static class WorldValidator
 			if (landmark.Area.Width < 55 || landmark.RoomCount < 3) {
 				errors.Add($"{landmark.Biome} landmark is not a multi-room structure ({landmark.Area.Width} tiles, {landmark.RoomCount} rooms)");
 			}
+			if (landmark.Biome == BiomeKind.Ocean) {
+				int waterBelowFoundation = 0;
+				for (int x = landmark.Area.Left; x < landmark.Area.Right; x++) {
+					for (int y = landmark.AnchorY + 4; y <= Math.Min(landmark.Area.Bottom + 5, landmark.AnchorY + 14); y++) {
+						waterBelowFoundation += Main.tile[x, y].LiquidAmount > 0 ? 1 : 0;
+					}
+				}
+				if (landmark.Area.Height > 55 || landmark.AnchorY < Main.worldSurface * 0.55d
+					|| waterBelowFoundation > landmark.Area.Width / 8) {
+					errors.Add(
+						$"Ocean landmark at x={landmark.AnchorX} is not grounded on a dry beach shelf "
+						+ $"(height {landmark.Area.Height}, y={landmark.AnchorY}, water below={waterBelowFoundation})");
+				}
+			}
 			int doorTiles = CountTiles(authoredArea, TileID.ClosedDoor);
 			if (doorTiles > 0) {
 				errors.Add($"{landmark.Biome} landmark retained {doorTiles} closed-door tiles instead of open traversal arches");
@@ -422,6 +527,31 @@ internal static class WorldValidator
 				if (platforms < 10 || platforms > 48) {
 					errors.Add($"{landmark.Biome} landmark has {platforms} platform tiles; expected bounded stairs and drop portals");
 				}
+				int slopedPlatforms = CountSlopedTiles(landmark.Area, TileID.Platforms);
+				if (slopedPlatforms < 6) {
+					errors.Add($"{landmark.Biome} landmark retained only {slopedPlatforms} sloped stair platforms");
+				}
+			}
+			int slopedShellTiles = CountSlopedSolidTiles(landmark.Area);
+			if (slopedShellTiles < 10) {
+				errors.Add($"{landmark.Biome} landmark retained only {slopedShellTiles} sloped roof tiles");
+			}
+			if (!LandmarkGenerator.HasCorrectRoofSlopes(landmark)) {
+				errors.Add($"{landmark.Biome} landmark has missing or incorrectly oriented roof slopes");
+			}
+			if (!LandmarkGenerator.HasCorrectStairSlopes(landmark)) {
+				errors.Add($"{landmark.Biome} landmark has missing or incorrectly oriented stair slopes");
+			}
+			if (!LandmarkGenerator.HasThickUpperPosts(landmark)) {
+				errors.Add($"{landmark.Biome} landmark retained one-tile upper-room posts");
+			}
+			if (landmark.Biome == BiomeKind.Forest
+				&& CountTiles(landmark.Area, TileID.WoodBlock) < landmark.Area.Width * 2) {
+				errors.Add("Forest landmark did not retain its ordinary Wood Block shell");
+			}
+			int wallLeaks = CountWallsAboveRoof(landmark.Area, landmark.AnchorY);
+			if (wallLeaks > 2) {
+				errors.Add($"{landmark.Biome} landmark has {wallLeaks} background-wall cells exposed above its roof");
 			}
 		}
 	}
@@ -515,6 +645,25 @@ internal static class WorldValidator
 			}
 		}
 
+		for (int index = 0; index < Math.Min(plan.Mountains.Count, manifest.Bridges.Count); index++) {
+			MountainRangePlan mountain = plan.Mountains[index];
+			foreach (int endpointX in new[] {
+				(mountain.LeftPeakX + mountain.SaddleX) / 2,
+				(mountain.SaddleX + mountain.RightPeakX) / 2
+			}) {
+				int deckY = plan.SurfaceAt(endpointX) - 2;
+				int blockers = 0;
+				for (int x = endpointX - 7; x <= endpointX + 7; x++) {
+					for (int y = deckY - 6; y < deckY; y++) {
+						blockers += TileEditor.IsSolid(x, y) ? 1 : 0;
+					}
+				}
+				if (blockers > 0) {
+					errors.Add($"{mountain.BridgeStyle} bridge endpoint at x={endpointX} retained {blockers} solid passage blockers");
+				}
+			}
+		}
+
 		foreach (ValleyRecord valley in manifest.Valleys) {
 			int water = CountLiquid(valley.Area, LiquidID.Water);
 			int lava = CountLiquid(valley.Area, LiquidID.Lava);
@@ -591,6 +740,19 @@ internal static class WorldValidator
 	private static int ValidateSurfaceMine(SurfaceMinePlan plan, GenerationManifest manifest, List<string> errors)
 	{
 		ValidateMinePlanTopology(plan, errors);
+		if (GenVars.tRight > GenVars.tLeft && GenVars.tBottom > GenVars.tTop) {
+			Rectangle templeClearance = new(
+				GenVars.tLeft - 28,
+				GenVars.tTop - 28,
+				GenVars.tRight - GenVars.tLeft + 57,
+				GenVars.tBottom - GenVars.tTop + 57);
+			if (plan.Sections.Any(section => section.Area.Intersects(templeClearance))
+				|| plan.Routes.SelectMany(SurfaceMineGenerator.Rasterize).Any(templeClearance.Contains)) {
+				errors.Add(
+					$"surface mine enters the Jungle Temple clearance envelope "
+					+ $"({GenVars.tLeft},{GenVars.tTop})-({GenVars.tRight},{GenVars.tBottom})");
+			}
+		}
 		if (manifest.SurfaceMine is not SurfaceMineRecord mine) {
 			errors.Add("the guaranteed surface mine has no final manifest record");
 			return 0;
@@ -702,6 +864,28 @@ internal static class WorldValidator
 				errors.Add($"mine rail edge {routeIndex} has a {reason} authored cell at {failedPoint}");
 			}
 		}
+		HashSet<Point> authoredTrack = plan.Routes
+			.Where(route => route.HasTrack)
+			.SelectMany(SurfaceMineGenerator.Rasterize)
+			.ToHashSet();
+		int minimumCeiling = int.MaxValue;
+		int maximumCeiling = 0;
+		int cavernousTrackCells = 0;
+		foreach (Point point in authoredTrack) {
+			int clearHeight = 0;
+			for (int depth = 1; depth <= 18 && !TileEditor.IsSolid(point.X, point.Y - depth); depth++) {
+				clearHeight++;
+			}
+			minimumCeiling = Math.Min(minimumCeiling, clearHeight);
+			maximumCeiling = Math.Max(maximumCeiling, clearHeight);
+			cavernousTrackCells += clearHeight >= 9 ? 1 : 0;
+		}
+		if (maximumCeiling - minimumCeiling < 3) {
+			errors.Add($"surface mine ceiling varies by only {maximumCeiling - minimumCeiling} tiles");
+		}
+		if (cavernousTrackCells < authoredTrack.Count / 10) {
+			errors.Add($"surface mine has cavernous headroom over only {cavernousTrackCells}/{authoredTrack.Count} rail cells");
+		}
 
 		MineSection? flooded = manifest.MineSections
 			.Where(section => section.Kind == MineSectionKind.Flooded)
@@ -733,6 +917,9 @@ internal static class WorldValidator
 			int gateActuators = CountActuators(irregularQuarantine.Area);
 			if (gateActuators < 12) {
 				errors.Add($"the mine's evil annex retained only {gateActuators} actuators for its passable quarantine gates");
+			}
+			if (!SurfaceMineGenerator.HasFourTileQuarantine(plan, irregularQuarantine, out string quarantineReason)) {
+				errors.Add($"the mine's evil annex lost its four-tile hardmode quarantine: {quarantineReason}");
 			}
 		}
 
@@ -1032,16 +1219,136 @@ internal static class WorldValidator
 	private static int CountFurnitureFamilies(Rectangle area)
 	{
 		ushort[] types = [
-			TileID.WorkBenches, TileID.Tables, TileID.Chairs, TileID.Bookcases,
+			TileID.WorkBenches, TileID.Tables, TileID.Tables2, TileID.Chairs, TileID.Bookcases,
 			TileID.Benches, TileID.Anvils, TileID.Chandeliers, TileID.SmallPiles
 		];
 		return types.Count(type => CountTiles(area, type) > 0);
 	}
 
+	private static int CountSummitSand(WorldPlan plan, MountainRangePlan mountain)
+	{
+		int count = 0;
+		foreach (int peakX in new[] { mountain.LeftPeakX, mountain.RightPeakX }) {
+			for (int x = peakX - 32; x <= peakX + 32; x++) {
+				int surfaceY = plan.SurfaceAt(x);
+				if (surfaceY > Main.worldSurface * 0.48d + 18d) {
+					continue;
+				}
+				for (int y = surfaceY; y < surfaceY + 24; y++) {
+					Tile tile = Main.tile[x, y];
+					if (tile.HasTile && tile.TileType is TileID.Sand or TileID.HardenedSand or TileID.Sandstone
+						or TileID.Ebonsand or TileID.Crimsand or TileID.CorruptHardenedSand
+						or TileID.CrimsonHardenedSand or TileID.CorruptSandstone or TileID.CrimsonSandstone) {
+						count++;
+					}
+				}
+			}
+		}
+		return count;
+	}
+
+	private static (int Horizontal, int Vertical, Point HorizontalStart, Point VerticalStart) MeasureNaturalWallSeams(
+		Rectangle area,
+		GenerationManifest manifest)
+	{
+		int longestHorizontal = 0;
+		Point horizontalStart = Point.Zero;
+		for (int y = area.Top + 2; y < area.Bottom - 3; y++) {
+			int run = 0;
+			for (int x = area.Left + 2; x < area.Right - 2; x++) {
+				bool boundary = IsOpenNaturalWall(x, y, manifest) && IsOpenNaturalWall(x, y + 1, manifest)
+					&& Main.tile[x, y].WallType != Main.tile[x, y + 1].WallType;
+				run = boundary ? run + 1 : 0;
+				if (run > longestHorizontal) {
+					longestHorizontal = run;
+					horizontalStart = new Point(x - run + 1, y);
+				}
+			}
+		}
+
+		int longestVertical = 0;
+		Point verticalStart = Point.Zero;
+		for (int x = area.Left + 2; x < area.Right - 3; x++) {
+			int run = 0;
+			for (int y = area.Top + 2; y < area.Bottom - 2; y++) {
+				bool boundary = IsOpenNaturalWall(x, y, manifest) && IsOpenNaturalWall(x + 1, y, manifest)
+					&& Main.tile[x, y].WallType != Main.tile[x + 1, y].WallType;
+				run = boundary ? run + 1 : 0;
+				if (run > longestVertical) {
+					longestVertical = run;
+					verticalStart = new Point(x, y - run + 1);
+				}
+			}
+		}
+		return (longestHorizontal, longestVertical, horizontalStart, verticalStart);
+	}
+
+	private static bool IsOpenNaturalWall(int x, int y, GenerationManifest manifest)
+	{
+		Point point = new(x, y);
+		if (manifest.Landmarks.Any(record => record.Area.Contains(point))
+			|| manifest.Bridges.Any(record => record.Area.Contains(point))
+			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.SkyHighlands.Any(record => record.Area.Contains(point))
+			|| manifest.MineSections.Any(record => record.Area.Contains(point))) {
+			return false;
+		}
+		ushort wall = Main.tile[x, y].WallType;
+		return !TileEditor.IsSolid(x, y)
+			&& wall is WallID.DirtUnsafe or WallID.Stone or WallID.SnowWallUnsafe or WallID.JungleUnsafe
+				or WallID.Sandstone or WallID.EbonstoneUnsafe or WallID.CrimstoneUnsafe;
+	}
+
+	private static int CountSlopedTiles(Rectangle area, ushort tileType)
+	{
+		int count = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = area.Top; y < area.Bottom; y++) {
+				Tile tile = Main.tile[x, y];
+				count += tile.HasTile && tile.TileType == tileType && tile.Slope != SlopeType.Solid ? 1 : 0;
+			}
+		}
+		return count;
+	}
+
+	private static int CountSlopedSolidTiles(Rectangle area)
+	{
+		int count = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			for (int y = area.Top; y < area.Bottom; y++) {
+				Tile tile = Main.tile[x, y];
+				count += tile.HasUnactuatedTile && tile.TileType != TileID.Platforms
+					&& Main.tileSolid[tile.TileType] && tile.Slope != SlopeType.Solid ? 1 : 0;
+			}
+		}
+		return count;
+	}
+
+	private static int CountWallsAboveRoof(Rectangle area, int groundY)
+	{
+		int leaks = 0;
+		for (int x = area.Left; x < area.Right; x++) {
+			int roofY = int.MaxValue;
+			for (int y = area.Top; y < groundY; y++) {
+				if (Main.tile[x, y].HasUnactuatedTile && Main.tileSolid[Main.tile[x, y].TileType]) {
+					roofY = y;
+					break;
+				}
+			}
+			if (roofY == int.MaxValue) {
+				continue;
+			}
+			for (int y = area.Top; y < roofY; y++) {
+				leaks += Main.tile[x, y].WallType != WallID.None ? 1 : 0;
+			}
+		}
+		return leaks;
+	}
+
 	private static int CountFurnitureTiles(Rectangle area)
 	{
 		ushort[] types = [
-			TileID.WorkBenches, TileID.Tables, TileID.Chairs, TileID.Bookcases,
+			TileID.WorkBenches, TileID.Tables, TileID.Tables2, TileID.Chairs, TileID.Bookcases,
 			TileID.Benches, TileID.Anvils, TileID.Chandeliers, TileID.SmallPiles
 		];
 		return types.Sum(type => CountTiles(area, type));

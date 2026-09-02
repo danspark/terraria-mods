@@ -11,6 +11,7 @@ internal static class WorldPlanner
 {
 	private const int WorldPadding = 45;
 	private const int SpawnTerraceWidth = 150;
+	private const int CoastalTerraceSetback = 500;
 
 	public static WorldPlan Create()
 	{
@@ -139,6 +140,7 @@ internal static class WorldPlanner
 		List<MountainRangePlan> mountains = [];
 		MountainInteriorStyle? previousInterior = null;
 		BridgeStyle? previousBridge = null;
+		MountainHeightStyle? previousHeight = null;
 		foreach (WorldRegion region in regions.Where(region => region.Landform == LandformKind.Mountain)) {
 			MountainInteriorStyle interiorStyle = PickDifferent(
 				random,
@@ -155,14 +157,32 @@ internal static class WorldPlanner
 				BridgeStyle.RailTrestle);
 			previousInterior = interiorStyle;
 			previousBridge = bridgeStyle;
+			MountainHeightStyle heightStyle = PickMountainHeight(random, previousHeight);
+			previousHeight = heightStyle;
 
 			int leftPeakX = region.Left + region.Width * random.Next(19, 39) / 100;
 			int rightPeakX = region.Left + region.Width * random.Next(62, 83) / 100;
 			int saddleX = (leftPeakX + rightPeakX) / 2 + random.Next(-region.Width / 18, region.Width / 18 + 1);
-			int skyY = Math.Clamp((int)Math.Round(Main.worldSurface * random.Next(19, 28) / 100d), 54, 124);
-			int summitCeiling = Math.Max(58, (int)Math.Floor(Main.worldSurface * 0.35d) - 14);
-			int leftPeakY = Math.Min(summitCeiling, skyY + random.Next(-16, 17));
-			int rightPeakY = Math.Min(summitCeiling, skyY + random.Next(-20, 21));
+			(int minimumPercent, int maximumPercent) = heightStyle switch {
+				MountainHeightStyle.Highland => (54, 71),
+				MountainHeightStyle.Alpine => (37, 53),
+				_ => (19, 34)
+			};
+			int leftPeakY = Math.Clamp(
+				(int)Math.Round(Main.worldSurface * random.Next(minimumPercent, maximumPercent + 1) / 100d),
+				54,
+				(int)Main.worldSurface - 54);
+			int rightPeakY = Math.Clamp(
+				(int)Math.Round(Main.worldSurface * random.Next(minimumPercent, maximumPercent + 1) / 100d),
+				54,
+				(int)Main.worldSurface - 54);
+			int asymmetry = random.Next(7, heightStyle == MountainHeightStyle.Highland ? 18 : 28);
+			if (random.NextBool()) {
+				leftPeakY = Math.Max(54, leftPeakY - asymmetry);
+			}
+			else {
+				rightPeakY = Math.Max(54, rightPeakY - asymmetry);
+			}
 			if (interiorStyle == MountainInteriorStyle.SwitchbackClimb) {
 				if (random.NextBool()) {
 					leftPeakY -= random.Next(10, 25);
@@ -171,11 +191,20 @@ internal static class WorldPlanner
 					rightPeakY -= random.Next(10, 25);
 				}
 			}
+			int spaceThreshold = (int)Math.Floor(Main.worldSurface * 0.35d);
+			if (heightStyle == MountainHeightStyle.Alpine) {
+				leftPeakY = Math.Max(leftPeakY, spaceThreshold + 38);
+				rightPeakY = Math.Max(rightPeakY, spaceThreshold + 38);
+			}
+			else if (heightStyle == MountainHeightStyle.Highland) {
+				leftPeakY = Math.Max(leftPeakY, spaceThreshold + 78);
+				rightPeakY = Math.Max(rightPeakY, spaceThreshold + 78);
+			}
 			int saddleY = Math.Min(
-				(int)Main.worldSurface - random.Next(24, 52),
+				(int)Main.worldSurface - random.Next(18, 57),
 				Math.Max(leftPeakY, rightPeakY) + random.Next(
-					interiorStyle == MountainInteriorStyle.OpenFault ? 98 : 48,
-					interiorStyle == MountainInteriorStyle.OpenFault ? 148 : 126));
+					interiorStyle == MountainInteriorStyle.OpenFault ? 82 : 38,
+					interiorStyle == MountainInteriorStyle.OpenFault ? 151 : 118));
 
 			ValleyTheme[] themes = [
 				ValleyTheme.Lake,
@@ -197,6 +226,7 @@ internal static class WorldPlanner
 				saddleY,
 				rightPeakX,
 				rightPeakY,
+				heightStyle,
 				theme,
 				bridgeStyle,
 				interiorStyle,
@@ -204,6 +234,29 @@ internal static class WorldPlanner
 		}
 
 		return mountains;
+	}
+
+	private static MountainHeightStyle PickMountainHeight(
+		UnifiedRandom random,
+		MountainHeightStyle? previous)
+	{
+		MountainHeightStyle[] weighted = [
+			MountainHeightStyle.Highland,
+			MountainHeightStyle.Highland,
+			MountainHeightStyle.Highland,
+			MountainHeightStyle.Alpine,
+			MountainHeightStyle.Alpine,
+			MountainHeightStyle.Alpine,
+			MountainHeightStyle.SkyPiercing,
+			MountainHeightStyle.SkyPiercing
+		];
+		MountainHeightStyle picked = weighted[random.Next(weighted.Length)];
+		if (previous is null || picked != previous.Value) {
+			return picked;
+		}
+		return picked == MountainHeightStyle.Highland
+			? MountainHeightStyle.Alpine
+			: MountainHeightStyle.Highland;
 	}
 
 	private static bool ShouldPlaceMountain(int index, int count, int placed, int quota)
@@ -315,11 +368,13 @@ internal static class WorldPlanner
 		int leftPeakDistance = Math.Abs(x - mountain.LeftPeakX);
 		int rightPeakDistance = Math.Abs(x - mountain.RightPeakX);
 		int nearestPeakDistance = Math.Min(leftPeakDistance, rightPeakDistance);
-		if (nearestPeakDistance <= 52) {
+		int shoulder = 27 + Math.Abs(mountain.FeatureSeed + mountain.RegionId * 17) % 31;
+		int crown = 7 + Math.Abs(mountain.FeatureSeed / 31 + mountain.RegionId * 11) % 16;
+		if (nearestPeakDistance <= shoulder) {
 			double peakY = leftPeakDistance <= rightPeakDistance ? mountain.LeftPeakY : mountain.RightPeakY;
-			double plateauBlend = nearestPeakDistance <= 24
+			double plateauBlend = nearestPeakDistance <= crown
 				? 0d
-				: SmoothStep((nearestPeakDistance - 24d) / 28d);
+				: SmoothStep((nearestPeakDistance - crown) / Math.Max(1d, shoulder - crown));
 			baseProfile = Lerp(peakY, baseProfile, plateauBlend);
 		}
 
@@ -367,7 +422,10 @@ internal static class WorldPlanner
 		};
 
 		List<SkyHighlandPlan> highlands = [];
-		int attachmentQuota = random.NextBool(3) ? 1 : 0;
+		List<MountainRangePlan> attachableMountains = mountains
+			.Where(mountain => mountain.HeightStyle != MountainHeightStyle.Highland)
+			.ToList();
+		int attachmentQuota = attachableMountains.Count > 0 && random.NextBool(5) ? 1 : 0;
 		SkyHighlandStyle? previousStyle = null;
 		for (int index = 0; index < desiredCount; index++) {
 			SkyHighlandStyle style = PickDifferent(
@@ -389,7 +447,7 @@ internal static class WorldPlanner
 				|| style == SkyHighlandStyle.TerracedMeadow && random.NextBool(2);
 
 			if (index < attachmentQuota) {
-				MountainRangePlan mountain = mountains[random.Next(mountains.Count)];
+				MountainRangePlan mountain = attachableMountains[random.Next(attachableMountains.Count)];
 				int worldCenter = Main.maxTilesX / 2;
 				int leftDistance = Math.Abs(mountain.LeftPeakX - worldCenter);
 				int rightDistance = Math.Abs(mountain.RightPeakX - worldCenter);
@@ -530,6 +588,9 @@ internal static class WorldPlanner
 	{
 		List<TerraceRequest> terraces = [new(spawnX, SpawnTerraceWidth, Required: true)];
 		ApplyTerrace(surface, spawnX, SpawnTerraceWidth);
+		int coastMargin = Math.Clamp(surface.Length / 24, 190, 360);
+		int leftTerraceCenter = coastMargin + CoastalTerraceSetback;
+		int rightTerraceCenter = surface.Length - coastMargin - CoastalTerraceSetback - 1;
 
 		int optionalTarget = Math.Clamp(Main.maxTilesX / 1700, 2, 5);
 		foreach (WorldRegion region in regions
@@ -545,7 +606,13 @@ internal static class WorldPlanner
 				continue;
 			}
 
-			int x = random.Next(region.Left + halfWidth + 20, region.Right - halfWidth - 19);
+			int candidateLeft = Math.Max(region.Left + halfWidth + 20, leftTerraceCenter);
+			int candidateRight = Math.Min(region.Right - halfWidth - 20, rightTerraceCenter);
+			if (candidateRight < candidateLeft) {
+				continue;
+			}
+
+			int x = random.Next(candidateLeft, candidateRight + 1);
 			if (terraces.Any(terrace => Math.Abs(terrace.PreferredX - x) < 240)) {
 				continue;
 			}

@@ -13,6 +13,7 @@ internal static class SurfaceMineGenerator
 {
 	private const int MineSeedSalt = 0x4D49_4E45;
 	private const int CorridorHeadroom = 6;
+	private const int CoastalLandmarkClearance = 380;
 
 	public static SurfaceMinePlan PlanAndReserve(WorldPlan worldPlan, GenerationManifest manifest)
 	{
@@ -22,6 +23,8 @@ internal static class SurfaceMineGenerator
 			<= 6400 => 330,
 			_ => 400
 		};
+		int leftMineCenter = worldPlan.CoastMargin + halfWidth + CoastalLandmarkClearance;
+		int rightMineCenter = Main.maxTilesX - worldPlan.CoastMargin - halfWidth - CoastalLandmarkClearance - 1;
 
 		List<int> candidates = worldPlan.Mountains
 			.Select(mountain => worldPlan.Regions[mountain.RegionId].CenterX)
@@ -30,18 +33,20 @@ internal static class SurfaceMineGenerator
 				.OrderByDescending(region => Math.Abs(region.CenterX - worldPlan.SpawnX))
 				.Select(region => region.CenterX))
 			.ToList();
-		for (int attempt = 0; attempt < 90; attempt++) {
-			candidates.Add(random.Next(worldPlan.CoastMargin + halfWidth + 40, Main.maxTilesX - worldPlan.CoastMargin - halfWidth - 40));
+		for (int attempt = 0; attempt < 480; attempt++) {
+			candidates.Add(random.Next(leftMineCenter, rightMineCenter + 1));
 		}
 
+		Dictionary<string, int> rejected = [];
 		foreach (int rawCenterX in candidates) {
-			int centerX = Math.Clamp(rawCenterX, worldPlan.CoastMargin + halfWidth + 30, Main.maxTilesX - worldPlan.CoastMargin - halfWidth - 31);
+			int centerX = Math.Clamp(rawCenterX, leftMineCenter, rightMineCenter);
 			if (Math.Abs(centerX - worldPlan.SpawnX) < halfWidth + 180 || Math.Abs(centerX - GenVars.dungeonX) < halfWidth + 140) {
 				continue;
 			}
 
 			SurfaceMinePlan candidate = CreatePlan(worldPlan, centerX, halfWidth, random.Next());
-			if (!CanPlace(candidate, manifest)) {
+			if (!CanPlace(candidate, manifest, out string reason)) {
+				rejected[reason] = rejected.GetValueOrDefault(reason) + 1;
 				continue;
 			}
 
@@ -49,18 +54,24 @@ internal static class SurfaceMineGenerator
 			return candidate;
 		}
 
-		throw new InvalidOperationException("Richer Biomes could not reserve a progression-safe site for the guaranteed surface mine.");
+		string rejectionSummary = string.Join(", ", rejected.OrderByDescending(pair => pair.Value).Select(pair => $"{pair.Key}={pair.Value}"));
+		throw new InvalidOperationException(
+			"Richer Biomes could not reserve a progression-safe site for the guaranteed surface mine. "
+			+ rejectionSummary);
 	}
 
 	public static void Excavate(SurfaceMinePlan plan, GenerationManifest manifest, GenerationProgress progress)
 	{
+		if (!CanPlace(plan, manifest, out _)) {
+			throw new InvalidOperationException("The reserved surface mine became unsafe before excavation; a progression structure entered its clearance envelope.");
+		}
 		for (int index = 0; index < plan.Sections.Count; index++) {
 			BuildSection(plan.Sections[index]);
 			progress.Set((double)(index + 1) / (plan.Sections.Count + plan.Routes.Count));
 		}
 
 		for (int index = 0; index < plan.Routes.Count; index++) {
-			CarveRoute(plan.Routes[index]);
+			CarveRoute(plan, plan.Routes[index]);
 			progress.Set((double)(plan.Sections.Count + index + 1) / (plan.Sections.Count + plan.Routes.Count));
 		}
 		BuildJunctionStations(plan);
@@ -93,21 +104,22 @@ internal static class SurfaceMineGenerator
 			progress.Set((double)(plan.Sections.Count + index + 1) / (plan.Routes.Count + plan.Sections.Count));
 		}
 
-		OwnTrackGraph(plannedTrack);
+		OwnTrackGraph(plan, plannedTrack);
 		foreach (MineSection section in plan.Sections) {
 			int displayFurniture = BuildLowerWorkDisplay(section, plannedTrack);
-			if (displayFurniture == 0 && section.Kind is MineSectionKind.Working or MineSectionKind.MountainRail) {
+			if (displayFurniture < 2 && section.Kind is MineSectionKind.Working or MineSectionKind.MountainRail) {
 				displayFurniture = BuildCompactWorkAlcove(section, plannedTrack);
 			}
 			furnitureCount += displayFurniture;
 		}
-		furnitureCount += BuildWorkyardLoft(plan.Entrance);
+		MineSection workyard = plan.Sections.First(section => section.Kind == MineSectionKind.Workyard);
+		furnitureCount += BuildWorkyardLoft(workyard);
 
 		RefillFloodedSection(plan);
 		// Furnishings, quarantine gates, and display decks are authored after the
 		// first rail pass. Give the connected graph final ownership of its exact
 		// cells and clearance envelope so no district can sever a branch.
-		OwnTrackGraph(plannedTrack);
+		OwnTrackGraph(plan, plannedTrack);
 		BuildQuarantineGates(plan);
 
 		int trackTiles = plannedTrack.Count(point => HasTile(point.X, point.Y, TileID.MinecartTrack));
@@ -129,7 +141,17 @@ internal static class SurfaceMineGenerator
 			.Where(route => route.HasTrack)
 			.SelectMany(Rasterize)
 			.ToHashSet();
-		OwnTrackGraph(plannedTrack);
+		// Vanilla cleanup and late micro-biomes can refill the broad surface mouth
+		// after its first excavation. Recut the headframe approach at the final mine
+		// ownership boundary, then let the rail graph reclaim the entrance track.
+		BuildHeadframe(plan.Entrance);
+		OwnTrackGraph(plan, plannedTrack);
+		foreach (MineSection section in plan.Sections.Where(section =>
+			section.Kind is MineSectionKind.Working or MineSectionKind.MountainRail)) {
+			if (BuildLowerWorkDisplay(section, plannedTrack) < 2) {
+				BuildCompactWorkAlcove(section, plannedTrack);
+			}
+		}
 		BuildQuarantineGates(plan);
 
 		SurfaceMineRecord existing = manifest.SurfaceMine
@@ -141,10 +163,10 @@ internal static class SurfaceMineGenerator
 		};
 	}
 
-	private static void OwnTrackGraph(HashSet<Point> plannedTrack)
+	private static void OwnTrackGraph(SurfaceMinePlan plan, HashSet<Point> plannedTrack)
 	{
 		foreach (Point point in plannedTrack) {
-			PrepareTrackCell(point, plannedTrack);
+			PrepareTrackCell(plan, point, plannedTrack);
 		}
 		foreach (Point point in plannedTrack) {
 			TileEditor.TryPlaceMinecartTrack(point.X, point.Y);
@@ -193,11 +215,11 @@ internal static class SurfaceMineGenerator
 		];
 
 		List<MineSection> sections = [
-			new(0, MineSectionKind.Workyard, Centered(p0.X + 20, p0.Y - 8, random.Next(68, 83), random.Next(34, 42)), p0),
-			new(1, MineSectionKind.Working, Centered(upperEast.X, upperEast.Y, random.Next(74, 91), random.Next(38, 47)), upperEast),
-			new(2, MineSectionKind.MountainRail, Centered(upperWest.X, upperWest.Y, random.Next(82, 101), random.Next(40, 51)), upperWest),
-			new(3, MineSectionKind.Working, Centered(middleJunction.X, middleJunction.Y, random.Next(88, 107), random.Next(42, 53)), middleJunction),
-			new(4, MineSectionKind.Working, Centered(deepJunction.X, deepJunction.Y, random.Next(96, 117), random.Next(44, 57)), deepJunction)
+			CreateSection(0, MineSectionKind.Workyard, Centered(p0.X + 20, p0.Y - 8, random.Next(68, 83), random.Next(34, 42)), p0),
+			CreateSection(1, MineSectionKind.Working, Centered(upperEast.X, upperEast.Y, random.Next(74, 91), random.Next(38, 47)), upperEast),
+			CreateSection(2, MineSectionKind.MountainRail, Centered(upperWest.X, upperWest.Y, random.Next(82, 101), random.Next(40, 51)), upperWest),
+			CreateSection(3, MineSectionKind.Working, Centered(middleJunction.X, middleJunction.Y, random.Next(88, 107), random.Next(42, 53)), middleJunction),
+			CreateSection(4, MineSectionKind.Working, Centered(deepJunction.X, deepJunction.Y, random.Next(96, 117), random.Next(44, 57)), deepJunction)
 		];
 
 		bool floodedOnEast = random.NextBool();
@@ -210,9 +232,9 @@ internal static class SurfaceMineGenerator
 		Point floodedCenter = new(floodedOrigin.X + floodedDirection * random.Next(70, 101), floodedOrigin.Y + random.Next(27, 44));
 		Point collapsedCenter = new(collapsedOrigin.X + collapsedDirection * random.Next(72, 106), collapsedOrigin.Y + random.Next(31, 49));
 		Point evilCenter = new(evilOrigin.X + evilDirection * random.Next(82, 118), evilOrigin.Y + random.Next(30, 49));
-		sections.Add(new MineSection(5, MineSectionKind.Flooded, Centered(floodedCenter.X, floodedCenter.Y, random.Next(78, 95), random.Next(40, 51)), floodedCenter));
-		sections.Add(new MineSection(6, MineSectionKind.Collapsed, Centered(collapsedCenter.X, collapsedCenter.Y, random.Next(82, 101), random.Next(39, 50)), collapsedCenter));
-		sections.Add(new MineSection(7, MineSectionKind.SealedEvil, Centered(evilCenter.X, evilCenter.Y, random.Next(90, 109), random.Next(47, 59)), evilCenter));
+		sections.Add(CreateSection(5, MineSectionKind.Flooded, Centered(floodedCenter.X, floodedCenter.Y, random.Next(78, 95), random.Next(40, 51)), floodedCenter));
+		sections.Add(CreateSection(6, MineSectionKind.Collapsed, Centered(collapsedCenter.X, collapsedCenter.Y, random.Next(82, 101), random.Next(39, 50)), collapsedCenter));
+		sections.Add(new MineSection(7, MineSectionKind.SealedEvil, Centered(evilCenter.X, evilCenter.Y, random.Next(90, 109), random.Next(47, 59)), evilCenter, BiomeKind.Evil));
 		routes.Add(new MineRoute(floodedOrigin, floodedCenter, HasTrack: true, Required: false));
 		routes.Add(new MineRoute(collapsedOrigin, collapsedCenter, HasTrack: true, Required: false));
 		routes.Add(new MineRoute(evilOrigin, evilCenter, HasTrack: true, Required: false));
@@ -222,16 +244,31 @@ internal static class SurfaceMineGenerator
 		int top = Math.Max(40, Math.Min(sections.Min(section => section.Area.Top), routes.Min(route => Math.Min(route.Start.Y, route.End.Y))) - 20);
 		int bottom = Math.Min(Main.UnderworldLayer - 80, Math.Max(sections.Max(section => section.Area.Bottom), routes.Max(route => Math.Max(route.Start.Y, route.End.Y) + 1)) + 24);
 		Rectangle area = new(left, top, right - left, bottom - top);
-		return new SurfaceMinePlan(featureSeed, area, p0, sections, routes);
+		return new SurfaceMinePlan(featureSeed, area, p0, sections, routes, CaptureRouteThemes(routes));
+	}
+
+	private static MineSection CreateSection(int id, MineSectionKind kind, Rectangle area, Point center) =>
+		new(id, kind, area, center, BiomeClassifier.ClassifyAreaTheme(center.X, center.Y));
+
+	private static IReadOnlyDictionary<Point, BiomeKind> CaptureRouteThemes(IReadOnlyList<MineRoute> routes)
+	{
+		Dictionary<Point, BiomeKind> themes = [];
+		foreach (MineRoute route in routes) {
+			foreach (Point point in Rasterize(route)) {
+				themes.TryAdd(point, BiomeClassifier.ClassifyAreaTheme(point.X, point.Y));
+			}
+		}
+		return themes;
 	}
 
 	private static Rectangle Centered(int x, int y, int width, int height) =>
 		new(x - width / 2, y - height / 2, width, height);
 
-	private static bool CanPlace(SurfaceMinePlan plan, GenerationManifest manifest)
+	private static bool CanPlace(SurfaceMinePlan plan, GenerationManifest manifest, out string reason)
 	{
 		if (!WorldGen.InWorld(plan.Area.Left, plan.Area.Top, 30)
 			|| !WorldGen.InWorld(plan.Area.Right - 1, plan.Area.Bottom - 1, 30)) {
+			reason = "world padding";
 			return false;
 		}
 		MineSection workyard = plan.Sections.First(section => section.Kind == MineSectionKind.Workyard);
@@ -241,6 +278,7 @@ internal static class SurfaceMineGenerator
 			workyard.Area.Width + 48,
 			workyard.Area.Height + 24);
 		if (manifest.BiomeTransitions.Any(transition => transition.Area.Intersects(workyardBuffer))) {
+			reason = "surface transition";
 			return false;
 		}
 		MineRoute surfaceDescent = plan.Routes[0];
@@ -252,6 +290,7 @@ internal static class SurfaceMineGenerator
 				terrace.Area.Height + 20);
 			if (terraceBuffer.Intersects(workyardBuffer)
 				|| Rasterize(surfaceDescent).Any(terraceBuffer.Contains)) {
+				reason = "building terrace";
 				return false;
 			}
 		}
@@ -261,21 +300,38 @@ internal static class SurfaceMineGenerator
 			// terrain reservations. Tile-level checks still reject chests, altars,
 			// dungeon/temple blocks, Shimmer, wiring, and other progression state.
 			if (!TileEditor.IsSafeForTerrainFeature(section.Area)) {
+				reason = $"section {section.Id} object";
+				return false;
+			}
+			if (!TileEditor.IsClearOfTempleAndDungeon(section.Area, margin: 36)) {
+				reason = $"section {section.Id} temple/dungeon";
 				return false;
 			}
 		}
 
 		foreach (MineRoute route in plan.Routes) {
+			int routeIndex = 0;
 			foreach (Point point in Rasterize(route)) {
-				for (int offsetY = -CorridorHeadroom; offsetY <= 2; offsetY++) {
-					if (!WorldGen.InWorld(point.X, point.Y + offsetY, 18)
-						|| TileEditor.IsProgressionTile(Main.tile[point.X, point.Y + offsetY])) {
-						return false;
+				for (int offsetX = -3; offsetX <= 3; offsetX++) {
+					for (int offsetY = -CorridorHeadroom - 2; offsetY <= 3; offsetY++) {
+						if (!WorldGen.InWorld(point.X + offsetX, point.Y + offsetY, 18)
+							|| TileEditor.IsProgressionTile(Main.tile[point.X + offsetX, point.Y + offsetY])
+							|| TileEditor.IsTempleOrDungeonCell(Main.tile[point.X + offsetX, point.Y + offsetY])) {
+							reason = "route object";
+							return false;
+						}
 					}
 				}
+				if (routeIndex % 12 == 0
+					&& !TileEditor.IsClearOfTempleAndDungeon(new Rectangle(point.X - 3, point.Y - CorridorHeadroom - 2, 7, CorridorHeadroom + 6), margin: 28)) {
+					reason = "route temple/dungeon";
+					return false;
+				}
+				routeIndex++;
 			}
 		}
 
+		reason = string.Empty;
 		return true;
 	}
 
@@ -296,8 +352,9 @@ internal static class SurfaceMineGenerator
 
 	private static void BuildSection(MineSection section)
 	{
+		MinePalette palette = ResolvePalette(section.Theme);
 		if (section.Kind == MineSectionKind.Workyard) {
-			BuildOpenWorkyard(section);
+			BuildOpenWorkyard(section, palette);
 			return;
 		}
 
@@ -305,7 +362,7 @@ internal static class SurfaceMineGenerator
 		int shell = section.Kind == MineSectionKind.SealedEvil ? 5 : 2;
 		ushort wall = section.Kind == MineSectionKind.SealedEvil
 			? (WorldGen.crimson ? WallID.CrimstoneUnsafe : WallID.EbonstoneUnsafe)
-			: WallID.Planked;
+			: palette.Wall;
 		int radiusX = area.Width / 2 - 2;
 		int radiusY = area.Height / 2 - 2;
 		for (int x = area.Left + 1; x < area.Right - 1; x++) {
@@ -317,7 +374,10 @@ internal static class SurfaceMineGenerator
 			int outerTop = area.Center.Y - halfHeight + topJitter;
 			int outerBottom = area.Center.Y + halfHeight + bottomJitter;
 			for (int y = outerTop; y <= outerBottom; y++) {
-				TileEditor.SetTerrain(x, y, section.Kind == MineSectionKind.SealedEvil ? TileID.GrayBrick : TileID.LivingWood);
+				TileEditor.SetTerrain(x, y, section.Kind == MineSectionKind.SealedEvil ? TileID.GrayBrick : palette.Masonry);
+				if (section.Kind == MineSectionKind.SealedEvil) {
+					TileEditor.SetWall(x, y, WallID.GrayBrick);
+				}
 			}
 
 			int localShell = shell + Noise(section.Id, x, 71) % 2;
@@ -325,12 +385,12 @@ internal static class SurfaceMineGenerator
 			int innerBottom = outerBottom - localShell;
 			for (int y = innerTop; y <= innerBottom; y++) {
 				TileEditor.ClearTerrain(x, y);
-				TileEditor.SetWall(x, y, Noise(section.Id, x / 7 + y / 9, 137) % 100 < 58 ? wall : WallID.Planked);
+				TileEditor.SetWall(x, y, Noise(section.Id, x / 7 + y / 9, 137) % 100 < 58 ? wall : palette.AccentWall);
 			}
 			for (int floorDepth = 0; floorDepth < 3 && innerBottom - floorDepth >= innerTop; floorDepth++) {
 				TileEditor.SetTerrain(x, innerBottom - floorDepth, section.Kind == MineSectionKind.SealedEvil
 					? (WorldGen.crimson ? TileID.Crimstone : TileID.Ebonstone)
-					: floorDepth == 0 ? TileID.WoodenBeam : TileID.LivingWood);
+					: floorDepth == 0 ? TileID.WoodenBeam : palette.Timber);
 			}
 		}
 
@@ -352,10 +412,10 @@ internal static class SurfaceMineGenerator
 			}
 		}
 
-		BuildDistrictPlatforms(section);
+		BuildDistrictPlatforms(section, palette);
 	}
 
-	private static void BuildDistrictPlatforms(MineSection section)
+	private static void BuildDistrictPlatforms(MineSection section, MinePalette palette)
 	{
 		int deckY = section.Center.Y + Math.Clamp(section.Area.Height / 4, 8, 13);
 		int centerGap = section.Kind == MineSectionKind.Flooded ? 11 : 7;
@@ -363,14 +423,14 @@ internal static class SurfaceMineGenerator
 			bool gap = Math.Abs(x - section.Center.X) <= centerGap;
 			for (int y = deckY - 7; y < deckY; y++) {
 				TileEditor.ClearTerrain(x, y);
-				TileEditor.SetWall(x, y, Noise(section.Id, x / 5 + y / 7, 241) % 100 < 62 ? WallID.Planked : WallID.Stone);
+				TileEditor.SetWall(x, y, Noise(section.Id, x / 5 + y / 7, 241) % 100 < 62 ? palette.Wall : palette.AccentWall);
 			}
 			if (gap) {
-				TileEditor.TryPlacePlatformForced(x, deckY);
+				TileEditor.TryPlacePlatformForced(x, deckY, palette.PlatformStyle);
 			}
 			else {
 				TileEditor.SetTerrain(x, deckY, TileID.WoodenBeam);
-				TileEditor.SetTerrain(x, deckY + 1, TileID.LivingWood);
+				TileEditor.SetTerrain(x, deckY + 1, palette.Timber);
 			}
 		}
 
@@ -382,7 +442,7 @@ internal static class SurfaceMineGenerator
 		}
 	}
 
-	private static void BuildOpenWorkyard(MineSection section)
+	private static void BuildOpenWorkyard(MineSection section, MinePalette palette)
 	{
 		Rectangle area = section.Area;
 		int floorY = section.Center.Y + 1;
@@ -390,17 +450,17 @@ internal static class SurfaceMineGenerator
 			for (int y = area.Top; y < floorY; y++) {
 				TileEditor.ClearTerrain(x, y);
 				if (x > area.Center.X + 5 && x < area.Right - 3 && y > floorY - 10) {
-					TileEditor.SetWall(x, y, (x - area.Left) % 10 < 5 ? WallID.Planked : WallID.LivingWoodUnsafe);
+					TileEditor.SetWall(x, y, (x - area.Left) % 10 < 5 ? palette.Wall : palette.AccentWall);
 				}
 			}
 			for (int depth = 0; depth < 3; depth++) {
-				TileEditor.SetTerrain(x, floorY + depth, depth == 0 ? TileID.WoodenBeam : TileID.LivingWood);
+				TileEditor.SetTerrain(x, floorY + depth, depth == 0 ? TileID.WoodenBeam : palette.Timber);
 			}
 		}
 		for (int x = area.Center.X + 5; x < area.Right - 2; x++) {
 			int canopyY = floorY - 11 + Math.Abs(x - (area.Center.X + 14)) / 8;
 			for (int depth = 0; depth < 2; depth++) {
-				TileEditor.SetTerrain(x, canopyY + depth, TileID.LivingWood);
+				TileEditor.SetTerrain(x, canopyY + depth, palette.Timber);
 			}
 		}
 	}
@@ -419,29 +479,56 @@ internal static class SurfaceMineGenerator
 		}
 	}
 
-	private static void CarveRoute(MineRoute route)
+	private static void CarveRoute(SurfaceMinePlan plan, MineRoute route)
 	{
 		int index = 0;
 		foreach (Point point in Rasterize(route)) {
-			for (int offsetX = -2; offsetX <= 2; offsetX++) {
-				for (int offsetY = -CorridorHeadroom - 1; offsetY <= 0; offsetY++) {
+			MinePalette palette = ResolvePalette(plan.ThemeAt(point));
+			int ceilingExtra = SampleCeilingExtra(route, index);
+			int horizontalRadius = ceilingExtra >= 3 ? 3 : 2;
+			for (int offsetX = -horizontalRadius; offsetX <= horizontalRadius; offsetX++) {
+				int archLift = Math.Max(0, horizontalRadius - Math.Abs(offsetX)) / 2;
+				int ceilingHeight = CorridorHeadroom + 1 + ceilingExtra + archLift;
+				for (int offsetY = -ceilingHeight; offsetY <= 0; offsetY++) {
 					TileEditor.ClearTerrain(point.X + offsetX, point.Y + offsetY);
 					ushort wall = Noise(route.Start.X + route.End.X, (point.X + offsetX) / 9 + (point.Y + offsetY) / 7, 401) % 100 < 57
-						? WallID.Planked
-						: WallID.Stone;
+						? palette.Wall
+						: palette.AccentWall;
 					TileEditor.SetWall(point.X + offsetX, point.Y + offsetY, wall);
 				}
 				for (int depth = 1; depth <= 3; depth++) {
-					TileEditor.SetTerrain(point.X + offsetX, point.Y + depth, depth == 1 ? TileID.WoodenBeam : TileID.LivingWood);
+					TileEditor.SetTerrain(point.X + offsetX, point.Y + depth, depth == 1 ? TileID.WoodenBeam : palette.Timber);
 				}
 			}
 
 			if (index % (11 + Noise(route.Start.X, route.End.X, 457) % 8) == 0) {
-				TileEditor.SetTerrain(point.X, point.Y - CorridorHeadroom - 1, TileID.WoodenBeam);
+				int supportTop = point.Y - CorridorHeadroom - 1 - Math.Min(ceilingExtra, 3);
+				for (int y = supportTop; y <= point.Y - CorridorHeadroom - 1; y++) {
+					TileEditor.SetTerrain(point.X, y, TileID.WoodenBeam);
+				}
 				TileEditor.TryPlaceTorch(point.X + 1, point.Y - 3);
 			}
 			index++;
 		}
+	}
+
+	private static int SampleCeilingExtra(MineRoute route, int index)
+	{
+		const int span = 29;
+		int cell = index / span;
+		double local = (index % span) / (double)span;
+		local = local * local * (3d - 2d * local);
+		int routeKey = route.Start.X * 31 ^ route.Start.Y * 17 ^ route.End.X * 13 ^ route.End.Y * 7;
+		int left = Noise(routeKey, cell, 0x4341_5645) % 6;
+		int right = Noise(routeKey, cell + 1, 0x4341_5645) % 6;
+		int extra = (int)Math.Round(left + (right - left) * local);
+
+		// A minority of macro cells swell into broad natural pockets rather than
+		// making every rail run a constant-height timber tube.
+		if (Noise(routeKey, cell, 0x504F_434B) % 100 < 32) {
+			extra += (int)Math.Round(Math.Sin(local * Math.PI) * 3d);
+		}
+		return Math.Clamp(extra, 0, 8);
 	}
 
 	private static void BuildJunctionStations(SurfaceMinePlan plan)
@@ -452,6 +539,7 @@ internal static class SurfaceMineGenerator
 			degree[route.End] = degree.GetValueOrDefault(route.End) + 1;
 		}
 		foreach ((Point center, int routeDegree) in degree.Where(pair => pair.Value >= 3)) {
+			MinePalette palette = ResolvePalette(plan.ThemeAt(center));
 			for (int offsetX = -12; offsetX <= 12; offsetX++) {
 				for (int offsetY = -8; offsetY <= 3; offsetY++) {
 					double normalized = (double)(offsetX * offsetX) / 144d + (double)(offsetY * offsetY) / 64d;
@@ -461,11 +549,11 @@ internal static class SurfaceMineGenerator
 					int x = center.X + offsetX;
 					int y = center.Y + offsetY;
 					if (offsetY >= 1) {
-						TileEditor.SetTerrain(x, y, offsetY == 1 ? TileID.WoodenBeam : TileID.LivingWood);
+						TileEditor.SetTerrain(x, y, offsetY == 1 ? TileID.WoodenBeam : palette.Timber);
 					}
 					else {
 						TileEditor.ClearTerrain(x, y);
-						TileEditor.SetWall(x, y, offsetX % 8 < 4 ? WallID.Planked : WallID.Stone);
+						TileEditor.SetWall(x, y, offsetX % 8 < 4 ? palette.Wall : palette.AccentWall);
 					}
 				}
 			}
@@ -480,7 +568,7 @@ internal static class SurfaceMineGenerator
 		}
 	}
 
-	private static void PrepareTrackCell(Point point, HashSet<Point> plannedTrack)
+	private static void PrepareTrackCell(SurfaceMinePlan plan, Point point, HashSet<Point> plannedTrack)
 	{
 		for (int offsetX = -2; offsetX <= 2; offsetX++) {
 			for (int y = point.Y - CorridorHeadroom - 1; y < point.Y; y++) {
@@ -496,7 +584,7 @@ internal static class SurfaceMineGenerator
 		if (!plannedTrack.Contains(support)
 			&& !IsReservedTrackHeadroom(support, plannedTrack)
 			&& !TileEditor.IsSolid(point.X, point.Y + 1)) {
-			TileEditor.SetTerrain(point.X, point.Y + 1, TileID.LivingWood);
+			TileEditor.SetTerrain(point.X, point.Y + 1, ResolvePalette(plan.ThemeAt(point)).Timber);
 		}
 	}
 
@@ -546,26 +634,27 @@ internal static class SurfaceMineGenerator
 		}
 
 		int floorY = section.Center.Y + Math.Clamp(section.Area.Height / 4, 8, 13) - 1;
+		MinePalette palette = ResolvePalette(section.Theme);
 		int count = 0;
-		count += TryPlaceFurniture(section.Area.Left + 10, floorY, TileID.WorkBenches) ? 1 : 0;
-		count += TryPlaceFurniture(section.Area.Left + 18, floorY, TileID.Tables) ? 1 : 0;
-		count += TryPlaceFurniture(section.Area.Left + 23, floorY, TileID.Chairs) ? 1 : 0;
+		count += TryPlaceFurniture(section.Area.Left + 10, floorY, TileID.WorkBenches, palette.WorkbenchStyle) ? 1 : 0;
+		count += TryPlaceFurniture(section.Area.Left + 18, floorY, palette.TableTile, palette.TableStyle) ? 1 : 0;
+		count += TryPlaceFurniture(section.Area.Left + 23, floorY, TileID.Chairs, palette.ChairStyle) ? 1 : 0;
 		count += TryPlaceFurniture(section.Area.Right - 12, floorY, TileID.Anvils) ? 1 : 0;
-		count += TryPlaceFurniture(section.Area.Right - 20, floorY, TileID.Bookcases) ? 1 : 0;
+		count += TryPlaceFurniture(section.Area.Right - 20, floorY, TileID.Bookcases, palette.BookcaseStyle) ? 1 : 0;
 		count += TileEditor.TryPlaceSmallPile(section.Area.Right - 7, floorY, section.Id % 6, 0) ? 1 : 0;
 		count += TileEditor.TryPlaceSmallPile(section.Area.Center.X + 13, floorY, (section.Id + 3) % 6, 0) ? 1 : 0;
 		TileEditor.TryPlaceTorch(section.Area.Center.X, section.Area.Top + 5);
 		return count;
 	}
 
-	private static bool TryPlaceFurniture(int x, int y, ushort tileType)
+	private static bool TryPlaceFurniture(int x, int y, ushort tileType, int style = 0)
 	{
 		for (int clearX = x - 2; clearX <= x + 2; clearX++) {
 			for (int clearY = y - 4; clearY <= y; clearY++) {
 				TileEditor.ClearTerrain(clearX, clearY);
 			}
 		}
-		WorldGen.PlaceTile(x, y, tileType, mute: true, forced: true);
+		WorldGen.PlaceTile(x, y, tileType, mute: true, forced: true, plr: -1, style: style);
 		for (int offsetX = -2; offsetX <= 2; offsetX++) {
 			for (int offsetY = -3; offsetY <= 1; offsetY++) {
 				if (HasTile(x + offsetX, y + offsetY, tileType)) {
@@ -603,32 +692,35 @@ internal static class SurfaceMineGenerator
 
 		int displayCenterX = display.X;
 		int displayFloorY = display.Y;
+		MinePalette palette = ResolvePalette(section.Theme);
 		for (int x = displayCenterX - 10; x <= displayCenterX + 10; x++) {
 			for (int y = section.Center.Y + 2; y <= displayFloorY; y++) {
 				TileEditor.ClearTerrain(x, y);
-				TileEditor.SetWall(x, y, (x - displayCenterX) % 8 < 4 ? WallID.Planked : WallID.LivingWoodUnsafe);
+				TileEditor.SetWall(x, y, (x - displayCenterX) % 8 < 4 ? palette.Wall : palette.AccentWall);
 			}
-			TileEditor.SetTerrain(x, displayFloorY + 1, TileID.LivingWood);
-			TileEditor.SetTerrain(x, displayFloorY + 2, TileID.LivingWood);
+			TileEditor.SetTerrain(x, displayFloorY + 1, palette.Timber);
+			TileEditor.SetTerrain(x, displayFloorY + 2, palette.Timber);
 		}
 
 		int portalX = displayCenterX - 8;
 		for (int x = portalX - 2; x <= portalX + 2; x++) {
-			TileEditor.TryPlacePlatformForced(x, section.Center.Y + 1);
+			TileEditor.TryPlacePlatformForced(x, section.Center.Y + 1, palette.PlatformStyle);
 		}
 		for (int y = section.Center.Y + 2; y <= displayFloorY; y++) {
 			TileEditor.SetTerrain(portalX, y, TileID.Rope);
 		}
 
-		PlaceWorkbenchFootprint(displayCenterX - 7, displayFloorY);
-		PlaceTableFootprint(displayCenterX, displayFloorY);
-		PlaceChairFootprint(displayCenterX + 7, displayFloorY);
+		int placed = 0;
+		placed += PlaceWorkbenchFootprint(displayCenterX - 7, displayFloorY, palette) ? 1 : 0;
+		placed += PlaceTableFootprint(displayCenterX, displayFloorY, palette) ? 1 : 0;
+		placed += PlaceChairFootprint(displayCenterX + 7, displayFloorY, palette) ? 1 : 0;
 		TileEditor.TryPlaceTorch(displayCenterX + 9, displayFloorY - 4);
-		return 3;
+		return placed;
 	}
 
 	private static int BuildCompactWorkAlcove(MineSection section, HashSet<Point> plannedTrack)
 	{
+		MinePalette palette = ResolvePalette(section.Theme);
 		for (int floorY = section.Area.Top + 12; floorY < section.Area.Bottom - 5; floorY += 7) {
 			for (int centerX = section.Area.Left + 12; centerX < section.Area.Right - 12; centerX += 10) {
 				Rectangle alcove = new(centerX - 10, floorY - 7, 21, 10);
@@ -639,83 +731,84 @@ internal static class SurfaceMineGenerator
 				for (int x = alcove.Left; x < alcove.Right; x++) {
 					for (int y = alcove.Top; y < floorY; y++) {
 						TileEditor.ClearTerrain(x, y);
-						TileEditor.SetWall(x, y, (x - alcove.Left) % 8 < 4 ? WallID.Planked : WallID.LivingWoodUnsafe);
+						TileEditor.SetWall(x, y, (x - alcove.Left) % 8 < 4 ? palette.Wall : palette.AccentWall);
 					}
-					TileEditor.SetTerrain(x, floorY, TileID.LivingWood);
-					TileEditor.SetTerrain(x, floorY + 1, TileID.LivingWood);
+					TileEditor.SetTerrain(x, floorY, palette.Timber);
+					TileEditor.SetTerrain(x, floorY + 1, palette.Timber);
 				}
-				PlaceWorkbenchFootprint(centerX - 7, floorY - 1);
-				PlaceTableFootprint(centerX, floorY - 1);
-				PlaceChairFootprint(centerX + 7, floorY - 1);
+				int placed = 0;
+				placed += PlaceWorkbenchFootprint(centerX - 7, floorY - 1, palette) ? 1 : 0;
+				placed += PlaceTableFootprint(centerX, floorY - 1, palette) ? 1 : 0;
+				placed += PlaceChairFootprint(centerX + 7, floorY - 1, palette) ? 1 : 0;
 				TileEditor.TryPlaceTorch(centerX + 9, floorY - 4);
-				return 3;
+				return placed;
 			}
 		}
 		return 0;
 	}
 
-	private static int BuildWorkyardLoft(Point entrance)
+	private static int BuildWorkyardLoft(MineSection workyard)
 	{
+		Point entrance = workyard.Center;
+		MinePalette palette = ResolvePalette(workyard.Theme);
 		int left = entrance.X + 12;
 		int right = entrance.X + 30;
 		int floorY = entrance.Y - 8;
 		for (int x = left; x <= right; x++) {
 			for (int y = floorY - 6; y < floorY; y++) {
 				TileEditor.ClearTerrain(x, y);
-				TileEditor.SetWall(x, y, (x - left) % 8 < 4 ? WallID.Planked : WallID.LivingWoodUnsafe);
+				TileEditor.SetWall(x, y, (x - left) % 8 < 4 ? palette.Wall : palette.AccentWall);
 			}
 			if (x >= left + 2 && x <= left + 5) {
-				TileEditor.TryPlacePlatformForced(x, floorY);
+				TileEditor.TryPlacePlatformForced(x, floorY, palette.PlatformStyle);
 			}
 			else {
-				TileEditor.SetTerrain(x, floorY, TileID.LivingWood);
-				TileEditor.SetTerrain(x, floorY + 1, TileID.LivingWood);
+				TileEditor.SetTerrain(x, floorY, palette.Timber);
+				TileEditor.SetTerrain(x, floorY + 1, palette.Timber);
 			}
 			int roofY = floorY - 8 + Math.Abs(x - (left + right) / 2) / 6;
-			TileEditor.SetTerrain(x, roofY, TileID.LivingWood);
-			TileEditor.SetTerrain(x, roofY + 1, TileID.LivingWood);
+			TileEditor.SetTerrain(x, roofY, palette.Masonry);
+			TileEditor.SetTerrain(x, roofY + 1, palette.Timber);
 		}
 		for (int y = floorY - 1; y <= entrance.Y - 1; y++) {
 			TileEditor.SetTerrain(left + 3, y, TileID.Rope);
 		}
-		PlaceWorkbenchFootprint(left + 8, floorY - 1);
-		PlaceTableFootprint(left + 13, floorY - 1);
-		PlaceChairFootprint(left + 17, floorY - 1);
+		int placed = 0;
+		placed += PlaceWorkbenchFootprint(left + 8, floorY - 1, palette) ? 1 : 0;
+		placed += PlaceTableFootprint(left + 13, floorY - 1, palette) ? 1 : 0;
+		placed += PlaceChairFootprint(left + 17, floorY - 1, palette) ? 1 : 0;
 		TileEditor.TryPlaceTorch(right - 2, floorY - 4);
-		return 3;
+		return placed;
 	}
 
-	private static void PlaceWorkbenchFootprint(int leftX, int bottomY)
+	private static bool PlaceWorkbenchFootprint(int leftX, int bottomY, MinePalette palette)
 	{
-		SetFurnitureTile(leftX, bottomY, TileID.WorkBenches, frameX: 0, frameY: 0);
-		SetFurnitureTile(leftX + 1, bottomY, TileID.WorkBenches, frameX: 18, frameY: 0);
+		WorldGen.PlaceTile(leftX, bottomY, TileID.WorkBenches, mute: true, forced: false, plr: -1, style: palette.WorkbenchStyle);
+		return HasNearbyTile(leftX, bottomY, TileID.WorkBenches);
 	}
 
-	private static void PlaceTableFootprint(int centerX, int bottomY)
+	private static bool PlaceTableFootprint(int centerX, int bottomY, MinePalette palette)
 	{
-		for (int offsetX = -1; offsetX <= 1; offsetX++) {
-			for (int offsetY = -1; offsetY <= 0; offsetY++) {
-				SetFurnitureTile(
-					centerX + offsetX,
-					bottomY + offsetY,
-					TileID.Tables,
-					(short)((offsetX + 1) * 18),
-					(short)((offsetY + 1) * 18));
+		WorldGen.PlaceTile(centerX, bottomY, palette.TableTile, mute: true, forced: false, plr: -1, style: palette.TableStyle);
+		return HasNearbyTile(centerX, bottomY, palette.TableTile);
+	}
+
+	private static bool PlaceChairFootprint(int x, int bottomY, MinePalette palette)
+	{
+		WorldGen.PlaceTile(x, bottomY, TileID.Chairs, mute: true, forced: false, plr: -1, style: palette.ChairStyle);
+		return HasNearbyTile(x, bottomY, TileID.Chairs);
+	}
+
+	private static bool HasNearbyTile(int x, int y, ushort type)
+	{
+		for (int offsetX = -3; offsetX <= 3; offsetX++) {
+			for (int offsetY = -3; offsetY <= 1; offsetY++) {
+				if (HasTile(x + offsetX, y + offsetY, type)) {
+					return true;
+				}
 			}
 		}
-	}
-
-	private static void PlaceChairFootprint(int x, int bottomY)
-	{
-		SetFurnitureTile(x, bottomY - 1, TileID.Chairs, frameX: 0, frameY: 0);
-		SetFurnitureTile(x, bottomY, TileID.Chairs, frameX: 0, frameY: 18);
-	}
-
-	private static void SetFurnitureTile(int x, int y, ushort type, short frameX, short frameY)
-	{
-		TileEditor.SetTerrain(x, y, type);
-		Main.tile[x, y].TileFrameX = frameX;
-		Main.tile[x, y].TileFrameY = frameY;
+		return false;
 	}
 
 	internal static IEnumerable<Point> Rasterize(MineRoute route)
@@ -752,18 +845,30 @@ internal static class SurfaceMineGenerator
 			}
 			Point outside = route.Start == section.Center ? route.End : route.Start;
 			int direction = Math.Sign(outside.X - section.Center.X);
+			ReinforceQuarantineShell(section, direction);
 			int gateX = section.Center.X + direction * (section.Area.Width / 2 - 8);
-			for (int width = 0; width < 3; width++) {
-				int columnX = gateX + direction * width;
-				int trackY = section.Center.Y;
-				foreach (Point point in Rasterize(route)) {
-					if (point.X == columnX) {
-						trackY = point.Y;
-						break;
-					}
+			int tunnelEndX = gateX + direction * 14;
+			int tunnelLeft = Math.Min(section.Center.X + direction * 8, tunnelEndX);
+			int tunnelRight = Math.Max(section.Center.X + direction * 8, tunnelEndX);
+			for (int x = tunnelLeft; x <= tunnelRight; x++) {
+				int trackY = RouteYAt(route, x, section.Center.Y);
+				for (int depth = 1; depth <= 4; depth++) {
+					TileEditor.SetTerrain(x, trackY + depth, TileID.GrayBrick);
+					TileEditor.SetTerrain(x, trackY - CorridorHeadroom - 1 - depth, TileID.GrayBrick);
+					TileEditor.SetWall(x, trackY + depth, WallID.GrayBrick);
+					TileEditor.SetWall(x, trackY - CorridorHeadroom - 1 - depth, WallID.GrayBrick);
 				}
+				for (int y = trackY - CorridorHeadroom - 1; y <= trackY; y++) {
+					TileEditor.SetWall(x, y, WallID.GrayBrick);
+				}
+			}
+
+			for (int width = 0; width < 4; width++) {
+				int columnX = gateX + direction * width;
+				int trackY = RouteYAt(route, columnX, section.Center.Y);
 				for (int y = trackY - 6; y < trackY; y++) {
 					TileEditor.SetActuatedTerrain(columnX, y, TileID.GrayBrick);
+					TileEditor.SetWall(columnX, y, WallID.GrayBrick);
 				}
 			}
 
@@ -773,10 +878,168 @@ internal static class SurfaceMineGenerator
 				int columnX = innerGateX + direction * width;
 				for (int y = innerTrackY - 8; y < innerTrackY; y++) {
 					TileEditor.SetActuatedTerrain(columnX, y, TileID.GrayBrick);
+					TileEditor.SetWall(columnX, y, WallID.GrayBrick);
 				}
 			}
 		}
 	}
+
+	private static void ReinforceQuarantineShell(MineSection section, int portalDirection)
+	{
+		Rectangle area = section.Area;
+		int radiusX = area.Width / 2 - 2;
+		int radiusY = area.Height / 2 - 2;
+		for (int x = area.Left + 1; x < area.Right - 1; x++) {
+			int offsetX = x - area.Center.X;
+			int portalBandStart = Math.Max(8, area.Width / 2 - 18);
+			if (Math.Sign(offsetX) == portalDirection && Math.Abs(offsetX) >= portalBandStart) {
+				continue;
+			}
+			double normalizedX = (double)offsetX / Math.Max(1, radiusX);
+			int halfHeight = Math.Max(3, (int)Math.Round(radiusY * Math.Sqrt(Math.Max(0d, 1d - normalizedX * normalizedX))));
+			int outerTop = area.Center.Y - halfHeight + Noise(section.Id, x, 17) % 5 - 2;
+			int outerBottom = area.Center.Y + halfHeight + Noise(section.Id, x, 43) % 5 - 2;
+			for (int depth = 0; depth < 4 && outerTop + depth <= outerBottom - depth; depth++) {
+				SetSafeQuarantineLayer(x, outerTop + depth);
+				SetSafeQuarantineLayer(x, outerBottom - depth);
+			}
+		}
+
+		int oppositeDirection = -portalDirection;
+		int oppositeEdgeX = oppositeDirection < 0 ? area.Left + 1 : area.Right - 2;
+		for (int depth = 0; depth < 4; depth++) {
+			int x = oppositeEdgeX - oppositeDirection * depth;
+			int offsetX = x - area.Center.X;
+			double normalizedX = (double)offsetX / Math.Max(1, radiusX);
+			int halfHeight = Math.Max(3, (int)Math.Round(radiusY * Math.Sqrt(Math.Max(0d, 1d - normalizedX * normalizedX))));
+			int outerTop = area.Center.Y - halfHeight + Noise(section.Id, x, 17) % 5 - 2;
+			int outerBottom = area.Center.Y + halfHeight + Noise(section.Id, x, 43) % 5 - 2;
+			for (int y = outerTop; y <= outerBottom; y++) {
+				SetSafeQuarantineLayer(x, y);
+			}
+		}
+	}
+
+	private static void SetSafeQuarantineLayer(int x, int y)
+	{
+		TileEditor.SetTerrain(x, y, TileID.GrayBrick);
+		TileEditor.SetWall(x, y, WallID.GrayBrick);
+	}
+
+	internal static bool HasFourTileQuarantine(SurfaceMinePlan plan, MineSection section, out string reason)
+	{
+		MineRoute? spur = plan.Routes
+			.Where(route => route.Start == section.Center || route.End == section.Center)
+			.Select<MineRoute, MineRoute?>(route => route)
+			.FirstOrDefault();
+		if (spur is not MineRoute route) {
+			reason = "no route reaches the annex";
+			return false;
+		}
+		Point outside = route.Start == section.Center ? route.End : route.Start;
+		int direction = Math.Sign(outside.X - section.Center.X);
+		int gateX = section.Center.X + direction * (section.Area.Width / 2 - 8);
+		for (int width = 0; width < 4; width++) {
+			int x = gateX + direction * width;
+			int trackY = RouteYAt(route, x, section.Center.Y);
+			for (int y = trackY - 6; y < trackY; y++) {
+				Tile tile = Main.tile[x, y];
+				if (!tile.HasTile || tile.TileType != TileID.GrayBrick || !tile.HasActuator
+					|| tile.WallType != WallID.GrayBrick) {
+					reason = $"gate column {x} is not an actuated Gray Brick and safe-wall barrier";
+					return false;
+				}
+			}
+			for (int depth = 1; depth <= 4; depth++) {
+				Tile floor = Main.tile[x, trackY + depth];
+				if (!floor.HasTile || floor.TileType != TileID.GrayBrick || floor.WallType != WallID.GrayBrick) {
+					reason = $"gate column {x} has only {depth - 1}/4 safe floor blocks";
+					return false;
+				}
+				int ceilingY = trackY - CorridorHeadroom - 1 - depth;
+				Tile ceiling = Main.tile[x, ceilingY];
+				if (!ceiling.HasTile || ceiling.TileType != TileID.GrayBrick || ceiling.WallType != WallID.GrayBrick) {
+					reason = $"gate column {x} has only {depth - 1}/4 safe ceiling blocks";
+					return false;
+				}
+			}
+		}
+
+		int shellCenterY = section.Area.Center.Y;
+		int oppositeDirection = -direction;
+		int oppositeShellX = oppositeDirection < 0 ? section.Area.Left + 1 : section.Area.Right - 2;
+		for (int depth = 0; depth < 4; depth++) {
+			int x = oppositeShellX - oppositeDirection * depth;
+			if (!IsSafeQuarantineLayer(x, shellCenterY)) {
+				reason = $"annex opposite shell at {x},{shellCenterY} lacks four Gray Brick and safe-wall layers";
+				return false;
+			}
+		}
+
+		int shellCenterX = section.Area.Center.X;
+		for (int verticalDirection = -1; verticalDirection <= 1; verticalDirection += 2) {
+			int edgeY = verticalDirection < 0 ? section.Area.Top : section.Area.Bottom - 1;
+			while (edgeY != shellCenterY && !IsSafeQuarantineLayer(shellCenterX, edgeY)) {
+				edgeY -= verticalDirection;
+			}
+			for (int depth = 0; depth < 4; depth++) {
+				int y = edgeY - verticalDirection * depth;
+				if (!IsSafeQuarantineLayer(shellCenterX, y)) {
+					reason = $"annex {(verticalDirection < 0 ? "ceiling" : "floor")} shell at {shellCenterX},{y} "
+						+ "lacks four Gray Brick and safe-wall layers";
+					return false;
+				}
+			}
+		}
+		reason = string.Empty;
+		return true;
+	}
+
+	private static bool IsSafeQuarantineLayer(int x, int y)
+	{
+		Tile tile = Main.tile[x, y];
+		return tile.HasTile && tile.TileType == TileID.GrayBrick && tile.WallType == WallID.GrayBrick;
+	}
+
+	private static int RouteYAt(MineRoute route, int x, int fallbackY)
+	{
+		foreach (Point point in Rasterize(route)) {
+			if (point.X == x) {
+				return point.Y;
+			}
+		}
+		return fallbackY;
+	}
+
+	private static MinePalette ResolvePalette(BiomeKind biome) => biome switch {
+		BiomeKind.Snow => new MinePalette(
+			TileID.BorealWood, TileID.BorealWood, WallID.SnowWallUnsafe, WallID.Stone,
+			19, TileID.Tables, 28, 30, 23, 25),
+		BiomeKind.Desert => new MinePalette(
+			TileID.PalmWood, TileID.SandstoneBrick, WallID.Sandstone, WallID.Stone,
+			42, TileID.Tables2, 7, 43, 39, 39),
+		BiomeKind.Jungle => new MinePalette(
+			TileID.RichMahogany, TileID.LivingMahogany, WallID.JungleUnsafe, WallID.Planked,
+			2, TileID.Tables, 2, 3, 2, 12),
+		BiomeKind.Evil when WorldGen.crimson => new MinePalette(
+			TileID.LivingWood, TileID.CrimstoneBrick, WallID.CrimstoneUnsafe, WallID.Planked,
+			0, TileID.Tables, 0, 0, 0, 0),
+		BiomeKind.Evil => new MinePalette(
+			TileID.LivingWood, TileID.EbonstoneBrick, WallID.EbonstoneUnsafe, WallID.Planked,
+			0, TileID.Tables, 0, 0, 0, 0),
+		BiomeKind.Mushroom => new MinePalette(
+			TileID.MushroomBlock, TileID.MushroomBlock, WallID.MushroomUnsafe, WallID.Planked,
+			18, TileID.Tables, 27, 9, 7, 24),
+		BiomeKind.Underworld => new MinePalette(
+			TileID.AshWood, TileID.AshWood, WallID.HellstoneBrickUnsafe, WallID.ObsidianBrickUnsafe,
+			0, TileID.Tables, 0, 0, 0, 0),
+		BiomeKind.Cavern => new MinePalette(
+			TileID.LivingWood, TileID.GrayBrick, WallID.Stone, WallID.Planked,
+			0, TileID.Tables, 0, 0, 0, 0),
+		_ => new MinePalette(
+			TileID.LivingWood, TileID.WoodBlock, WallID.LivingWoodUnsafe, WallID.Planked,
+			0, TileID.Tables, 0, 0, 0, 0)
+	};
 
 	private static int Noise(int id, int x, int salt)
 	{
@@ -828,4 +1091,16 @@ internal static class SurfaceMineGenerator
 			return (int)value;
 		}
 	}
+
+	private readonly record struct MinePalette(
+		ushort Timber,
+		ushort Masonry,
+		ushort Wall,
+		ushort AccentWall,
+		int PlatformStyle,
+		ushort TableTile,
+		int TableStyle,
+		int ChairStyle,
+		int WorkbenchStyle,
+		int BookcaseStyle);
 }

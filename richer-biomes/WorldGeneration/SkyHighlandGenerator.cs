@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
@@ -91,6 +92,66 @@ internal static class SkyHighlandGenerator
 				highland.Width + 40,
 				highland.Depth + 62));
 		}
+	}
+
+	public static void RepairVerticalRoutes(WorldPlan worldPlan, GenerationManifest manifest)
+	{
+		for (int index = 0; index < worldPlan.SkyHighlands.Count; index++) {
+			SkyHighlandPlan plan = worldPlan.SkyHighlands[index];
+			UnifiedRandom random = new(MixSeed(worldPlan.GenerationSeed, SkySeedSalt, index));
+			int left = Math.Clamp(plan.CenterX - plan.Width / 2, 55, Main.maxTilesX - plan.Width - 55);
+			int right = left + plan.Width - 1;
+			int[] surface = BuildSurfaceProfile(plan, random, left, right);
+			int undersideY = plan.SurfaceY + Math.Max(50, plan.Depth * 2 / 3);
+			int[] connectors = plan.Style switch {
+				SkyHighlandStyle.TerracedMeadow => [left + plan.Width / 3, right - plan.Width / 3],
+				SkyHighlandStyle.CloudBasin => [left + plan.Width / 2],
+				SkyHighlandStyle.BrokenArchipelago => [left + plan.Width / 4, left + plan.Width / 2, right - plan.Width / 4],
+				_ => [left + plan.Width / 3, right - plan.Width / 3]
+			};
+			foreach (int x in connectors) {
+				int topY = surface[x - left] + 1;
+				int bottomY = undersideY - 5;
+				for (int offset = -3; offset <= 3; offset++) {
+					if (!IsVerticalRouteExcluded(manifest, x + offset, surface[x - left])) {
+						TileEditor.TryPlacePlatformForced(x + offset, surface[x - left]);
+					}
+				}
+				for (int y = topY; y <= bottomY; y++) {
+					for (int offset = -3; offset <= 3; offset++) {
+						int cellX = x + offset;
+						if (IsVerticalRouteExcluded(manifest, cellX, y)
+							|| TileEditor.IsProgressionTile(Main.tile[cellX, y])) {
+							continue;
+						}
+						TileEditor.ClearTerrain(cellX, y);
+						TileEditor.SetWall(cellX, y, SampleSkyNoise(cellX, y, plan.CenterX + 887) > 0.5d
+							? WallID.DiscWall
+							: WallID.Cloud);
+					}
+					if (!IsVerticalRouteExcluded(manifest, x, y)) {
+						TileEditor.SetTerrain(x, y, TileID.Rope);
+					}
+					if ((y - topY) % 8 == 0) {
+						for (int offset = -3; offset <= 3; offset++) {
+							if (offset != 0 && !IsVerticalRouteExcluded(manifest, x + offset, y)) {
+								TileEditor.TryPlacePlatformForced(x + offset, y);
+							}
+						}
+					}
+				}
+			}
+			TileEditor.Frame(new Rectangle(left, Math.Max(45, plan.SurfaceY - 8), plan.Width, plan.Depth + 40), border: 2);
+		}
+	}
+
+	private static bool IsVerticalRouteExcluded(GenerationManifest manifest, int x, int y)
+	{
+		Point point = new(x, y);
+		return manifest.Landmarks.Any(record => record.Area.Contains(point))
+			|| manifest.Bridges.Any(record => record.Area.Contains(point))
+			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.MineSections.Any(record => record.Area.Contains(point));
 	}
 
 	private static void ReinforceThinSupports(Rectangle area)
@@ -316,7 +377,7 @@ internal static class SkyHighlandGenerator
 						SampleSkyNoise(x + offset, y, plan.CenterX + 887) > 0.5d ? WallID.DiscWall : WallID.Cloud);
 				}
 				TileEditor.SetTerrain(x, y, TileID.Rope);
-				if ((y - topY) % 11 == 0) {
+				if ((y - topY) % 8 == 0) {
 					for (int offset = -3; offset <= 3; offset++) {
 						if (offset != 0) {
 							TileEditor.TryPlacePlatformForced(x + offset, y);
@@ -488,6 +549,9 @@ internal static class SkyHighlandGenerator
 	{
 		int skyLine = (int)Math.Round(Main.worldSurface * 0.35d);
 		foreach (MountainRangePlan mountain in plan.Mountains) {
+			if (mountain.HeightStyle != MountainHeightStyle.SkyPiercing) {
+				continue;
+			}
 			WorldRegion region = plan.Regions[mountain.RegionId];
 			for (int x = region.Left + 12; x <= region.Right - 12; x++) {
 				int surfaceY = plan.SurfaceAt(x);
