@@ -24,6 +24,7 @@ The showcase world used the numeric seed `882350129`. The exact result is determ
 - Occasional forest lakes and terrain-integrated bridges with irregular shores, beds, supports, and approaches. Stone variants can become tombstone-lined graveyard crossings.
 - Broad, correlated biome and material transitions. Natural terrain, walls, foundations, and structure joins avoid straight rectangular generator seams.
 - One guaranteed visible surface mine leading into an interconnected Cavern rail district with junctions, cycles, work lines, automatic downhill cart drops, momentum-preserving launch ramps, bouncy terminal turnarounds, timber supports, furniture, flooded areas, collapses, mountain routes, and sealed world-evil sections.
+- One guaranteed underground Torch God temple. Four layouts inherit the surrounding biome's brick, wall, torch, platform, chest, and furniture palette; a furnished altar chest holds the one ordinary torch missing from a conspicuous central socket.
 - Protected spawn ground, building terraces, regional cave routes, and quieter construction space between major landmarks.
 
 Vanilla Worlds Overhauled leaves vanilla loot tables and progression sites intact. Its generators protect the Dungeon, Jungle Temple, Aether, chests, wiring, and other progression-sensitive content.
@@ -67,7 +68,7 @@ Generate a deterministic playtest world by choosing a mode, size, and unique see
 ./scripts/generate-playtest-world.sh --classic --size large --seed Majesty-Large-001
 ```
 
-The harness builds and installs the mod, runs tModLoader in a pseudo-terminal, requires strict validation, reloads and saves the world, and verifies the saved generation manifest after another reload. It preserves diagnostic logs under `.playtest/Logs` and refuses to overwrite an existing world.
+The harness builds and installs the mod, runs tModLoader in a pseudo-terminal, requires strict validation, reloads and saves the world, then verifies the saved generation manifest and the Torch God temple's 100 live torches after another reload. It preserves diagnostic logs under `.playtest/Logs` and refuses to overwrite an existing world.
 
 Run the complete size and difficulty matrix with:
 

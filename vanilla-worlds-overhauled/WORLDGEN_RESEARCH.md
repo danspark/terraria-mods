@@ -339,10 +339,33 @@ The 0.3.5 verification matrix ran on 2026-09-02 against Terraria 1.4.4.9 and tMo
 
 All three rows passed finished-tile validation, first reload, save, and second reload with manifest version 7 intact. Each mine retained the six automatic downhill transfers, one ramp-framed launch, its open landing, at least four bouncy terminal turnarounds, all eleven required edges, and the sealed evil quarantine. An independent persisted-world scan of the large seed found the expected frame families and rendered the complete mine plus focused gravity-drop, launch-ramp, and bouncy-terminal crops.
 
+## Torch God activation and temple research
+
+The Torch God implementation was checked against the installed Terraria 1.4.4.9 and tModLoader 2026.07.3.0 assemblies. `Player.TryRecalculatingTorchLuck` scans from 40 tiles left to 40 tiles right and from 40 tiles above to 40 tiles below the stored player center: an 81-by-81 square accumulated one row at a time. A torch counts only when its tile belongs to `TileID.Sets.Torch` and its frame is lit (`frameX < 66`). `UpdateTorchLuck_ConsumeCountersAndCalculate` starts the unmodified event only below the world surface, outside its cooldown, before the player has unlocked biome torches, and when `nearbyTorches > 100`. One hundred is therefore the correct dormant count and 101 is the first activating count.
+
+Once active, `Player.TorchAttack` searches a larger 201-by-201 square around the current player, selects lit torch tiles, changes their frames to the extinguished family, and tracks them for relighting. The authored arena keeps every one of its 100 starting torches within 34 tiles of the activation point, so the entire set lies inside both the initial scan and the attack search. The supplied chest item is an ordinary vanilla Torch; placing it in the wall-backed empty socket raises the local total from 100 to 101 without introducing a custom event or reward.
+
+The structure is planned after the required authored landmarks, mine, mountains, waters, transitions, and routes have completed their final repairs and records. This ordering matters: an earlier prototype reserved its broad activation envelope too soon and could reduce the sites available to a later required landmark, while planning before the last liquid refill could invalidate a previously dry cave. At the final boundary, the building and access passage reject progression tiles, Dungeon and Jungle Temple cells, Shimmer, chests, and wiring. The wider activation square additionally rejects progression objects, wiring, chests, and housing walls, but permits ordinary cave pots and decoration that the temple never mutates. Only pre-existing torches in that square are removed before the exact themed array is placed.
+
+The first reload audit exposed a separate liquid-timing hazard. Generation and the immediate world-load callback both saw 100 valid supported torches, but Terraria's subsequent liquid-settle phase allowed a nearby lava reservoir to enter the passage and remove five of them before the next save. Restricting torches to brick anchors did not address the cause. The planner now rejects liquid inside the future body and around the complete passage, including exterior masonry buffers, without disqualifying an unrelated sealed pool elsewhere in the activation square. The harness recounts live tiles on both reloads so persisted metadata cannot conceal another loss.
+
+The 0.3.6 manifest-version-8 matrix ran on 2026-09-02:
+
+| Mode and size | Seed | World evil | Temple | Lit torches | Generation time |
+| --- | --- | --- | --- | ---: | ---: |
+| Classic small | `Majesty-Matrix-Small-001` (`1399794971`) | Crimson | Desert Crucible Vault | 100 | 16.8 s |
+| Journey medium | `Majesty-Matrix-Medium-001` (`204860939`) | Corruption | Desert Sunken Basilica | 100 | 43.0 s |
+| Classic large | `Majesty-Matrix-Large-001` (`1180213525`) | Crimson | Desert Stepped Reliquary | 100 | 65.5 s |
+
+Every row passed finished-tile validation, first reload, save, and second reload. The persisted manifest retained the temple's bounds, layout, theme, activation point, altar chest, empty socket, torch count, furniture count, entrance count, and brick count. The reload logger independently counted exactly 100 live lit tiles after both save cycles. Generation validation also found one ordinary Torch in the complete two-by-two chest, a dry empty socket, at least 420 themed brick cells, multi-tile side walls, at least 350 open unsafe-wall cells, no valid NPC housing, at least six furniture or prop placements, and a flood-filled route from every recorded cave portal to the altar.
+
+Independent persisted-world renders inspected all three matrix temples at tile resolution. The compact Crucible Vault rises into a narrow dome, the Sunken Basilica uses a wider rounded shell and nested central arch, and the Stepped Reliquary shifts its ledges and roof mass asymmetrically. Their thick Sandstone-and-Mudstone masonry blends into the Underground Desert host while the darker unsafe-wall interior, altar chest, ledges, columns, stairs, layout-specific torch motifs, and open cave portals remain legible. The medium and large examples each retain two independent cavern approaches; the small example retains one. This is structural map inspection, not a substitute for playing the event; a repeatable live-player activation and combat test remains future work.
+
 ## Future research queue
 
 - Move the independent deterministic full-world and feature-crop renderer into the repository test harness so shape review becomes as repeatable as connectivity validation.
 - Prototype more bridge families, especially a natural stone arch and a partially collapsed rope bridge with a safe lower detour.
 - Evaluate mine junction frame states in live play, including high-speed carts at diagonal crossings.
+- Add a repeatable live-player Torch God activation and arena-combat test.
 - Add housing-query integration tests if future landmarks promise valid NPC housing rather than decorated exploration structures.
 - Test ordinary-seed compatibility against representative structure-heavy mods, one integration at a time.

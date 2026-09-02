@@ -526,6 +526,20 @@ Granite, Marble, Spider Caves, Bee Hives, and the Aether keep their vanilla iden
 
 **Safeguards.** Preserve enough open space for the Wall of Flesh fight. Keep Ruined House loot and Hellforge access at vanilla expectations. Do not create an uninterrupted bridge across the whole layer. Avoid sealing the bottom of a hellevator with a hidden lava pocket.
 
+## The Torch God's trial can become a discoverable place
+
+**Purpose.** The existing Torch God event gains an underground destination and a readable final action without adding an item, enemy, reward, or progression system.
+
+**Large-scale shape.** Choose among a domed basilica, paired sanctums, a stepped reliquary, and a compact crucible vault. Vary the building's width, height, ledge positions, stairs, columns, arches, and torch motif. Use a thick shell and an irregular foundation rather than a one-tile rectangle.
+
+**Biome identity.** Sample the finished host terrain and use a matching vanilla brick pair, unsafe wall, torch style, platform, chest, and furniture set. Snow and Ice, Desert, Jungle, Corruption, Crimson, Mushroom, Granite, Marble, Forest Stone, and ordinary Cavern sites should remain recognizable even though their room grammar differs.
+
+**Natural route.** At least one broad, lined passage opens into a nearby natural cave. The route must stay clear from the cave pocket to the altar, and every structural column it crosses needs a deliberate arch or aperture.
+
+**Final action.** Place exactly 100 lit themed torches within the vanilla event's scan area. Put one ordinary Torch in a chest on the altar and leave a dry, wall-backed socket empty inside a concentrated shrine motif. Placing the chest's torch in that socket should be enough to start Terraria's unmodified trial.
+
+**Safeguards.** Plan the temple after required authored landmarks and routes. Avoid spawn, the Dungeon, Jungle Temple, Aether, chests, wiring, liquids, and protected structures. Use unsafe walls and open boundaries so the temple cannot become valid NPC housing. Validate finished torch frames, the chest inventory, shell thickness, furnishing, and cave-to-altar connectivity.
+
 ## Progression sites keep their jobs
 
 Vanilla Worlds Overhauled can change the approach to a progression site, but it cannot change what the site means or how the player unlocks it.

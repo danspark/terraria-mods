@@ -131,6 +131,28 @@ internal enum MineRailProfile
 	LaunchTransfer
 }
 
+internal enum TorchTempleLayout
+{
+	SunkenBasilica,
+	TwinSanctum,
+	SteppedReliquary,
+	CrucibleVault
+}
+
+internal enum TorchTempleTheme
+{
+	ForestStone,
+	Ice,
+	Desert,
+	Jungle,
+	Corrupt,
+	Crimson,
+	Mushroom,
+	Granite,
+	Marble,
+	Cavern
+}
+
 internal readonly record struct WorldRegion(
 	int Id,
 	int Left,
@@ -218,6 +240,20 @@ internal sealed record SurfaceMinePlan(
 	public BiomeKind ThemeAt(Point point) =>
 		RouteThemes.TryGetValue(point, out BiomeKind theme) ? theme : BiomeKind.Cavern;
 }
+
+internal readonly record struct TorchTempleEntrance(Point Doorway, Point CaveTarget, int VariationSeed);
+
+internal sealed record TorchGodTemplePlan(
+	int FeatureSeed,
+	Rectangle BodyArea,
+	Rectangle ProtectedArea,
+	Point ActivationPoint,
+	Point ChestTopLeft,
+	Point MissingTorch,
+	TorchTempleLayout Layout,
+	TorchTempleTheme Theme,
+	int ShellThickness,
+	IReadOnlyList<TorchTempleEntrance> Entrances);
 
 internal sealed record WorldPlan(
 	int GenerationSeed,
@@ -331,9 +367,21 @@ internal readonly record struct SurfaceMineRecord(
 	int RequiredRouteCount,
 	int ConnectedRouteCount);
 
+internal readonly record struct TorchGodTempleRecord(
+	Rectangle Area,
+	Point ActivationPoint,
+	Point ChestTopLeft,
+	Point MissingTorch,
+	TorchTempleLayout Layout,
+	TorchTempleTheme Theme,
+	int TorchCount,
+	int FurnitureCount,
+	int EntranceCount,
+	int BrickTiles);
+
 internal sealed class GenerationManifest
 {
-	public const int CurrentVersion = 7;
+	public const int CurrentVersion = 8;
 
 	public int GenerationSeed { get; init; }
 	public List<BuildTerrace> Terraces { get; } = [];
@@ -347,6 +395,7 @@ internal sealed class GenerationManifest
 	public List<BiomeTransitionRecord> BiomeTransitions { get; } = [];
 	public List<MineSection> MineSections { get; } = [];
 	public SurfaceMineRecord? SurfaceMine { get; set; }
+	public TorchGodTempleRecord? TorchGodTemple { get; set; }
 	public Dictionary<BiomeKind, int> AccentCounts { get; } = [];
 }
 
@@ -365,7 +414,8 @@ internal sealed record GenerationReport(
 	int TombstoneTiles,
 	int MountainWaterCount,
 	int SkyHighlandCount,
-	int MineTrackTiles)
+	int MineTrackTiles,
+	int TorchTempleTorchCount)
 {
 	public string Summary =>
 		$"valid={Valid}; regions={RegionCount}; relief={Relief}; mountains={MountainCount}; " +
@@ -373,5 +423,6 @@ internal sealed record GenerationReport(
 		$"landmarks={LandmarkCount}; accents={AccentCount}; bridges={BridgeCount}; " +
 		$"forestLakeBridges={ForestLakeBridgeCount}; graveyardBridges={GraveyardBridgeCount}; " +
 		$"tombstoneTiles={TombstoneTiles}; mountainWaters={MountainWaterCount}; " +
-		$"skyHighlands={SkyHighlandCount}; mineTrackTiles={MineTrackTiles}";
+		$"skyHighlands={SkyHighlandCount}; mineTrackTiles={MineTrackTiles}; " +
+		$"torchTempleTorches={TorchTempleTorchCount}";
 }

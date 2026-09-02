@@ -14,6 +14,7 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 {
 	private WorldPlan? _plan;
 	private SurfaceMinePlan? _surfaceMinePlan;
+	private TorchGodTemplePlan? _torchGodTemplePlan;
 	private GenerationManifest? _manifest;
 	private GenerationReport? _report;
 	private string? _savedValidationSummary;
@@ -22,6 +23,7 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 	{
 		_plan = null;
 		_surfaceMinePlan = null;
+		_torchGodTemplePlan = null;
 		_manifest = null;
 		_report = null;
 		_savedValidationSummary = null;
@@ -31,6 +33,7 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 	{
 		_plan = null;
 		_surfaceMinePlan = null;
+		_torchGodTemplePlan = null;
 		_manifest = new GenerationManifest();
 		_report = null;
 		_savedValidationSummary = null;
@@ -64,7 +67,10 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 		InsertAfter(tasks, "Vanilla Worlds Overhauled: furnish biome landmarks", new VanillaWorldsOverhauledPass("Vanilla Worlds Overhauled: lay connected mine rails", 36d, FurnishSurfaceMine), ref totalWeight);
 		InsertAfter(tasks, "Vanilla Worlds Overhauled: lay connected mine rails", new VanillaWorldsOverhauledPass("Vanilla Worlds Overhauled: decorate mountain interiors", 18d, DecorateMountainInteriors), ref totalWeight);
 		InsertAfter(tasks, "Vanilla Worlds Overhauled: decorate mountain interiors", new VanillaWorldsOverhauledPass("Vanilla Worlds Overhauled: record final features", 8d, RecordFinalFeatures), ref totalWeight);
-		InsertAfter(tasks, "Vanilla Worlds Overhauled: record final features", new VanillaWorldsOverhauledPass("Vanilla Worlds Overhauled: validate replacement world", 24d, Validate), ref totalWeight);
+		InsertAfter(tasks, "Vanilla Worlds Overhauled: record final features", new VanillaWorldsOverhauledPass("Vanilla Worlds Overhauled: plan Torch God temple", 8d, PlanTorchGodTemple), ref totalWeight);
+		InsertAfter(tasks, "Vanilla Worlds Overhauled: plan Torch God temple", new VanillaWorldsOverhauledPass("Vanilla Worlds Overhauled: build Torch God temple", 26d, BuildTorchGodTemple), ref totalWeight);
+		InsertAfter(tasks, "Vanilla Worlds Overhauled: build Torch God temple", new VanillaWorldsOverhauledPass("Vanilla Worlds Overhauled: light Torch God temple", 18d, FinishTorchGodTemple), ref totalWeight);
+		InsertAfter(tasks, "Vanilla Worlds Overhauled: light Torch God temple", new VanillaWorldsOverhauledPass("Vanilla Worlds Overhauled: validate replacement world", 24d, Validate), ref totalWeight);
 	}
 
 	public override void PostWorldGen()
@@ -96,6 +102,9 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 		tag["mineSections"] = _manifest.MineSections.Select(SerializeMineSection).ToList();
 		if (_manifest.SurfaceMine is SurfaceMineRecord surfaceMine) {
 			tag["surfaceMine"] = SerializeSurfaceMine(surfaceMine);
+		}
+		if (_manifest.TorchGodTemple is TorchGodTempleRecord torchGodTemple) {
+			tag["torchGodTemple"] = SerializeTorchGodTemple(torchGodTemple);
 		}
 		tag["accents"] = _manifest.AccentCounts
 			.OrderBy(pair => pair.Key)
@@ -237,18 +246,41 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 				saved.GetInt("requiredRoutes"),
 				saved.GetInt("connectedRoutes"));
 		}
+		if (tag.ContainsKey("torchGodTemple")) {
+			TagCompound saved = tag.GetCompound("torchGodTemple");
+			manifest.TorchGodTemple = new TorchGodTempleRecord(
+				DeserializeRectangle(saved),
+				new Microsoft.Xna.Framework.Point(saved.GetInt("activationX"), saved.GetInt("activationY")),
+				new Microsoft.Xna.Framework.Point(saved.GetInt("chestX"), saved.GetInt("chestY")),
+				new Microsoft.Xna.Framework.Point(saved.GetInt("socketX"), saved.GetInt("socketY")),
+				(TorchTempleLayout)saved.GetInt("layout"),
+				(TorchTempleTheme)saved.GetInt("theme"),
+				saved.GetInt("torches"),
+				saved.GetInt("furniture"),
+				saved.GetInt("entrances"),
+				saved.GetInt("brickTiles"));
+		}
 
 		foreach (TagCompound saved in tag.GetList<TagCompound>("accents")) {
 			manifest.AccentCounts[(BiomeKind)saved.GetInt("biome")] = saved.GetInt("count");
 		}
 		_manifest = manifest;
 		_savedValidationSummary = tag.ContainsKey("validation") ? tag.GetString("validation") : null;
+		int loadedTorchTempleTorches = manifest.TorchGodTemple is TorchGodTempleRecord loadedTemple
+			? TorchGodTempleGenerator.CountLitTorches(TorchGodTempleGenerator.ActivationArea(loadedTemple.ActivationPoint))
+			: 0;
+		int loadedTorchTempleChestTorches = manifest.TorchGodTemple is TorchGodTempleRecord loadedTempleWithChest
+			? TorchGodTempleGenerator.CountOrdinaryTorchesInChest(loadedTempleWithChest.ChestTopLeft)
+			: -1;
 		Mod.Logger.Info(
 			$"Loaded Vanilla Worlds Overhauled manifest v{tag.GetInt("manifestVersion")}: "
 			+ $"landmarks={manifest.Landmarks.Count}; mountains={manifest.Mountains.Count}; "
 			+ $"bridges={manifest.Bridges.Count}; forestLakeBridges={manifest.ForestLakeBridges.Count}; "
 			+ $"mountainWaters={manifest.MountainWaters.Count}; skyHighlands={manifest.SkyHighlands.Count}; "
 			+ $"mine={(manifest.SurfaceMine is null ? "missing" : "present")}; "
+			+ $"torchGodTemple={(manifest.TorchGodTemple is null ? "missing" : "present")}; "
+			+ $"torchGodTempleTorches={loadedTorchTempleTorches}; "
+			+ $"torchGodTempleChestTorches={loadedTorchTempleChestTorches}; "
 			+ $"validation={_savedValidationSummary ?? "missing"}");
 	}
 
@@ -361,6 +393,25 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 	{
 		progress.Message = "Excavating mine stations, branches, and liquid sections";
 		SurfaceMineGenerator.Excavate(RequireMinePlan(), RequirePlan(), RequireManifest(), progress);
+	}
+
+	private void PlanTorchGodTemple(GenerationProgress progress, GameConfiguration _)
+	{
+		progress.Message = "Finding a natural cavern for the Torch God's temple";
+		_torchGodTemplePlan = TorchGodTempleGenerator.Plan(RequirePlan(), RequireMinePlan(), RequireManifest());
+		Mod.Logger.Info(
+			$"Vanilla Worlds Overhauled planned a {RequireTorchGodTemplePlan().Theme} "
+			+ $"{RequireTorchGodTemplePlan().Layout} Torch God temple at "
+			+ $"{RequireTorchGodTemplePlan().ActivationPoint} with "
+			+ $"{RequireTorchGodTemplePlan().Entrances.Count} cavern entrance(s).");
+		progress.Set(1d);
+	}
+
+	private void BuildTorchGodTemple(GenerationProgress progress, GameConfiguration _)
+	{
+		progress.Message = "Building the underground Torch God temple";
+		TorchGodTempleGenerator.BuildAndProtect(RequireTorchGodTemplePlan());
+		progress.Set(1d);
 	}
 
 	private void PlaceLandmarks(GenerationProgress progress, GameConfiguration _)
@@ -485,10 +536,21 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 		progress.Set(1d);
 	}
 
+	private void FinishTorchGodTemple(GenerationProgress progress, GameConfiguration _)
+	{
+		progress.Message = "Furnishing the altar and leaving its final flame unlit";
+		TorchGodTempleGenerator.FinishAndArm(RequireTorchGodTemplePlan(), RequireManifest());
+		progress.Set(1d);
+	}
+
 	private void Validate(GenerationProgress progress, GameConfiguration _)
 	{
 		progress.Message = "Inspecting terrain, routes, landmarks, and progression sites";
-		_report = WorldValidator.Validate(RequirePlan(), RequireMinePlan(), RequireManifest());
+		_report = WorldValidator.Validate(
+			RequirePlan(),
+			RequireMinePlan(),
+			RequireTorchGodTemplePlan(),
+			RequireManifest());
 		_savedValidationSummary = _report.Summary;
 		Mod.Logger.Info("Vanilla Worlds Overhauled validation passed. " + _report.Summary);
 	}
@@ -630,6 +692,21 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 		["connectedRoutes"] = mine.ConnectedRouteCount
 	});
 
+	private static TagCompound SerializeTorchGodTemple(TorchGodTempleRecord temple) => WithRectangle(temple.Area, new TagCompound {
+		["activationX"] = temple.ActivationPoint.X,
+		["activationY"] = temple.ActivationPoint.Y,
+		["chestX"] = temple.ChestTopLeft.X,
+		["chestY"] = temple.ChestTopLeft.Y,
+		["socketX"] = temple.MissingTorch.X,
+		["socketY"] = temple.MissingTorch.Y,
+		["layout"] = (int)temple.Layout,
+		["theme"] = (int)temple.Theme,
+		["torches"] = temple.TorchCount,
+		["furniture"] = temple.FurnitureCount,
+		["entrances"] = temple.EntranceCount,
+		["brickTiles"] = temple.BrickTiles
+	});
+
 	private static TagCompound WithRectangle(Microsoft.Xna.Framework.Rectangle area, TagCompound tag)
 	{
 		tag["x"] = area.X;
@@ -653,6 +730,9 @@ public sealed class VanillaWorldsOverhauledWorldSystem : ModSystem
 
 	private SurfaceMinePlan RequireMinePlan() =>
 		_surfaceMinePlan ?? throw new InvalidOperationException("Vanilla Worlds Overhauled surface-mine planning did not run before a dependent pass.");
+
+	private TorchGodTemplePlan RequireTorchGodTemplePlan() =>
+		_torchGodTemplePlan ?? throw new InvalidOperationException("Vanilla Worlds Overhauled Torch God temple planning did not run before a dependent pass.");
 
 	private sealed class VanillaWorldsOverhauledPass : GenPass
 	{

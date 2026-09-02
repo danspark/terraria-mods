@@ -1,1 +1,1 @@
-Overhauls world generation with 100% vanilla content. Adds no custom items, tiles, enemies, NPCs, bosses, or progression. Builds mountains, floating highlands, biome landmarks, lakes, bridges, caves, and a surface-to-Cavern rail mine.
+Overhauls world generation with 100% vanilla content. Adds no custom items, tiles, enemies, NPCs, bosses, or progression. Builds mountains, floating highlands, biome landmarks, lakes, bridges, caves, a surface-to-Cavern rail mine, and a biome-themed Torch God temple.

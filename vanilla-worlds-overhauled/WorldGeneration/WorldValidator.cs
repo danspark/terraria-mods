@@ -10,7 +10,11 @@ namespace VanillaWorldsOverhauled.WorldGeneration;
 
 internal static class WorldValidator
 {
-	public static GenerationReport Validate(WorldPlan plan, SurfaceMinePlan surfaceMinePlan, GenerationManifest manifest)
+	public static GenerationReport Validate(
+		WorldPlan plan,
+		SurfaceMinePlan surfaceMinePlan,
+		TorchGodTemplePlan torchGodTemplePlan,
+		GenerationManifest manifest)
 	{
 		List<string> errors = [];
 		int relief = ValidateSurface(plan, errors);
@@ -23,6 +27,7 @@ internal static class WorldValidator
 		ValidateBridgesAndValleys(plan, manifest, errors);
 		ValidateSkyHighlands(plan, manifest, errors);
 		int mineTrackTiles = ValidateSurfaceMine(surfaceMinePlan, manifest, errors);
+		int torchTempleTorches = ValidateTorchGodTemple(torchGodTemplePlan, manifest, errors);
 		ValidateProgressionSites(errors);
 
 		int accentCount = manifest.AccentCounts.Values.Sum();
@@ -52,7 +57,8 @@ internal static class WorldValidator
 				+ manifest.ForestLakeBridges.Sum(bridge => bridge.TombstoneTiles),
 			manifest.MountainWaters.Count,
 			manifest.SkyHighlands.Count,
-			mineTrackTiles);
+			mineTrackTiles,
+			torchTempleTorches);
 	}
 
 	private static int ValidateSurface(WorldPlan plan, List<string> errors)
@@ -2519,6 +2525,173 @@ internal static class WorldValidator
 			}
 		}
 		return count;
+	}
+
+	private static int ValidateTorchGodTemple(
+		TorchGodTemplePlan plan,
+		GenerationManifest manifest,
+		List<string> errors)
+	{
+		if (manifest.TorchGodTemple is not TorchGodTempleRecord record) {
+			errors.Add("the guaranteed Torch God temple was not recorded");
+			return 0;
+		}
+		if (record.Area != plan.ProtectedArea
+			|| record.ActivationPoint != plan.ActivationPoint
+			|| record.ChestTopLeft != plan.ChestTopLeft
+			|| record.MissingTorch != plan.MissingTorch
+			|| record.Layout != plan.Layout
+			|| record.Theme != plan.Theme) {
+			errors.Add("the Torch God temple record does not match its accepted generation plan");
+		}
+		if (plan.BodyArea.Top <= Main.worldSurface + 20 || plan.BodyArea.Bottom >= Main.UnderworldLayer - 80) {
+			errors.Add($"Torch God temple at {plan.BodyArea} is outside its underground depth contract");
+		}
+
+		Rectangle activationArea = TorchGodTempleGenerator.ActivationArea(plan.ActivationPoint);
+		int litTorches = TorchGodTempleGenerator.CountLitTorches(activationArea);
+		if (litTorches != TorchGodTempleGenerator.RequiredLitTorches
+			|| record.TorchCount != TorchGodTempleGenerator.RequiredLitTorches) {
+			errors.Add(
+				$"Torch God temple has {litTorches} nearby lit torches and recorded {record.TorchCount}; "
+				+ $"expected exactly {TorchGodTempleGenerator.RequiredLitTorches} before the final torch is placed");
+		}
+
+		int expectedTorchStyle = TorchGodTempleGenerator.ExpectedTorchStyle(plan.Theme);
+		int differentlyStyled = 0;
+		for (int x = activationArea.Left; x < activationArea.Right; x++) {
+			for (int y = activationArea.Top; y < activationArea.Bottom; y++) {
+				Tile tile = Main.tile[x, y];
+				if (tile.HasTile && tile.TileType == TileID.Torches && tile.TileFrameX < 66
+					&& tile.TileFrameY / 22 != expectedTorchStyle) {
+					differentlyStyled++;
+				}
+			}
+		}
+		if (differentlyStyled > 0) {
+			errors.Add($"Torch God temple retained {differentlyStyled} torches outside its {plan.Theme} style");
+		}
+
+		Tile socket = Main.tile[plan.MissingTorch.X, plan.MissingTorch.Y];
+		if (socket.HasTile || socket.LiquidAmount > 0 || socket.WallType == WallID.None
+			|| Main.wallHouse[socket.WallType]) {
+			errors.Add($"Torch God temple's empty torch socket at {plan.MissingTorch} is blocked, wet, or housing-safe");
+		}
+
+		Chest? altarChest = Main.chest.FirstOrDefault(chest =>
+			chest is not null && chest.x == plan.ChestTopLeft.X && chest.y == plan.ChestTopLeft.Y);
+		if (altarChest is null) {
+			errors.Add($"Torch God temple lost its altar chest at {plan.ChestTopLeft}");
+		}
+		else {
+			int ordinaryTorches = altarChest.item
+				.Where(item => item is not null && item.type == ItemID.Torch)
+				.Sum(item => item.stack);
+			if (ordinaryTorches != 1) {
+				errors.Add($"Torch God temple altar chest contains {ordinaryTorches} ordinary torches instead of one");
+			}
+			for (int x = altarChest.x; x <= altarChest.x + 1; x++) {
+				for (int y = altarChest.y; y <= altarChest.y + 1; y++) {
+					if (!Main.tile[x, y].HasTile
+						|| Main.tile[x, y].TileType is not (TileID.Containers or TileID.Containers2)) {
+						errors.Add($"Torch God temple altar chest has an incomplete tile footprint at {x},{y}");
+						x = altarChest.x + 2;
+						break;
+					}
+				}
+			}
+		}
+
+		int brickTiles = 0;
+		int openUnsafeWalls = 0;
+		int housingWalls = 0;
+		int substantialShellRows = 0;
+		int shellRows = 0;
+		for (int y = plan.BodyArea.Top; y < plan.BodyArea.Bottom; y++) {
+			int leftBrick = -1;
+			int rightBrick = -1;
+			for (int x = plan.BodyArea.Left; x < plan.BodyArea.Right; x++) {
+				Tile tile = Main.tile[x, y];
+				if (tile.HasTile && TorchGodTempleGenerator.IsTempleBrick(plan.Theme, tile.TileType)) {
+					brickTiles++;
+					leftBrick = leftBrick < 0 ? x : leftBrick;
+					rightBrick = x;
+				}
+				if (!TileEditor.IsSolid(x, y) && tile.WallType != WallID.None) {
+					openUnsafeWalls += !Main.wallHouse[tile.WallType] ? 1 : 0;
+					housingWalls += Main.wallHouse[tile.WallType] ? 1 : 0;
+				}
+			}
+			if (leftBrick < 0 || rightBrick <= leftBrick) {
+				continue;
+			}
+			shellRows++;
+			int leftMass = 0;
+			for (int x = leftBrick; x <= rightBrick
+				&& Main.tile[x, y].HasTile
+				&& TorchGodTempleGenerator.IsTempleBrick(plan.Theme, Main.tile[x, y].TileType); x++) {
+				leftMass++;
+			}
+			int rightMass = 0;
+			for (int x = rightBrick; x >= leftBrick
+				&& Main.tile[x, y].HasTile
+				&& TorchGodTempleGenerator.IsTempleBrick(plan.Theme, Main.tile[x, y].TileType); x--) {
+				rightMass++;
+			}
+			substantialShellRows += leftMass >= 2 && rightMass >= 2 ? 1 : 0;
+		}
+		if (brickTiles < 420 || record.BrickTiles != brickTiles) {
+			errors.Add($"Torch God temple retained {brickTiles} themed brick tiles and recorded {record.BrickTiles}");
+		}
+		if (shellRows < 18 || substantialShellRows < shellRows * 3 / 4) {
+			errors.Add(
+				$"Torch God temple has substantial multi-tile side walls on only {substantialShellRows}/{shellRows} occupied rows");
+		}
+		bool validHousing = TryFindValidHousing(plan.BodyArea, out Point housingProbe);
+		if (openUnsafeWalls < 350 || housingWalls > 0 || validHousing) {
+			errors.Add(
+				$"Torch God temple wall contract failed with {openUnsafeWalls} unsafe open-wall cells, "
+				+ $"{housingWalls} housing-wall cells, and housing probe {housingProbe}");
+		}
+		if (record.FurnitureCount < 6) {
+			errors.Add($"Torch God temple retained only {record.FurnitureCount} furniture and prop placements");
+		}
+		if (record.EntranceCount != plan.Entrances.Count || record.EntranceCount < 1) {
+			errors.Add($"Torch God temple retained {record.EntranceCount}/{plan.Entrances.Count} cavern entrances");
+		}
+		foreach (TorchTempleEntrance entrance in plan.Entrances) {
+			if (!HasOpenConnection(plan.ProtectedArea, entrance.CaveTarget, plan.ActivationPoint)) {
+				errors.Add($"Torch God temple entrance at {entrance.CaveTarget} cannot reach its altar");
+			}
+		}
+
+		return litTorches;
+	}
+
+	private static bool HasOpenConnection(Rectangle area, Point start, Point goal)
+	{
+		if (TileEditor.IsSolid(start.X, start.Y) || TileEditor.IsSolid(goal.X, goal.Y)) {
+			return false;
+		}
+		HashSet<Point> visited = [start];
+		Queue<Point> queue = new();
+		queue.Enqueue(start);
+		ReadOnlySpan<Point> directions = [new(1, 0), new(-1, 0), new(0, 1), new(0, -1)];
+		while (queue.Count > 0) {
+			Point current = queue.Dequeue();
+			if (Math.Abs(current.X - goal.X) <= 2 && Math.Abs(current.Y - goal.Y) <= 3) {
+				return true;
+			}
+			foreach (Point direction in directions) {
+				Point next = current + direction;
+				if (!area.Contains(next) || visited.Contains(next) || TileEditor.IsSolid(next.X, next.Y)) {
+					continue;
+				}
+				visited.Add(next);
+				queue.Enqueue(next);
+			}
+		}
+		return false;
 	}
 
 	private static bool HasTile(int x, int y, ushort type) =>
