@@ -171,7 +171,7 @@ internal static class MountainBiomeGenerator
 		}
 	}
 
-	public static void RepairBridgePortals(WorldPlan plan)
+	public static void RepairBridgePortals(WorldPlan plan, GenerationManifest manifest)
 	{
 		foreach (MountainRangePlan mountain in plan.Mountains) {
 			MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
@@ -182,19 +182,20 @@ internal static class MountainBiomeGenerator
 					mountain,
 					layout.BridgeRoutes[routeIndex],
 					firstBridgeRoute + routeIndex,
-					protectSensitiveTiles: true);
+					protectSensitiveTiles: true,
+					protectedManifest: manifest);
 			}
 
 			int leftX = (mountain.LeftPeakX + mountain.SaddleX) / 2;
 			int rightX = (mountain.SaddleX + mountain.RightPeakX) / 2;
 			int leftDeckY = plan.SurfaceAt(leftX) - 2;
 			int rightDeckY = plan.SurfaceAt(rightX) - 2;
-			BuildBridgeApproach(mountain, leftX, leftDeckY, direction: -1, style: mountain.BridgeStyle);
-			BuildBridgeApproach(mountain, rightX, rightDeckY, direction: 1, style: mountain.BridgeStyle);
-			ActuateBridgeTowerPassage(leftX, leftDeckY, mountain.BridgeStyle);
-			ActuateBridgeTowerPassage(rightX, rightDeckY, mountain.BridgeStyle);
-			RepairBridgeEndpointCorridor(leftX, leftDeckY, mountain.BridgeStyle);
-			RepairBridgeEndpointCorridor(rightX, rightDeckY, mountain.BridgeStyle);
+			BuildBridgeApproach(mountain, leftX, leftDeckY, direction: -1, style: mountain.BridgeStyle, manifest);
+			BuildBridgeApproach(mountain, rightX, rightDeckY, direction: 1, style: mountain.BridgeStyle, manifest);
+			ActuateBridgeTowerPassage(leftX, leftDeckY, mountain.BridgeStyle, manifest);
+			ActuateBridgeTowerPassage(rightX, rightDeckY, mountain.BridgeStyle, manifest);
+			RepairBridgeEndpointCorridor(leftX, leftDeckY, mountain.BridgeStyle, manifest);
+			RepairBridgeEndpointCorridor(rightX, rightDeckY, mountain.BridgeStyle, manifest);
 		}
 	}
 
@@ -388,7 +389,7 @@ internal static class MountainBiomeGenerator
 	public static void RepairGroundingSpines(WorldPlan plan, GenerationManifest manifest)
 	{
 		foreach (MountainRangePlan mountain in plan.Mountains) {
-			Rectangle area = MountainArea(plan, mountain);
+			Rectangle area = MountainGroundingArea(plan, mountain);
 			MountainInteriorLayout layout = BuildInteriorLayout(plan, mountain);
 			ushort[]? materialProfile = null;
 			foreach (int peakX in new[] { mountain.LeftPeakX, mountain.RightPeakX }) {
@@ -559,7 +560,7 @@ internal static class MountainBiomeGenerator
 			&& tile.LiquidAmount == 0
 			&& !tile.RedWire && !tile.BlueWire && !tile.GreenWire && !tile.YellowWire && !tile.HasActuator
 			&& !IsInsideAuthoredMountainClearance(plan, mountain, layout, x, y)
-			&& !IsDecorationExcluded(manifest, x, y)
+			&& !IsGroundingRepairExcluded(manifest, x, y)
 			&& !IsMineRailEnvelope(x, y);
 	}
 
@@ -619,7 +620,7 @@ internal static class MountainBiomeGenerator
 		int y)
 	{
 		foreach (Point[] route in layout.Routes) {
-			if (RoutePassesNear(route, x, y, MinimumRouteRadius + 22)) {
+			if (RoutePassesNear(route, x, y, MinimumRouteRadius + 7)) {
 				return true;
 			}
 		}
@@ -876,7 +877,8 @@ internal static class MountainBiomeGenerator
 		MountainRangePlan mountain,
 		IReadOnlyList<Point> points,
 		int routeIndex,
-		bool protectSensitiveTiles)
+		bool protectSensitiveTiles,
+		GenerationManifest? protectedManifest = null)
 	{
 		for (int segment = 1; segment < points.Count; segment++) {
 			Point start = points[segment - 1];
@@ -895,7 +897,17 @@ internal static class MountainBiomeGenerator
 				int x = (int)Math.Round(start.X + (end.X - start.X) * t + normalX * wobble);
 				int y = (int)Math.Round(start.Y + (end.Y - start.Y) * t + normalY * wobble);
 				int radius = MinimumRouteRadius + HashNoise(step / 13 + routeIndex * 19, mountain.FeatureSeed + segment * 101) % 4;
-				CarveEllipse(plan, mountain, x, y, radius + 1, radius, routeIndex * 101 + segment, protectSensitiveTiles, allowSurfaceOpening: step < 12 || step > steps - 12);
+				CarveEllipse(
+					plan,
+					mountain,
+					x,
+					y,
+					radius + 1,
+					radius,
+					routeIndex * 101 + segment,
+					protectSensitiveTiles,
+					allowSurfaceOpening: step < 12 || step > steps - 12,
+					protectedManifest: protectedManifest);
 			}
 		}
 	}
@@ -1025,7 +1037,8 @@ internal static class MountainBiomeGenerator
 		int verticalRadius,
 		int salt,
 		bool protectSensitiveTiles,
-		bool allowSurfaceOpening)
+		bool allowSurfaceOpening,
+		GenerationManifest? protectedManifest = null)
 	{
 		for (int offsetX = -horizontalRadius; offsetX <= horizontalRadius; offsetX++) {
 			for (int offsetY = -verticalRadius; offsetY <= verticalRadius; offsetY++) {
@@ -1039,7 +1052,9 @@ internal static class MountainBiomeGenerator
 
 				int x = centerX + offsetX;
 				int y = centerY + offsetY;
-				if ((!allowSurfaceOpening && y < plan.SurfaceAt(x) + 4) || !CanMutate(x, y, protectSensitiveTiles)) {
+				if ((!allowSurfaceOpening && y < plan.SurfaceAt(x) + 4)
+					|| !CanMutate(x, y, protectSensitiveTiles)
+					|| protectedManifest is not null && IsLateBridgeRepairExcluded(protectedManifest, x, y)) {
 					continue;
 				}
 				TileEditor.ClearTerrain(x, y);
@@ -1711,11 +1726,32 @@ internal static class MountainBiomeGenerator
 			|| manifest.MineSections.Any(record => record.Area.Contains(point));
 	}
 
+	private static bool IsGroundingRepairExcluded(GenerationManifest manifest, int x, int y)
+	{
+		Point point = new(x, y);
+		return manifest.Terraces.Any(record => record.Area.Contains(point))
+			|| manifest.Landmarks.Any(record => record.Area.Contains(point))
+			|| manifest.Bridges.Any(record => record.Area.Contains(point))
+			|| manifest.ForestLakeBridges.Any(record => record.Area.Contains(point))
+			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.MountainWaters.Any(record => record.Area.Contains(point))
+			|| manifest.SkyHighlands.Any(record => record.Area.Contains(point))
+			|| manifest.MineSections.Any(record => record.Area.Contains(point));
+	}
+
 	private static Rectangle MountainArea(WorldPlan plan, MountainRangePlan mountain)
 	{
 		WorldRegion region = plan.Regions[mountain.RegionId];
 		int top = Math.Max(45, Math.Min(mountain.LeftPeakY, mountain.RightPeakY) - 12);
 		int bottom = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 70);
+		return new Rectangle(region.Left, top, region.Width, bottom - top);
+	}
+
+	private static Rectangle MountainGroundingArea(WorldPlan plan, MountainRangePlan mountain)
+	{
+		WorldRegion region = plan.Regions[mountain.RegionId];
+		int top = Math.Max(45, Math.Min(mountain.LeftPeakY, mountain.RightPeakY) - 12);
+		int bottom = Math.Min(Main.maxTilesY - 50, (int)Main.worldSurface + 130);
 		return new Rectangle(region.Left, top, region.Width, bottom - top);
 	}
 
@@ -2019,24 +2055,35 @@ internal static class MountainBiomeGenerator
 		ActuateBridgeTowerPassage(x, deckY, style);
 	}
 
-	private static void ActuateBridgeTowerPassage(int x, int deckY, BridgeStyle style)
+	private static void ActuateBridgeTowerPassage(
+		int x,
+		int deckY,
+		BridgeStyle style,
+		GenerationManifest? protectedManifest = null)
 	{
 		ushort material = style == BridgeStyle.StoneArch ? TileID.GrayBrick : TileID.LivingWood;
 		foreach (int columnX in new[] { x - 6, x - 5, x + 5, x + 6 }) {
 			for (int y = deckY - 6; y < deckY; y++) {
-				if (!IsMineRailEnvelope(columnX, y)) {
+				if (!IsMineRailEnvelope(columnX, y)
+					&& (protectedManifest is null || !IsLateBridgeRepairExcluded(protectedManifest, columnX, y))) {
 					TileEditor.SetActuatedTerrain(columnX, y, material);
 				}
 			}
 		}
 	}
 
-	private static void RepairBridgeEndpointCorridor(int endpointX, int deckY, BridgeStyle style)
+	private static void RepairBridgeEndpointCorridor(
+		int endpointX,
+		int deckY,
+		BridgeStyle style,
+		GenerationManifest? protectedManifest = null)
 	{
 		ushort material = style == BridgeStyle.StoneArch ? TileID.GrayBrick : TileID.LivingWood;
 		for (int x = endpointX - 7; x <= endpointX + 7; x++) {
 			for (int y = deckY - 6; y < deckY; y++) {
-				if (!TileEditor.IsSolid(x, y) || TileEditor.IsProgressionTile(Main.tile[x, y])) {
+				if (!TileEditor.IsSolid(x, y)
+					|| TileEditor.IsProgressionTile(Main.tile[x, y])
+					|| protectedManifest is not null && IsLateBridgeRepairExcluded(protectedManifest, x, y)) {
 					continue;
 				}
 				if (Math.Abs(x - endpointX) is 5 or 6) {
@@ -2054,7 +2101,8 @@ internal static class MountainBiomeGenerator
 		int endpointX,
 		int deckY,
 		int direction,
-		BridgeStyle style)
+		BridgeStyle style,
+		GenerationManifest? protectedManifest = null)
 	{
 		ushort material = style == BridgeStyle.StoneArch ? TileID.GrayBrick : TileID.LivingWood;
 		ushort coreMaterial = style == BridgeStyle.StoneArch ? TileID.StoneSlab : TileID.WoodenBeam;
@@ -2063,7 +2111,9 @@ internal static class MountainBiomeGenerator
 		for (int step = 0; step <= length; step++) {
 			int x = endpointX + direction * step;
 			for (int y = deckY - 6; y < deckY; y++) {
-				if (IsMineRailEnvelope(x, y) || TileEditor.IsProtectedTile(Main.tile[x, y])) {
+				if (IsMineRailEnvelope(x, y)
+					|| TileEditor.IsProtectedTile(Main.tile[x, y])
+					|| protectedManifest is not null && IsLateBridgeRepairExcluded(protectedManifest, x, y)) {
 					continue;
 				}
 				TileEditor.ClearTerrain(x, y);
@@ -2079,7 +2129,8 @@ internal static class MountainBiomeGenerator
 				1));
 			for (int depth = 0; depth < floorDepth; depth++) {
 				if (!IsMineRailEnvelope(x, deckY + depth)
-					&& !TileEditor.IsProtectedTile(Main.tile[x, deckY + depth])) {
+					&& !TileEditor.IsProtectedTile(Main.tile[x, deckY + depth])
+					&& (protectedManifest is null || !IsLateBridgeRepairExcluded(protectedManifest, x, deckY + depth))) {
 					ushort floorMaterial = depth is 1 or 2 && OrganicBoundary.Field(
 						x,
 						deckY + depth,
@@ -2102,7 +2153,9 @@ internal static class MountainBiomeGenerator
 					1));
 				for (int depth = 0; depth < roofThickness; depth++) {
 					int y = deckY - 7 - depth;
-					if (!IsMineRailEnvelope(x, y) && !TileEditor.IsProtectedTile(Main.tile[x, y])) {
+					if (!IsMineRailEnvelope(x, y)
+						&& !TileEditor.IsProtectedTile(Main.tile[x, y])
+						&& (protectedManifest is null || !IsLateBridgeRepairExcluded(protectedManifest, x, y))) {
 						TileEditor.SetTerrain(x, y, depth == 1 ? coreMaterial : material);
 					}
 				}
@@ -2113,7 +2166,8 @@ internal static class MountainBiomeGenerator
 		for (int gateWidth = 0; gateWidth < 2; gateWidth++) {
 			for (int y = deckY - 5; y < deckY; y++) {
 				int gateColumn = gateX + direction * gateWidth;
-				if (!IsMineRailEnvelope(gateColumn, y)) {
+				if (!IsMineRailEnvelope(gateColumn, y)
+					&& (protectedManifest is null || !IsLateBridgeRepairExcluded(protectedManifest, gateColumn, y))) {
 					TileEditor.SetActuatedTerrain(gateColumn, y, material);
 				}
 			}
@@ -2127,6 +2181,17 @@ internal static class MountainBiomeGenerator
 
 	private static int BridgeApproachLength(MountainRangePlan mountain, int endpointX) =>
 		18 + HashNoise(endpointX, mountain.FeatureSeed ^ 0x4142_5554) % 7;
+
+	private static bool IsLateBridgeRepairExcluded(GenerationManifest manifest, int x, int y)
+	{
+		Point point = new(x, y);
+		return manifest.Terraces.Any(record => record.Area.Contains(point))
+			|| manifest.Landmarks.Any(record => record.Area.Contains(point))
+			|| manifest.ForestLakeBridges.Any(record => record.Area.Contains(point))
+			|| manifest.Valleys.Any(record => record.Area.Contains(point))
+			|| manifest.MountainWaters.Any(record => record.Area.Contains(point))
+			|| manifest.MineSections.Any(record => record.Area.Contains(point));
+	}
 
 	internal static bool HasConnectedBridgePortals(WorldPlan plan, MountainRangePlan mountain, out string reason)
 	{

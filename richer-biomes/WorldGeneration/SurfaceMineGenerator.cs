@@ -17,14 +17,57 @@ internal static class SurfaceMineGenerator
 
 	public static SurfaceMinePlan PlanAndReserve(WorldPlan worldPlan, GenerationManifest manifest)
 	{
-		UnifiedRandom random = new(MixSeed(worldPlan.GenerationSeed, MineSeedSalt));
-		int halfWidth = Main.maxTilesX switch {
+		int preferredHalfWidth = Main.maxTilesX switch {
 			<= 4200 => 260,
 			<= 6400 => 330,
 			_ => 400
 		};
+		int[] halfWidths = [
+			preferredHalfWidth,
+			Math.Max(210, preferredHalfWidth * 9 / 10),
+			Math.Max(210, preferredHalfWidth * 4 / 5)
+		];
+		Dictionary<string, int> rejected = [];
+		for (int tier = 0; tier < halfWidths.Length; tier++) {
+			int halfWidth = halfWidths[tier];
+			if (tier > 0 && halfWidth == halfWidths[tier - 1]) {
+				continue;
+			}
+			if (TryReserveMineTier(
+				worldPlan,
+				manifest,
+				halfWidth,
+				tier,
+				includeDenseScan: tier > 0,
+				rejected,
+				out SurfaceMinePlan accepted)) {
+				return accepted;
+			}
+		}
+
+		string rejectionSummary = string.Join(", ", rejected.OrderByDescending(pair => pair.Value).Select(pair => $"{pair.Key}={pair.Value}"));
+		throw new InvalidOperationException(
+			"Richer Biomes could not reserve a progression-safe site for the guaranteed surface mine "
+			+ $"after adaptive widths {string.Join("/", halfWidths.Distinct())}. "
+			+ rejectionSummary);
+	}
+
+	private static bool TryReserveMineTier(
+		WorldPlan worldPlan,
+		GenerationManifest manifest,
+		int halfWidth,
+		int tier,
+		bool includeDenseScan,
+		Dictionary<string, int> rejected,
+		out SurfaceMinePlan accepted)
+	{
+		UnifiedRandom random = new(MixSeed(worldPlan.GenerationSeed, MineSeedSalt ^ tier * 0x2C92_77B5));
 		int leftMineCenter = worldPlan.CoastMargin + halfWidth + CoastalLandmarkClearance;
 		int rightMineCenter = Main.maxTilesX - worldPlan.CoastMargin - halfWidth - CoastalLandmarkClearance - 1;
+		if (leftMineCenter > rightMineCenter) {
+			accepted = null!;
+			return false;
+		}
 
 		List<int> candidates = worldPlan.Mountains
 			.Select(mountain => worldPlan.Regions[mountain.RegionId].CenterX)
@@ -36,33 +79,45 @@ internal static class SurfaceMineGenerator
 		for (int attempt = 0; attempt < 480; attempt++) {
 			candidates.Add(random.Next(leftMineCenter, rightMineCenter + 1));
 		}
+		if (includeDenseScan) {
+			int stride = tier == 1 ? 12 : 8;
+			int offset = random.Next(stride);
+			for (int centerX = leftMineCenter + offset; centerX <= rightMineCenter; centerX += stride) {
+				candidates.Add(centerX);
+			}
+		}
 
-		Dictionary<string, int> rejected = [];
 		foreach (int rawCenterX in candidates) {
 			int centerX = Math.Clamp(rawCenterX, leftMineCenter, rightMineCenter);
 			if (Math.Abs(centerX - worldPlan.SpawnX) < halfWidth + 180 || Math.Abs(centerX - GenVars.dungeonX) < halfWidth + 140) {
 				continue;
 			}
 
-			SurfaceMinePlan candidate = CreatePlan(worldPlan, centerX, halfWidth, random.Next());
-			if (!CanPlace(candidate, manifest, out string reason)) {
-				rejected[reason] = rejected.GetValueOrDefault(reason) + 1;
-				continue;
-			}
+			int layoutAttempts = includeDenseScan ? 2 : 1;
+			for (int layoutAttempt = 0; layoutAttempt < layoutAttempts; layoutAttempt++) {
+				SurfaceMinePlan candidate = CreatePlan(worldPlan, centerX, halfWidth, random.Next());
+				if (!CanPlace(candidate, worldPlan, manifest, out string reason)) {
+					rejected[reason] = rejected.GetValueOrDefault(reason) + 1;
+					continue;
+				}
 
-			Reserve(candidate);
-			return candidate;
+				Reserve(candidate);
+				accepted = candidate;
+				return true;
+			}
 		}
 
-		string rejectionSummary = string.Join(", ", rejected.OrderByDescending(pair => pair.Value).Select(pair => $"{pair.Key}={pair.Value}"));
-		throw new InvalidOperationException(
-			"Richer Biomes could not reserve a progression-safe site for the guaranteed surface mine. "
-			+ rejectionSummary);
+		accepted = null!;
+		return false;
 	}
 
-	public static void Excavate(SurfaceMinePlan plan, GenerationManifest manifest, GenerationProgress progress)
+	public static void Excavate(
+		SurfaceMinePlan plan,
+		WorldPlan worldPlan,
+		GenerationManifest manifest,
+		GenerationProgress progress)
 	{
-		if (!CanPlace(plan, manifest, out _)) {
+		if (!CanPlace(plan, worldPlan, manifest, out _)) {
 			throw new InvalidOperationException("The reserved surface mine became unsafe before excavation; a progression structure entered its clearance envelope.");
 		}
 		for (int index = 0; index < plan.Sections.Count; index++) {
@@ -521,7 +576,11 @@ internal static class SurfaceMineGenerator
 	private static Rectangle Centered(int x, int y, int width, int height) =>
 		new(x - width / 2, y - height / 2, width, height);
 
-	private static bool CanPlace(SurfaceMinePlan plan, GenerationManifest manifest, out string reason)
+	private static bool CanPlace(
+		SurfaceMinePlan plan,
+		WorldPlan worldPlan,
+		GenerationManifest manifest,
+		out string reason)
 	{
 		if (!WorldGen.InWorld(plan.Area.Left, plan.Area.Top, 30)
 			|| !WorldGen.InWorld(plan.Area.Right - 1, plan.Area.Bottom - 1, 30)) {
@@ -556,10 +615,45 @@ internal static class SurfaceMineGenerator
 			reason = "forest lake bridge";
 			return false;
 		}
-		if (manifest.MountainWaters.Any(water => plan.Sections.Any(section => section.Area.Intersects(water.Area))
-			|| plan.Routes.SelectMany(RasterizeCenterline).Any(water.Area.Contains))) {
+		if (manifest.MountainWaters.Any(water => {
+			Rectangle waterClearance = water.Area;
+			waterClearance.Inflate(5, CorridorHeadroom + 5);
+			return plan.Sections.Any(section => section.Area.Intersects(waterClearance))
+				|| plan.Routes.SelectMany(RasterizeCenterline).Any(waterClearance.Contains);
+		})) {
 			reason = "mountain interior water";
 			return false;
+		}
+		if (plan.Sections.Any(section => MountainBiomeGenerator.IntersectsBridgePassage(worldPlan, section.Area))) {
+			reason = "mountain bridge gallery";
+			return false;
+		}
+		MineSection quarantine = plan.Sections.First(section => section.Kind == MineSectionKind.SealedEvil);
+		Rectangle quarantineClearance = quarantine.Area;
+		quarantineClearance.Inflate(3, 3);
+		if (plan.Routes
+			.Where(route => route.Start != quarantine.Center && route.End != quarantine.Center)
+			.SelectMany(RasterizeCenterline)
+			.Any(quarantineClearance.Contains)) {
+			reason = "evil annex route overlap";
+			return false;
+		}
+		foreach (MineRoute route in plan.Routes) {
+			int sampleIndex = 0;
+			foreach (Point point in RasterizeCenterline(route)) {
+				if (sampleIndex++ % 6 != 0) {
+					continue;
+				}
+				Rectangle corridor = new(
+					point.X - 3,
+					point.Y - CorridorHeadroom - 2,
+					7,
+					CorridorHeadroom + 6);
+				if (MountainBiomeGenerator.IntersectsBridgePassage(worldPlan, corridor)) {
+					reason = "mountain bridge gallery";
+					return false;
+				}
+			}
 		}
 		MineRoute surfaceDescent = plan.Routes[0];
 		foreach (BuildTerrace terrace in manifest.Terraces) {
@@ -821,9 +915,9 @@ internal static class SurfaceMineGenerator
 					continue;
 				}
 				Point point = route.Centerline[index];
-				if (SampleCeilingExtra(route, index) < 2) {
-					continue;
-				}
+				// A shallow tunnel still needs visible structural rhythm. Its crossbeam
+				// can be keyed into the ceiling while the posts hang into the passage;
+				// omitting the entire bent made compact mine plans look unfinished.
 				int topY = point.Y - CorridorHeadroom - 4;
 				int leftPostX = point.X - 3;
 				int rightPostX = point.X + 3;
@@ -1434,14 +1528,15 @@ internal static class SurfaceMineGenerator
 		int shellCenterX = section.Area.Center.X;
 		for (int verticalDirection = -1; verticalDirection <= 1; verticalDirection += 2) {
 			int edgeY = verticalDirection < 0 ? section.Area.Top : section.Area.Bottom - 1;
-			while (edgeY != shellCenterY && !IsSafeQuarantineLayer(shellCenterX, edgeY)) {
-				edgeY -= verticalDirection;
-			}
-			for (int depth = 0; depth < 4; depth++) {
-				int y = edgeY - verticalDirection * depth;
-				if (!IsSafeQuarantineLayer(shellCenterX, y)) {
-					reason = $"annex {(verticalDirection < 0 ? "ceiling" : "floor")} shell at {shellCenterX},{y} "
-						+ "lacks four Gray Brick and safe-wall layers";
+			int safeRun = 0;
+			for (int y = edgeY;; y -= verticalDirection) {
+				safeRun = IsSafeQuarantineLayer(shellCenterX, y) ? safeRun + 1 : 0;
+				if (safeRun >= 4) {
+					break;
+				}
+				if (y == shellCenterY) {
+					reason = $"annex {(verticalDirection < 0 ? "ceiling" : "floor")} shell at x={shellCenterX} "
+						+ "has no continuous four-layer Gray Brick and safe-wall barrier";
 					return false;
 				}
 			}

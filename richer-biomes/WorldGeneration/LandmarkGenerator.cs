@@ -58,6 +58,7 @@ internal static class LandmarkGenerator
 		foreach (LandmarkRecord landmark in manifest.Landmarks) {
 			LandmarkStyle style = ResolveStyle(landmark.Biome, landmark.Archetype, landmark.AnchorX, landmark.AnchorY);
 			LandmarkBlueprint blueprint = BuildBlueprint(landmark);
+			RepairFoundation(landmark, style);
 			RepairLandmarkTraversal(landmark);
 			CarveOpenEntrances(
 				landmark.Area,
@@ -66,11 +67,48 @@ internal static class LandmarkGenerator
 				blueprint.RightColumn,
 				style.Foundation);
 			ClearClosedDoors(landmark.Area);
+			ClearWallsAboveRoof(landmark.Area, landmark.AnchorY);
 			TileEditor.Frame(landmark.Area, border: 2);
 			// Framing can normalize some biome platform styles. Reapply the stair
 			// slopes after the final structure frame so traversal geometry is the
 			// last writer, just as vanilla does for framed room complexes.
 			BuildStairs(blueprint, style.PlatformStyle);
+		}
+	}
+
+	private static void ClearWallsAboveRoof(Rectangle area, int groundY)
+	{
+		for (int x = area.Left; x < area.Right; x++) {
+			int roofY = int.MaxValue;
+			for (int y = area.Top; y < groundY; y++) {
+				Tile tile = Main.tile[x, y];
+				if (tile.HasUnactuatedTile && Main.tileSolid[tile.TileType]) {
+					roofY = y;
+					break;
+				}
+			}
+			if (roofY == int.MaxValue) {
+				continue;
+			}
+			for (int y = area.Top; y < roofY; y++) {
+				Main.tile[x, y].WallType = WallID.None;
+			}
+		}
+	}
+
+	private static void RepairFoundation(LandmarkRecord landmark, LandmarkStyle style)
+	{
+		int left = landmark.Area.Left + 6;
+		int right = landmark.Area.Right - 7;
+		int depth = landmark.Archetype == LandmarkArchetype.SnowBuriedIgloo ? 1 : 2;
+		for (int x = left; x <= right; x++) {
+			for (int offsetY = 0; offsetY < depth; offsetY++) {
+				int y = landmark.AnchorY + offsetY;
+				Tile tile = Main.tile[x, y];
+				if (!TileEditor.IsProgressionTile(tile) && !TileEditor.IsTempleOrDungeonCell(tile)) {
+					TileEditor.SetTerrain(x, y, style.Foundation);
+				}
+			}
 		}
 	}
 
@@ -311,16 +349,33 @@ internal static class LandmarkGenerator
 			best = surfaceFallback;
 		}
 		if (best is null && request.Biome == BiomeKind.Ocean) {
-			LandmarkLayout compact = ResolveLayout(BiomeKind.Ocean, variant: 0);
-			for (int x = request.LeftX; x <= request.RightX; x += 2) {
-				if (TryCreateCandidate(request.Biome, compact, x, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate coastalCandidate)
-					&& (best is null || coastalCandidate.Score > best.Value.Score)) {
-					best = coastalCandidate;
+			// Small worlds can leave less dry beach than the broad harbor layouts
+			// require. Try every Ocean archetype from narrowest to widest so the
+			// lighthouse can claim a short coast without flattening or deleting it.
+			foreach (LandmarkLayout compact in Enumerable.Range(0, 6)
+				.Select(variant => ResolveLayout(BiomeKind.Ocean, variant))
+				.OrderBy(candidate => candidate.Width)) {
+				for (int x = request.LeftX; x <= request.RightX; x += 2) {
+					if (TryCreateCandidate(request.Biome, compact, x, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate coastalCandidate)
+						&& (best is null || coastalCandidate.Score > best.Value.Score)) {
+						best = coastalCandidate;
+					}
 				}
-			}
-			if (best is null
-				&& TryCreatePreparedSurfaceCandidate(request, compact, plan, spawnX, surfaceMine, manifest, out LandmarkCandidate compactFallback)) {
-				best = compactFallback;
+				if (best is null
+					&& TryCreatePreparedSurfaceCandidate(
+						request,
+						compact,
+						plan,
+						spawnX,
+						surfaceMine,
+						manifest,
+						out LandmarkCandidate compactFallback,
+						allowTransitionOverlap: true)) {
+					best = compactFallback;
+				}
+				if (best is not null) {
+					break;
+				}
 			}
 		}
 		if (best is null && request.Biome is (BiomeKind.Forest or BiomeKind.Snow or BiomeKind.Desert or BiomeKind.Jungle)
@@ -333,6 +388,9 @@ internal static class LandmarkGenerator
 		}
 
 		LandmarkCandidate accepted = best.Value;
+		// Required surface landmarks own their footprint over an aesthetic seam.
+		// The final transition pass already omits records hidden by later features.
+		manifest.BiomeTransitions.RemoveAll(transition => Inflated(transition.Area, 8).Intersects(accepted.Area));
 		LandmarkStyle style = ResolveStyle(request.Biome, accepted.Layout.Archetype, accepted.AnchorX, accepted.GroundY);
 		Commit(accepted, style);
 		if (!ValidateFootprint(accepted, style)) {
@@ -362,7 +420,8 @@ internal static class LandmarkGenerator
 		int spawnX,
 		SurfaceMinePlan surfaceMine,
 		GenerationManifest manifest,
-		out LandmarkCandidate candidate)
+		out LandmarkCandidate candidate,
+		bool allowTransitionOverlap = false)
 	{
 		LandmarkCandidate? best = null;
 		int firstCenter = request.LeftX + layout.Width / 2;
@@ -370,7 +429,6 @@ internal static class LandmarkGenerator
 		for (int centerX = firstCenter; centerX <= lastCenter; centerX += request.Biome == BiomeKind.Ocean ? 2 : 4) {
 			int left = centerX - layout.Width / 2;
 			int matchingSupports = 0;
-			int drySupports = 0;
 			int minimumGround = int.MaxValue;
 			int maximumGround = int.MinValue;
 			for (int x = left; x < left + layout.Width; x++) {
@@ -385,7 +443,6 @@ internal static class LandmarkGenerator
 				}
 				minimumGround = Math.Min(minimumGround, supportY);
 				maximumGround = Math.Max(maximumGround, supportY);
-				drySupports += IsDryColumn(x, supportY) ? 1 : 0;
 				if (request.Biome == BiomeKind.Ocean
 					? IsDryOceanSupport(x, supportY)
 					: BiomeClassifier.ClassifySupport(Main.tile[x, supportY].TileType, x, supportY) == request.Biome) {
@@ -396,8 +453,7 @@ internal static class LandmarkGenerator
 			int relief = maximumGround - minimumGround;
 			if (matchingSupports < (request.Biome == BiomeKind.Ocean ? layout.Width * 3 / 5 : layout.Width * 4 / 5)
 				|| minimumGround == int.MaxValue
-				|| request.Biome == BiomeKind.Ocean && (drySupports < layout.Width
-					|| maximumGround < Main.worldSurface * 0.55d)
+				|| request.Biome == BiomeKind.Ocean && maximumGround < Main.worldSurface * 0.55d
 				|| relief > (request.Biome == BiomeKind.Ocean ? 44 : 20)) {
 				continue;
 			}
@@ -412,7 +468,8 @@ internal static class LandmarkGenerator
 					|| manifest.Landmarks.Any(landmark => Inflated(landmark.Area, 50).Intersects(area))
 					|| manifest.ForestLakeBridges.Any(bridge => Inflated(bridge.Area, 18).Intersects(area))
 					|| manifest.MountainWaters.Any(water => Inflated(water.Area, 12).Intersects(area))
-					|| manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
+					|| !allowTransitionOverlap
+						&& manifest.BiomeTransitions.Any(transition => Inflated(transition.Area, 8).Intersects(area))
 					|| MountainBiomeGenerator.IntersectsBridgePassage(plan, area)
 					|| !TileEditor.IsSafeForTerrainFeature(area)) {
 				continue;
@@ -502,7 +559,6 @@ internal static class LandmarkGenerator
 		int left = anchorX - layout.Width / 2;
 
 		int matchingSupports = 0;
-		int drySupports = 0;
 		int minimumGround = int.MaxValue;
 		int maximumGround = int.MinValue;
 		for (int x = left; x < left + layout.Width; x++) {
@@ -513,7 +569,6 @@ internal static class LandmarkGenerator
 
 			minimumGround = Math.Min(minimumGround, y);
 			maximumGround = Math.Max(maximumGround, y);
-			drySupports += IsDryColumn(x, y) ? 1 : 0;
 			if (biome == BiomeKind.Ocean
 				? IsDryOceanSupport(x, y)
 				: BiomeClassifier.ClassifySupport(Main.tile[x, y].TileType, x, y) == biome) {
@@ -522,9 +577,9 @@ internal static class LandmarkGenerator
 		}
 
 		int relief = maximumGround - minimumGround;
-		if (relief > (biome == BiomeKind.Ocean ? 16 : 24) || matchingSupports < layout.Width / 2
-			|| biome == BiomeKind.Ocean && (drySupports < layout.Width
-				|| maximumGround < Main.worldSurface * 0.55d)) {
+		int minimumMatchingSupports = biome == BiomeKind.Ocean ? layout.Width * 3 / 5 : layout.Width / 2;
+		if (relief > (biome == BiomeKind.Ocean ? 16 : 24) || matchingSupports < minimumMatchingSupports
+			|| biome == BiomeKind.Ocean && maximumGround < Main.worldSurface * 0.55d) {
 			candidate = default;
 			return false;
 		}
@@ -608,16 +663,16 @@ internal static class LandmarkGenerator
 			centerX += 2) {
 			int minimumGround = int.MaxValue;
 			int maximumGround = int.MinValue;
-			bool complete = true;
+			int windowDrySupports = 0;
 			for (int x = centerX - layout.Width / 2; x < centerX - layout.Width / 2 + layout.Width; x++) {
-				if (!TryFindCoastalGroundSupport(x, out int supportY) || !IsDryOceanSupport(x, supportY)) {
-					complete = false;
-					break;
+				if (!TryFindCoastalGroundSupport(x, out int supportY)) {
+					continue;
 				}
+				windowDrySupports += IsDryOceanSupport(x, supportY) ? 1 : 0;
 				minimumGround = Math.Min(minimumGround, supportY);
 				maximumGround = Math.Max(maximumGround, supportY);
 			}
-			if (!complete) {
+			if (windowDrySupports < layout.Width * 3 / 5 || minimumGround == int.MaxValue) {
 				continue;
 			}
 
@@ -1792,7 +1847,10 @@ internal static class LandmarkGenerator
 		int downLeft = 0;
 		int downRight = 0;
 		foreach (LandmarkRoom room in blueprint.Rooms) {
-			for (int x = room.Shell.Left - 2; x <= room.Shell.Right + 1; x++) {
+			// Flat roofs place their two facing slopes on the outer overhang at
+			// Shell.Left - 3 and Shell.Right + 2. Include the complete authored
+			// roof envelope instead of rejecting otherwise complete battlements.
+			for (int x = room.Shell.Left - 4; x <= room.Shell.Right + 3; x++) {
 				for (int y = candidate.Area.Top; y < room.Shell.Top; y++) {
 					Tile tile = Main.tile[x, y];
 					if (!tile.HasTile || tile.TileType != style.Roof && tile.TileType != style.RoofAccent) {

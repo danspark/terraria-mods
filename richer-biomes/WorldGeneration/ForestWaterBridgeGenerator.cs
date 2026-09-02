@@ -196,6 +196,9 @@ internal static class ForestWaterBridgeGenerator
 				int surfaceY = plan.WaterlineY - 1
 					- step / 2
 					+ OrganicBoundary.Profile(x, plan.Seed ^ edgeX ^ 0x4241_4E4B, 13, 5, 2, 1);
+				for (int y = plan.Area.Top + 1; y < surfaceY; y++) {
+					TileEditor.ClearTerrain(x, y, clearWall: true);
+				}
 				int depth = 5 + Math.Max(0, OrganicBoundary.Profile(x, plan.Seed ^ 0x4241_5345, 17, 7, 3, 1));
 				for (int y = surfaceY; y < surfaceY + depth; y++) {
 					TileEditor.SetTerrain(x, y, y == surfaceY ? TileID.Grass : TileID.Dirt);

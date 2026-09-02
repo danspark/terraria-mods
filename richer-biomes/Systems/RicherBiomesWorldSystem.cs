@@ -356,7 +356,7 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 	private void ExcavateSurfaceMine(GenerationProgress progress, GameConfiguration _)
 	{
 		progress.Message = "Excavating mine stations, branches, and liquid sections";
-		SurfaceMineGenerator.Excavate(RequireMinePlan(), RequireManifest(), progress);
+		SurfaceMineGenerator.Excavate(RequireMinePlan(), RequirePlan(), RequireManifest(), progress);
 	}
 
 	private void PlaceLandmarks(GenerationProgress progress, GameConfiguration _)
@@ -442,7 +442,7 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		SkyHighlandGenerator.RepairVerticalRoutes(RequirePlan(), RequireManifest());
 		SkyHighlandGenerator.RepairOrganicMaterialSeams(RequirePlan(), RequireManifest());
 		SkyHighlandGenerator.RefillLakes(RequirePlan(), RequireManifest());
-		MountainBiomeGenerator.RepairBridgePortals(RequirePlan());
+		MountainBiomeGenerator.RepairBridgePortals(RequirePlan(), RequireManifest());
 		LandformGenerator.FinishMountainMaterials(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RepairEntrances(RequirePlan(), RequireManifest());
 		RegionalCaveGenerator.RepairRequiredRoutes(
@@ -450,7 +450,6 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 			progress,
 			respectStructureMap: false,
 			naturalTilesOnly: true);
-		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
 		TerraceGenerator.RepairReserved(RequireManifest());
 		BiomeTransitionGenerator.Repair(RequirePlan(), RequireManifest());
 		int occludedTransitions = BiomeTransitionGenerator.RetainObservable(RequirePlan(), RequireManifest());
@@ -460,7 +459,6 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		MountainBiomeGenerator.FinishInteriorWalls(RequirePlan(), RequireManifest());
 		BiomeTransitionGenerator.Repair(RequirePlan(), RequireManifest());
 		LandmarkGenerator.RepairTraversal(RequireManifest());
-		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan(), RequireManifest());
 		int lateOccludedTransitions = BiomeTransitionGenerator.RetainObservable(RequirePlan(), RequireManifest());
 		if (lateOccludedTransitions > 0) {
 			Mod.Logger.Info($"Richer Biomes omitted {lateOccludedTransitions} surface seams after final traversal repair.");
@@ -469,10 +467,13 @@ public sealed class RicherBiomesWorldSystem : ModSystem
 		ForestWaterBridgeGenerator.RepairAndRefill(RequireManifest());
 		MountainBiomeGenerator.RefillInteriorWaters(RequirePlan(), RequireManifest());
 		MountainBiomeGenerator.RefillValleyLiquids(RequireManifest());
-		// Liquids, grounding, transition blending, and traversal repair can all touch
-		// the mountain slopes after the first bridge repair. The bridge galleries own
-		// the final write so both abutments remain connected to their cave chambers.
-		MountainBiomeGenerator.RepairBridgePortals(RequirePlan());
+		// Liquids, transition blending, and traversal repair can all touch the
+		// mountain slopes after the first bridge repair. Rebuild the galleries,
+		// reconnect natural summit mass below them, then give the mine the final
+		// structural write so its rail envelope and quarantine shell cannot be cut.
+		MountainBiomeGenerator.RepairBridgePortals(RequirePlan(), RequireManifest());
+		MountainBiomeGenerator.RepairGroundingSpines(RequirePlan(), RequireManifest());
+		SurfaceMineGenerator.RepairTrackGraph(RequireMinePlan(), RequireManifest());
 		MountainBiomeGenerator.RecordFinalState(RequirePlan(), RequireManifest());
 		progress.Set(1d);
 	}
